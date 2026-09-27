@@ -18,7 +18,8 @@ The **Mission Control** operator dashboard is available at `https://harness.zuey
 - **[Secrets & Credentials](/dashboard/secrets):** Manage global and project-scoped credentials encrypted at rest with AES-256-GCM and automatic ingest-time output stream redaction. Creating a secret is a dialog; the value is write-only.
 - **[Models & Budgets](/dashboard/models):** Configure LLM provider credentials, model profiles, token pricing, and capability limits for coding agents.
 - **[Skills & Skill Sets](/dashboard/skills):** Manage the skill library, provider imports, skill sets, and the toolkit registry.
-- **[Integrations](/dashboard/integrations):** One page for external connections, with GitHub and MCP Servers as its two tabs. `/dashboard/github` and `/dashboard/mcp-servers` redirect here.
+- **[Integrations](/dashboard/integrations):** GitHub App authorization for private repository access. `/dashboard/github` redirects here.
+- **[MCP Servers](/dashboard/mcp-servers):** The MCP Hub behind your gateway endpoint: register downstream MCP servers, search their tools, set permissions, and read call logs.
 - **[Artifacts](/dashboard/artifacts):** Download and inspect workspace output files, build logs, and test results.
 - **[API Access](/dashboard/api-keys):** Create and revoke static gateway keys for IDE and local CLI tools.
 - **[Audit Logs](/dashboard/audit):** The durable security record, also reachable as the Audit filter inside the Activity Center.

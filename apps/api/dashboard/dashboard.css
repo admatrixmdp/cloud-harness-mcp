@@ -967,6 +967,8 @@ dialog .stack-form { margin-block: 0; max-width: none; }
 .mcp-meta-bar { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; font-size: var(--text-12); color: var(--ink-muted); }
 .mcp-gateway-card .page-note { margin-block: var(--space-4) 0; }
 .mcp-gateway-card .page-note ul { margin: var(--space-2) 0 0; padding-inline-start: var(--space-6); }
+.mcp-hub-steps { display: grid; gap: var(--space-2); margin: var(--space-2) 0 var(--space-3); padding-inline-start: var(--space-6); color: var(--ink-muted); }
+.mcp-hub-steps code { color: var(--ink); }
 .mcp-endpoint { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-block: var(--space-3); padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); }
 .mcp-endpoint .copy { margin-inline-start: auto; }
 .mcp-tools-panel .inline-form { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-block-end: var(--space-4); }

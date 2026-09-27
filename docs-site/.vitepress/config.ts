@@ -137,6 +137,7 @@ export default defineConfig({
           { text: 'Skills & Skill Sets', link: '/dashboard/skills' },
           { text: 'Integrations', link: '/dashboard/integrations' },
           { text: 'GitHub Bindings', link: '/dashboard/github' },
+          { text: 'MCP Servers', link: '/dashboard/mcp-servers' },
           { text: 'Artifacts', link: '/dashboard/artifacts' },
           { text: 'API Access', link: '/dashboard/api-keys' },
           { text: 'Audit Logs', link: '/dashboard/audit' },

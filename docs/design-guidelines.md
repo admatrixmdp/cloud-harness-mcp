@@ -257,16 +257,17 @@ wired, so the visible one is never the only working one. Owners:
   starts inside the dialog).
 - **Navigation:** left icon+label rail, grouped by operator intent — **Home**
   (Overview), **Operate** (Workspaces, Agents, Activity, Approvals), **Configure**
-  (Projects, Secrets, Models & Budgets, Skills, Integrations), **Data** (Knowledge,
+  (Projects, Secrets, Models & Budgets, Skills, Integrations, MCP Servers), **Data** (Knowledge,
   Artifacts), and **Admin** (API Access, Settings). Active item gets a raised spine
   fill and the cyan marker. Audit history has no rail slot: it is the Activity Center's Audit filter,
   a command-palette destination, and its own `/dashboard/audit` route. Profile
   deliberately has **no** rail slot: the top-bar profile chip and the
-  command palette are its entry points. GitHub and MCP Servers are not rail
-  entries either — they are tabs of the single **Integrations** page at
-  `/dashboard/integrations`, with `/dashboard/github` and `/dashboard/mcp-servers`
-  kept as redirects and `/dashboard/mcp-servers/:serverId` still serving a
-  server's detail view. Page section tabs such as these render in `#context-nav`,
+  command palette are its entry points. GitHub authorization is the
+  **Integrations** page (`/dashboard/github` redirects there). **MCP Servers**
+  keeps its own rail entry because it is the MCP Hub behind the gateway
+  endpoint, a product surface rather than one more third-party connection; a
+  short-lived Integrations tab for it now redirects to `/dashboard/mcp-servers`.
+  Page section tabs render in `#context-nav`,
   an underline tab strip directly above the page content, never in the rail: the
   collapsed tablet rail hides labels, so a rail-hosted tab was unreachable there.
   The rail is **fixed to the viewport below the top

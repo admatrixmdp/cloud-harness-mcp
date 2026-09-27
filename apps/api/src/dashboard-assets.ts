@@ -66,9 +66,9 @@ export const DASHBOARD_SHELL_PATHS: string[] = [
   '/skills',
   '/integrations',
   '/integrations/github',
-  '/integrations/mcp-servers',
   '/activity',
   '/approvals',
+  '/mcp-servers',
   '/mcp-servers/:serverId',
   '/settings',
   '/profile',
@@ -76,15 +76,15 @@ export const DASHBOARD_SHELL_PATHS: string[] = [
 
 /**
  * Legacy paths kept working as redirects rather than as shells. `/dashboard/overview`
- * was the old Overview route; GitHub and MCP Servers became tabs of the single
- * Integrations page. `/dashboard/mcp-servers/:serverId` stays a live drill-down
- * route so existing links to a server keep resolving. The browser registry ships
- * the same table, and `apps/api/test/dashboard-pages.test.ts` asserts the two agree.
+ * was the old Overview route; GitHub became a tab of the Integrations page; MCP
+ * Servers was briefly an Integrations tab before it got its own rail entry. The
+ * browser registry ships the same table, and `apps/api/test/dashboard-pages.test.ts`
+ * asserts the two agree.
  */
 export const DASHBOARD_COMPAT_REDIRECTS = {
   '/dashboard/overview': '/dashboard',
   '/dashboard/github': '/dashboard/integrations/github',
-  '/dashboard/mcp-servers': '/dashboard/integrations/mcp-servers',
+  '/dashboard/integrations/mcp-servers': '/dashboard/mcp-servers',
 } satisfies Record<string, string>;
 
 export function createDashboardAssetsRouter(): Router {
@@ -101,7 +101,7 @@ export function createDashboardAssetsRouter(): Router {
   // table edit without a matching route fails a test.
   router.get('/overview', (_request, response) => response.redirect(302, '/dashboard'));
   router.get('/github', (_request, response) => response.redirect(302, '/dashboard/integrations/github'));
-  router.get('/mcp-servers', (_request, response) => response.redirect(302, '/dashboard/integrations/mcp-servers'));
+  router.get('/integrations/mcp-servers', (_request, response) => response.redirect(302, '/dashboard/mcp-servers'));
   router.get(DASHBOARD_SHELL_PATHS, (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
     response.type('html').send(shells[forcedTheme(request) ?? 'system']);

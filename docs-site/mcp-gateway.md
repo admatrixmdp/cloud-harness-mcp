@@ -27,8 +27,8 @@ Your client's context window does not grow as you add servers.
 
 ## Add an MCP server
 
-1. Open the [Operator Dashboard](/dashboard/), select **Integrations**, and open the
-   **MCP Servers** tab.
+1. Open the [Operator Dashboard](/dashboard/) and select
+   [MCP Servers](/dashboard/mcp-servers) in the rail.
 2. Select **Add MCP server** and provide:
    - **Name** — a short lowercase identifier, unique to you, such as `github`.
    - **Transport** — `streamable-http` or `sse`.

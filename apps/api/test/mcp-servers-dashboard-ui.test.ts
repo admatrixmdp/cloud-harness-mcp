@@ -110,6 +110,8 @@ describe('MCP servers dashboard renderers', () => {
     expect(html).toContain('https://harness.example.com/mcp-gateway');
     expect(html).toContain('data-copy="https://harness.example.com/mcp-gateway"');
     expect(html).toContain('Connect this single MCP endpoint to your AI client.');
+    // The card explains the hub's progressive discovery with the real meta-tool names.
+    for (const tool of ['search', 'inspect', 'execute', 'permissions', 'status']) expect(html).toContain(`<code class="mono">${tool}</code>`);
     expect(html).toContain('Authenticates with your Cloud Harness Access session.');
     expect(html).toContain('The managed API-key lane is not yet available for this endpoint.');
     expect(html).toContain('HTTP redirects are refused');
@@ -159,7 +161,7 @@ describe('MCP servers dashboard renderers', () => {
     expect(html.indexOf('id="mcp-server-list-heading"')).toBeLessThan(html.indexOf('id="mcp-gateway-heading"'));
     expect(html).toContain('class="mcp-server-list"');
     const detail = renderMcpServerDetail(connected, [], [], 'overview', undefined, gateway);
-    expect(detail).toContain('<nav aria-label="Breadcrumb"><a href="/dashboard/integrations/mcp-servers">');
+    expect(detail).toContain('<nav aria-label="Breadcrumb"><a href="/dashboard/mcp-servers">');
   });
 
   it('renders the empty state for a principal with no servers', () => {

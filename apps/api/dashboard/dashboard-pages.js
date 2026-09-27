@@ -160,11 +160,23 @@ export const DASHBOARD_PAGES = [
     label: 'Integrations',
     group: 'configure',
     title: 'Integrations',
-    help: 'GitHub authorization and downstream MCP server connections for this instance.',
+    help: 'GitHub App authorization for private repository access on this instance.',
     palette: true,
-    paletteHint: 'GitHub and MCP server connections',
+    paletteHint: 'GitHub App authorization',
     nav: true,
     icon: '<circle cx="12" cy="12" r="3"/><path d="M12 3v6"/><path d="M12 15v6"/><path d="m5.6 5.6 4.2 4.2"/><path d="m14.2 14.2 4.2 4.2"/><path d="m18.4 5.6-4.2 4.2"/><path d="m9.8 14.2-4.2 4.2"/>'
+  },
+  {
+    id: 'mcp-servers',
+    route: '/dashboard/mcp-servers',
+    label: 'MCP Servers',
+    group: 'configure',
+    title: 'MCP Servers',
+    help: 'Downstream MCP servers exposed through your Cloud Harness MCP Gateway: connections, tools, permissions, and logs.',
+    palette: true,
+    paletteHint: 'Downstream MCP servers, tools, permissions, and logs',
+    nav: true,
+    icon: '<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01"/><path d="M7 16.5h.01"/>'
   },
   {
     id: 'knowledge',    route: '/dashboard/knowledge',
@@ -231,23 +243,20 @@ export const DASHBOARD_PAGES = [
 
 /** Child routes that belong to a registered page without owning a sidebar entry. */
 export const DASHBOARD_CHILD_ROUTES = [
-  { route: '/dashboard/integrations/github', page: 'integrations' },
-  { route: '/dashboard/integrations/mcp-servers', page: 'integrations' }
+  { route: '/dashboard/integrations/github', page: 'integrations' }
 ];
+
+/** Legacy path prefixes that resolve to a page without being its route. */
+export const DASHBOARD_ALIASES = [];
 
 /**
- * Legacy paths kept alive for bookmarks. `/dashboard/mcp-servers/:serverId` is a
- * live drill-down route, so the alias matches its prefix as well.
+ * Paths the server answers with a redirect rather than the shell. MCP Servers was
+ * briefly a tab of Integrations, so that tab's URL now points at its own page.
  */
-export const DASHBOARD_ALIASES = [
-  { prefix: '/dashboard/mcp-servers', page: 'integrations' }
-];
-
-/** Paths the server answers with a redirect rather than the shell. */
 export const DASHBOARD_COMPAT_REDIRECTS = {
   '/dashboard/overview': '/dashboard',
   '/dashboard/github': '/dashboard/integrations/github',
-  '/dashboard/mcp-servers': '/dashboard/integrations/mcp-servers'
+  '/dashboard/integrations/mcp-servers': '/dashboard/mcp-servers'
 };
 
 const PAGES_BY_ID = new Map(DASHBOARD_PAGES.map((page) => [page.id, page]));

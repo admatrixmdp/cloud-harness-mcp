@@ -1819,6 +1819,13 @@ function renderMcpGatewayCard(gateway) {
       <h2 id="mcp-gateway-heading">Your Cloud Harness MCP Gateway</h2>
       <p class="mcp-endpoint"><span class="mono wrap">${escape(endpoint)}</span> <button type="button" class="copy" data-copy="${escape(endpoint)}">Copy</button></p>
       <p>Connect this single MCP endpoint to your AI client. Tools from your configured MCP servers are discovered and executed through Cloud Harness.</p>
+      <p>Your client sees five tools no matter how many servers you add. An agent finds the right tool without loading every schema:</p>
+      <ol class="mcp-hub-steps">
+        <li><code class="mono">search</code> finds a <code class="mono">server.tool</code> from a plain description of the need, across every enabled server it may use.</li>
+        <li><code class="mono">inspect</code> returns that one tool's input schema and permission.</li>
+        <li><code class="mono">execute</code> runs it, re-checking permission on every call.</li>
+        <li><code class="mono">permissions</code> and <code class="mono">status</code> report what is allowed and which servers are connected.</li>
+      </ol>
       <p class="mcp-endpoint-lane">${escape(lane)} The managed API-key lane is not yet available for this endpoint.</p>
       <div class="page-note">
         <strong>Hard limitations.</strong>
@@ -1864,7 +1871,7 @@ export function renderMcpServersIndex(data) {
   return `
     <section class="mcp-server-list" aria-labelledby="mcp-server-list-heading">
       <div class="record-heading">
-        <div><h2 id="mcp-server-list-heading">MCP servers</h2><p>Downstream MCP integrations available to your signed-in identity.</p></div>
+        <div><h2 id="mcp-server-list-heading">Registered servers</h2><p>Each server's tools are served through your gateway endpoint below.</p></div>
       </div>
       <div class="desktop-table">
         <table>
@@ -2003,7 +2010,7 @@ export function renderMcpServerDetail(server, tools, traces, activeTab = 'overvi
   const toolCount = Array.isArray(tools) ? tools.length : count(server.toolCount);
   const panels = { overview: renderMcpOverviewPanel(server, gateway), tools: renderMcpToolsPanel(tools), permissions: renderMcpPermissionsPanel(server, tools), logs: renderMcpLogsPanel(traces, cursor) };
   return `
-    <nav aria-label="Breadcrumb"><a href="/dashboard/integrations/mcp-servers">MCP servers</a><span>${escape(server.name)}</span></nav>
+    <nav aria-label="Breadcrumb"><a href="/dashboard/mcp-servers">MCP servers</a><span>${escape(server.name)}</span></nav>
     <div class="record-heading">
       <div>
         <h2 class="sr-only">${escape(server.name)}</h2>

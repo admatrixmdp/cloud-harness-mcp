@@ -227,8 +227,8 @@ Test opening a private repository through your AI client (Cursor, Claude Code, e
 
 ## Where this page lives now
 
-GitHub authorization is one tab of the single **Integrations** page. The rail links to
-[Integrations](/dashboard/integrations), and the GitHub tab is at
+GitHub authorization lives on the **Integrations** page. The rail links to
+[Integrations](/dashboard/integrations), which is also served at
 `/dashboard/integrations/github`; `/dashboard/github` still works and redirects there, so
-existing bookmarks and documentation links keep resolving. MCP server connections are the
-second tab of the same page.
+existing bookmarks and documentation links keep resolving. MCP server connections have
+their own rail entry, [MCP Servers](/dashboard/mcp-servers).

@@ -1109,7 +1109,8 @@ export function initializeDashboard() {
     secrets: loadGlobalSecrets,
     models: loadModels,
     skills: loadSkills,
-    integrations: () => (location.pathname === '/dashboard/integrations/mcp-servers' ? loadMcpServers() : loadGitHub()),
+    integrations: loadGitHub,
+    'mcp-servers': loadMcpServers,
     knowledge: loadKnowledge,
     agents: loadAgents,
     activity: loadActivity,
@@ -2247,7 +2248,7 @@ export function initializeDashboard() {
     }, event.currentTarget));
   }
   async function loadGitHub() {
-    selectNavigation('integrations'); integrationLinks('github'); document.querySelector('#command-surface').hidden = true;
+    selectNavigation('integrations'); document.querySelector('#command-surface').hidden = true;
     const callback = githubCallbackParameters(location.search);
     if (callback) {
       insertRendered(content, renderGitHub({ configured: true, installation: null, repositories: [] }, true));
@@ -2722,7 +2723,7 @@ export function initializeDashboard() {
     } catch { return raw; }
   }
   async function loadMcpServers() {
-    selectNavigation('integrations'); integrationLinks('mcp-servers');
+    selectNavigation('mcp-servers');
     document.querySelector('#command-surface').hidden = true;
     setBusy(true);
     try {
@@ -2737,7 +2738,7 @@ export function initializeDashboard() {
     } finally { setBusy(false); }
   }
   async function loadMcpServerDetail(serverId, tab = 'overview') {
-    selectNavigation('integrations'); integrationLinks('mcp-servers');
+    selectNavigation('mcp-servers');
     document.querySelector('#command-surface').hidden = true;
     currentMcpTab = tab;
     setBusy(true);
@@ -2974,7 +2975,7 @@ export function initializeDashboard() {
       action: async () => {
         await deleteMcpServer(button.dataset.mcpDelete, Number(button.dataset.generation));
         announce('MCP server deleted.');
-        navigateTo('/dashboard/integrations/mcp-servers');
+        navigateTo('/dashboard/mcp-servers');
       }
     }, event.currentTarget));
     for (const button of document.querySelectorAll('[data-mcp-tab]')) button.addEventListener('click', (event) => {
@@ -3418,13 +3419,6 @@ export function initializeDashboard() {
   async function loadRuntime(id, io) {
     // Runtime is a cockpit tab too, so it delegates rather than dropping the cockpit.
     await loadWorkspace(id, 'runtime', io);
-  }
-  // Secondary navigation for the single Integrations page: GitHub and MCP Servers
-  // are tabs of one destination instead of two top-level subsystems. The strip sits
-  // above the page content, not in the rail, so it stays reachable at every width.
-  function integrationLinks(current) {
-    document.querySelector('#context-nav').setAttribute('aria-label', 'Integrations sections');
-    insertRendered(document.querySelector('#context-nav'), `<a href="/dashboard/integrations/github" ${current === 'github' ? 'aria-current="page"' : ''}>GitHub</a><a href="/dashboard/integrations/mcp-servers" ${current === 'mcp-servers' ? 'aria-current="page"' : ''}>MCP Servers</a>`);
   }
   function openFileConflict(id, localContent, invoker) {
     const conflictDialog = document.querySelector('#file-conflict-dialog'); const copyStatus = document.querySelector('#file-conflict-status');

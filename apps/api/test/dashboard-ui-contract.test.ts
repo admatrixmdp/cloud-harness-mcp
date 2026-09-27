@@ -345,6 +345,7 @@ describe('dashboard static UI contract', () => {
       ['models', '/dashboard/models', 'Models & Budgets'], ['artifacts', '/dashboard/artifacts', 'Artifacts'],
       ['audit', '/dashboard/audit', 'Audit'], ['api-keys', '/dashboard/api-keys', 'API Access'],
       ['integrations', '/dashboard/integrations', 'Integrations'],
+      ['mcp-servers', '/dashboard/mcp-servers', 'MCP Servers'],
       ['skills', '/dashboard/skills', 'Skills'],
       ['profile', '/dashboard/profile', 'Profile']
     ]) {
@@ -353,9 +354,9 @@ describe('dashboard static UI contract', () => {
       expect(page?.route, id).toBe(route);
       expect(page?.label, id).toBe(label);
     }
-    // GitHub and MCP Servers are tabs of the Integrations page, not own destinations.
+    // GitHub lives on the Integrations page; MCP Servers owns its own rail entry.
     expect(DASHBOARD_PAGES.some((page) => page.route === '/dashboard/github')).toBe(false);
-    expect(DASHBOARD_PAGES.some((page) => page.route === '/dashboard/mcp-servers')).toBe(false);
+    expect(DASHBOARD_PAGES.find((page) => page.id === 'mcp-servers')?.nav).toBe(true);
     for (const endpoint of [
       "api('/projects')", "api('/secrets')", "api('/artifacts',", '`/audit?limit=50', "api('/github')", "api('/profile')",
       "'/github/setup'", "'/github/complete'", "'/github/reconcile'", "'/github/disconnect'", '`/environments/${'
@@ -403,7 +404,6 @@ describe('dashboard static UI contract', () => {
     expect(main.indexOf('id="context-nav"')).toBeLessThan(main.indexOf('id="content"'));
     const sidebar = html.slice(html.indexOf('class="sidebar"'), html.indexOf('<main'));
     expect(sidebar).not.toContain('context-nav');
-    expect(script).toContain('href="/dashboard/integrations/mcp-servers"');
     expect(css).toContain('#context-nav:empty { display: none; }');
   });
 

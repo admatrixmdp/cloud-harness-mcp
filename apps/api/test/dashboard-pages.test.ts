@@ -65,6 +65,7 @@ describe('dashboard page registry', () => {
       'models',
       'skills',
       'integrations',
+      'mcp-servers',
       'knowledge',
       'artifacts',
       'api-keys',
@@ -85,9 +86,9 @@ describe('dashboard page registry', () => {
     expect(pageForPath('/dashboard/projects/prj_abcdefghijklmnopqrst')?.id).toBe('projects');
     expect(pageForPath('/dashboard/knowledge/kn_1234567890')?.id).toBe('knowledge');
     expect(pageForPath('/dashboard/integrations/github')?.id).toBe('integrations');
-    expect(pageForPath('/dashboard/integrations/mcp-servers')?.id).toBe('integrations');
-    // A live drill-down route for one MCP server keeps the Integrations entry current.
-    expect(pageForPath('/dashboard/mcp-servers/mcps_abcdefghijklmnopqrstuvwx')?.id).toBe('integrations');
+    expect(pageForPath('/dashboard/mcp-servers')?.id).toBe('mcp-servers');
+    // A drill-down route for one MCP server keeps the MCP Servers entry current.
+    expect(pageForPath('/dashboard/mcp-servers/mcps_abcdefghijklmnopqrstuvwx')?.id).toBe('mcp-servers');
     expect(pageForPath('/dashboard/not-a-page')).toBeUndefined();
   });
 
