@@ -7,8 +7,8 @@ owns the **what** (every token and rule). The static UI contract is enforced by
 
 ## Direction
 
-The dashboard is an **ops ledger**: a dark instrument **spine** (top bar and rail,
-dark in both themes) framing a quiet ledger work surface. The content is ids,
+The dashboard is an **ops ledger**: an instrument **spine** (top bar and rail,
+following the active theme) framing a quiet ledger work surface. The content is ids,
 leases, logs and states, which read best as ruled rows and monospace stamps, so
 the spine carries identity and navigation and the work surface stays calm. It
 replaced a graphite-on-graphite console whose rail, top bar, canvas and panels
@@ -111,15 +111,16 @@ copies the HUD's grammar. Constraints that shape what is possible:
 
 ### The spine
 
-The top bar, rail and mobile drawer paint from a separate `--rail-*` token set
-declared **only** in `:root`, so the spine stays dark in the light theme too. The
-light work surface then reads as a sheet laid inside a dark frame, and the frame
-never competes with content for attention. Spine text, the active-item marker and
-the focus ring use the rail tokens rather than the page tokens, because page ink
-is dark in light mode and would vanish on the spine.
+The top bar, rail and mobile drawer paint from a separate `--rail-*` token set.
+The spine **follows the active theme**: `:root` holds the dark values and both
+light blocks redefine the whole set, so a light theme gets a light frame. A dark
+spine around a light page read as a stray dark theme, so the owner chose a spine
+that matches the page. In light, the rail sits a step lighter than the canvas and
+is separated by a hairline. Spine rules read only the rail tokens, never the page
+tokens, so the frame can be retuned without touching page surfaces.
 [`apps/api/test/dashboard-design-tokens.test.ts`](../apps/api/test/dashboard-design-tokens.test.ts)
-asserts that no light block redefines a `--rail-*` token and that spine text and
-the accent clear AA on every spine surface.
+asserts that the light theme redefines every `--rail-*` token and that spine text
+and the accent clear AA on every spine surface in both themes.
 
 ### Adaptive dark theme
 

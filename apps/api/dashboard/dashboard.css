@@ -1,6 +1,6 @@
 /* Cloud Harness operator console.
-   Art direction: "ops ledger" — a dark instrument spine (top bar + rail, dark in both
-   themes) frames a quiet ledger work surface of ruled rows and mono figures. Colour is
+   Art direction: "ops ledger" — an instrument spine (top bar + rail) that follows the
+   active theme frames a quiet ledger work surface of ruled rows and mono figures. Colour is
    spent only on state: the accent marks the one next action, semantic hues mark status.
    docs/design-guidelines.md owns the why; this file owns every token and rule. */
 
@@ -36,9 +36,8 @@
   --line: oklch(0.275 0.010 250);
   --line-strong: oklch(0.350 0.012 250);
 
-  /* The spine: top bar and rail. It stays dark in BOTH themes, so these tokens live
-     only here and the light blocks inherit them; its focus ring and accent use the
-     dark-theme cyan, which keeps AA contrast on the dark spine in either theme. */
+  /* The spine: top bar and rail. It follows the active theme, so both light blocks
+     redefine the whole set; spine rules read only these tokens, never the page ones. */
   --rail-bg: oklch(0.120 0.010 250);
   --rail-raised: oklch(0.180 0.012 250);
   --rail-hover: oklch(0.210 0.013 250);
@@ -116,6 +115,16 @@
   --line: oklch(0.905 0.007 250);
   --line-strong: oklch(0.838 0.010 250);
 
+  --rail-bg: oklch(0.990 0.003 250);
+  --rail-raised: oklch(0.945 0.008 250);
+  --rail-hover: oklch(0.958 0.006 250);
+  --rail-line: oklch(0.905 0.007 250);
+  --rail-ink: oklch(0.225 0.020 262);
+  --rail-ink-muted: oklch(0.450 0.022 260);
+  --rail-ink-faint: oklch(0.540 0.016 258);
+  --rail-accent: oklch(0.520 0.150 245.0);
+  --rail-accent-soft: oklch(0.520 0.150 245.0 / .10);
+
   --accent: oklch(0.520 0.150 245.0);
   --accent-hover: oklch(0.470 0.145 245.0);
   --accent-strong: oklch(0.490 0.145 245.0);
@@ -162,6 +171,16 @@
     --ink-faint: oklch(0.600 0.016 258);
     --line: oklch(0.905 0.007 250);
     --line-strong: oklch(0.838 0.010 250);
+
+    --rail-bg: oklch(0.990 0.003 250);
+    --rail-raised: oklch(0.945 0.008 250);
+    --rail-hover: oklch(0.958 0.006 250);
+    --rail-line: oklch(0.905 0.007 250);
+    --rail-ink: oklch(0.225 0.020 262);
+    --rail-ink-muted: oklch(0.450 0.022 260);
+    --rail-ink-faint: oklch(0.540 0.016 258);
+    --rail-accent: oklch(0.520 0.150 245.0);
+    --rail-accent-soft: oklch(0.520 0.150 245.0 / .10);
 
     --accent: oklch(0.520 0.150 245.0);
     --accent-hover: oklch(0.470 0.145 245.0);
@@ -294,7 +313,7 @@ label { display: block; font-weight: 550; font-size: var(--text-13); color: var(
 .profile-meta strong { font-size: var(--text-13); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .profile-meta span { font-size: var(--text-11); color: var(--rail-ink-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 12rem; }
 .topbar .signout { color: var(--rail-ink-muted); }
-.topbar .signout:hover:not(:disabled) { background: var(--rail-hover); border-color: var(--rail-line); color: var(--hud-red); }
+.topbar .signout:hover:not(:disabled) { background: var(--rail-hover); border-color: var(--rail-line); color: var(--danger); }
 .topbar-divider { width: 1px; height: 1.25rem; background: var(--rail-line); margin-inline: var(--space-1); }
 
 /* ───────────────────────── Shell ───────────────────────── */

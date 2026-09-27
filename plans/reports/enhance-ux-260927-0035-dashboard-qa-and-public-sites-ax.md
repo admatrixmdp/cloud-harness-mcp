@@ -79,7 +79,10 @@ the new `robots.txt` files formalize that policy and add the sitemap, they do no
 | Round | Found | Fixed |
 |---|---|---|
 | 1 (preview, dashboard) | D1–D8 | all |
+| 2 (public sites AX) | M1–M4, S1–S5 | all; shipped in #273 |
+| 3 (production verify) | none new | n/a: 13 dashboard pages load with no alert or horizontal overflow at desktop; tabs above content; list before gateway card; tablet/mobile rules present in served CSS; discovery scans exit 0 for both origins; `.md` twins return `X-Robots-Tag: noindex`; docs version menu shows the released version |
 
 ## Unresolved questions
 
-- None blocking.
+- Production tablet/mobile rendering was not re-captured: the Chrome window was minimized, so resizing had no effect. The breakpoint behaviour was verified on the local preview at 768 and 375.
+- Optional AX surfaces still open: per-page Markdown twins and `llms-full.txt` for the marketing site, and `og:image:alt`.

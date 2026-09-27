@@ -320,12 +320,13 @@ describe("dashboard design tokens", () => {
     }
   });
 
-  it("keeps the dark spine readable in both themes", () => {
-    // The top bar and rail stay dark in the light theme too, so their tokens are
-    // declared once on `:root` and must never be redefined by a light block, where
-    // a light value would put light ink on a light spine.
-    for (const name of [...rootTokens.keys()].filter((key) => key.startsWith("--rail-"))) {
-      expect(lightForced.has(name), `${name} redefined in the light theme`).toBe(false);
+  it("keeps the spine following the theme and readable in both", () => {
+    // The top bar and rail follow the active theme, so the light block must redefine
+    // every spine token; an inherited dark value would leave a dark frame around a
+    // light page.
+    // `--rail-w` is layout, not colour, so it stays theme-independent.
+    for (const name of [...rootTokens.keys()].filter((key) => key.startsWith("--rail-") && key !== "--rail-w")) {
+      expect(lightForced.has(name), `${name} missing from the light theme`).toBe(true);
     }
     for (const [label, theme] of themes) {
       for (const background of ["--rail-bg", "--rail-raised", "--rail-hover"]) {

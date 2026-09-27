@@ -38,7 +38,7 @@ Cloud Harness MCP supports three theme modes:
 
 - **System:** Automatically tracks your operating system `prefers-color-scheme`.
 - **Light:** The light companion, with white surfaces and darkened blue and status accents.
-  The top bar and navigation rail stay dark in this mode as a fixed frame.
+  The top bar and navigation rail turn light too.
 - **Dark:** The default base — a deep blue-graphite canvas with the cyan accent.
 
 Dark is the base theme, so a machine whose OS expresses no preference renders
