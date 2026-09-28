@@ -29,6 +29,7 @@ import {
 } from './agent-protocol.js';
 import { DockerAgentLauncher, type AgentLaunchSpec, type AgentLauncher, type AgentRuntimeProcess } from './agent-launcher.js';
 import type { StateStore, WorkspaceRecord } from './state-store.js';
+import type { AgentBootstrapMetadata } from './workspace-bootstrap-context.js';
 
 const AGENT_OPERATIONS: Readonly<Partial<Record<RunnerOperation, true>>> = {
   agent_spawn: true,
@@ -73,6 +74,12 @@ export type AgentManagerDependencies = {
   launcher?: AgentLauncher | undefined;
   toolExecutor: AgentToolExecutor;
   modelProfiles?: ModelProfileStateRepository | undefined;
+  bootstrapContext?: ((input: {
+    workspace: WorkspaceRecord;
+    profile: AgentModelProfile;
+    userPrompt: string;
+    maxPromptBytes: number;
+  }) => Promise<{ prompt: string; metadata: AgentBootstrapMetadata }>) | undefined;
   now?: (() => number) | undefined;
 };
 
@@ -258,6 +265,21 @@ export class AgentManager {
     if (Buffer.byteLength(prompt, 'utf8') > this.config.limits.maxPromptBytes) {
       throw new HarnessError('LIMIT_EXCEEDED', 'agent prompt exceeds the configured byte limit', 413, false);
     }
+    let launchPrompt = prompt;
+    let bootstrapMetadata: AgentBootstrapMetadata | undefined;
+    if (this.dependencies.bootstrapContext) {
+      const prepared = await this.dependencies.bootstrapContext({
+        workspace,
+        profile,
+        userPrompt: prompt,
+        maxPromptBytes: this.config.limits.maxPromptBytes
+      });
+      launchPrompt = prepared.prompt;
+      bootstrapMetadata = prepared.metadata;
+      if (Buffer.byteLength(launchPrompt, 'utf8') > this.config.limits.maxPromptBytes) {
+        throw new HarnessError('LIMIT_EXCEEDED', 'agent prompt plus repository bootstrap exceeds the configured byte limit', 413, false);
+      }
+    }
     const now = this.now();
     const agentId = `agent_${randomBytes(24).toString('base64url')}`;
     const suffix = createHash('sha256').update(agentId).digest('hex').slice(0, 20);
@@ -285,14 +307,19 @@ export class AgentManager {
     if (reservation.replayed) {
       return success('Agent spawn replayed', spawnData(reservation.record, true));
     }
-    const launch = this.launch(reservation.record, prompt, profile)
+    const launch = this.launch(reservation.record, launchPrompt, profile, bootstrapMetadata)
       .finally(() => this.launches.delete(reservation.record.id));
     this.launches.set(reservation.record.id, launch);
     void launch.catch(() => undefined);
     return success('Agent spawn accepted', spawnData(reservation.record, false));
   }
 
-  private async launch(record: AgentRecord, prompt: string, profile: AgentModelProfile): Promise<void> {
+  private async launch(
+    record: AgentRecord,
+    prompt: string,
+    profile: AgentModelProfile,
+    bootstrapMetadata?: AgentBootstrapMetadata
+  ): Promise<void> {
     const spec = this.launchSpec(record);
     try {
       if (this.epoch !== this.repository.currentEpoch(this.store.instanceId())) {
@@ -342,6 +369,9 @@ export class AgentManager {
       });
       if (!running) throw new HarnessError('CONFLICT', 'agent launch lost its lifecycle fence', 409, true);
       context.record = running;
+      if (bootstrapMetadata) {
+        this.appendLogOrLimit(running, 'bootstrap', JSON.stringify(bootstrapMetadata));
+      }
       const deadlineMs = Math.max(1_000, running.expiresAt - this.now());
       context.deadline = setTimeout(() => { void this.cancelOne(running, 'agent TTL expired', 'TIMED_OUT'); }, deadlineMs);
       context.deadline.unref();

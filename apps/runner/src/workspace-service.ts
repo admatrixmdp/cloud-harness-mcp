@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
-import { chmod, chown, cp, mkdir, readFile, readdir, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises';
+import { chmod, chown, cp, mkdir, readFile, readdir, realpath, rename, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, sep } from 'node:path';
 import {
   AgentProxyOperationSchema,
@@ -14,6 +14,7 @@ import {
   TOOL_SCHEMA_BY_NAME,
   sanitizeAndAttributeProvenance,
   toolkitSelectionIdentity,
+  type AgentModelProfile,
   type AgentProxyOperation,
   type RunnerConfig,
   type InternalRunnerOperation,
@@ -56,6 +57,15 @@ import {
   resolveGitHubFallbackToken
 } from './github-credential-fallback.js';
 import { AgentManager, type AgentManagerDependencies } from './agent-manager.js';
+import {
+  bootstrapClientProfileForModel,
+  composeAgentBootstrapPrompt,
+  selectBootstrapItems,
+  snapshotDigest,
+  type BootstrapContextItem,
+  type BootstrapContextSnapshot,
+  type BootstrapContextWarning
+} from './workspace-bootstrap-context.js';
 import { computeFullTreeDigest } from './adapters/mattpocock-adapter.js';
 const activeStatus = new Set<WorkspaceRecord['status']>(['CREATING', 'ACTIVE', 'REAPING', 'NETWORK_QUARANTINED']);
 /**
@@ -190,6 +200,7 @@ export class WorkspaceService {
   private readonly instanceId: string;
   private readonly bootId: string = randomBytes(16).toString('hex');
   private readonly redactorCache = new Map<string, SecretSnapshotRedactor>();
+  private readonly bootstrapRefreshes = new Map<string, Promise<BootstrapContextSnapshot>>();
   private reaper?: NodeJS.Timeout | undefined;
   private reaperRunning = false;
   readonly toolkitCacheManager: ToolkitCacheManager;
@@ -220,6 +231,8 @@ export class WorkspaceService {
     this.agentManager = manager ?? (config.agents
       ? new AgentManager(config.agents, store, {
           ...managerDependencies,
+          bootstrapContext: managerDependencies.bootstrapContext ?? (async ({ workspace, profile, userPrompt, maxPromptBytes }) =>
+            await this.prepareAgentBootstrapContext(workspace, profile, userPrompt, maxPromptBytes)),
           toolExecutor: async (request) => await this.executeAgentProxy(request)
         })
       : undefined);
@@ -298,6 +311,168 @@ export class WorkspaceService {
     const redactor = new SecretSnapshotRedactor(this.redactionSecrets(workspaceId));
     this.redactorCache.set(workspaceId, redactor);
     return redactor;
+  }
+
+  private bootstrapContextPath(record: WorkspaceRecord): string {
+    return join(record.workspacePath, '.chm', 'bootstrap-context-v1.json');
+  }
+
+  private publicBootstrapContext(snapshot: BootstrapContextSnapshot) {
+    return {
+      digest: snapshot.digest,
+      workspaceGeneration: snapshot.workspaceGeneration,
+      createdAt: snapshot.createdAt,
+      truncated: snapshot.truncated,
+      truncationReasons: snapshot.truncationReasons,
+      items: snapshot.items.map((item) => ({
+        path: item.path,
+        kind: item.kind,
+        format: item.format,
+        clients: item.clients,
+        contentSha256: item.contentSha256,
+        byteCount: item.byteCount,
+        provenance: {
+          source: item.provenance.source,
+          trust: item.provenance.trust,
+          mutableBy: item.provenance.mutableBy
+        }
+      })),
+      warnings: snapshot.warnings
+    };
+  }
+
+  private async loadBootstrapContext(record: WorkspaceRecord): Promise<BootstrapContextSnapshot | undefined> {
+    try {
+      const parsed = JSON.parse(await readFile(this.bootstrapContextPath(record), 'utf8')) as BootstrapContextSnapshot;
+      if (parsed.contractVersion !== 1 || parsed.workspaceGeneration !== record.generation || !Array.isArray(parsed.items)) return undefined;
+      const expected = snapshotDigest({
+        workspaceGeneration: parsed.workspaceGeneration,
+        truncated: parsed.truncated,
+        truncationReasons: parsed.truncationReasons,
+        items: parsed.items,
+        warnings: parsed.warnings
+      });
+      if (parsed.digest !== expected) return undefined;
+      return parsed;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async persistBootstrapContext(record: WorkspaceRecord, snapshot: BootstrapContextSnapshot): Promise<void> {
+    const directory = join(record.workspacePath, '.chm');
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const destination = this.bootstrapContextPath(record);
+    const temporary = `${destination}.${randomBytes(6).toString('hex')}.tmp`;
+    try {
+      await writeFile(temporary, JSON.stringify(snapshot), { encoding: 'utf8', mode: 0o600 });
+      await rename(temporary, destination);
+    } finally {
+      await rm(temporary, { force: true }).catch(() => undefined);
+    }
+  }
+
+  private async refreshBootstrapContext(record: WorkspaceRecord, signal?: AbortSignal): Promise<BootstrapContextSnapshot> {
+    const scanRes = await this.runWorker(record, 'workspace_context', {
+      clientProfile: 'all',
+      include: ['instructions'],
+      contentMode: 'excerpt',
+      maxBytes: 131_072
+    }, signal);
+    if (!scanRes.ok || !scanRes.data || typeof scanRes.data !== 'object' || !('manifest' in scanRes.data)) {
+      throw new HarnessError('UNAVAILABLE', 'repository bootstrap context could not be prepared', 503, true);
+    }
+    const rawManifest = scanRes.data.manifest as Record<string, unknown>;
+    const rawItems = Array.isArray(rawManifest.items) ? rawManifest.items as Record<string, unknown>[] : [];
+    const items: BootstrapContextItem[] = [];
+    for (const rawItem of rawItems) {
+      const item = sanitizeAndAttributeProvenance(rawItem, {
+        partitionSource: 'repository',
+        repositoryRoot: join(record.workspacePath, 'repo')
+      });
+      if (item.kind !== 'instruction' || typeof item.path !== 'string') continue;
+      items.push({
+        id: item.id,
+        kind: 'instruction',
+        format: item.format,
+        clients: item.clients,
+        path: item.path,
+        activeForClient: item.activeForClient,
+        contentSha256: item.contentSha256,
+        byteCount: item.byteCount,
+        ...(item.excerpt !== undefined ? { excerpt: item.excerpt } : {}),
+        provenance: {
+          source: item.provenance.source,
+          trust: item.provenance.trust,
+          mutableBy: item.provenance.mutableBy,
+          ...(item.provenance.path ? { path: item.provenance.path } : {}),
+          contentSha256: item.provenance.contentSha256,
+          discoveredAt: item.provenance.discoveredAt
+        }
+      });
+    }
+    const warnings: BootstrapContextWarning[] = Array.isArray(rawManifest.warnings)
+      ? (rawManifest.warnings as Array<Record<string, unknown>>).map((warning) => ({
+          code: typeof warning.code === 'string' ? warning.code : 'SCAN_WARNING',
+          ...(typeof warning.path === 'string' ? { path: warning.path } : {}),
+          message: typeof warning.message === 'string' ? warning.message : 'repository guidance scan warning'
+        }))
+      : [];
+    const truncationReasons = Array.isArray(rawManifest.truncationReasons)
+      ? rawManifest.truncationReasons.filter((reason): reason is string => typeof reason === 'string')
+      : [];
+    const digest = snapshotDigest({
+      workspaceGeneration: record.generation,
+      truncated: Boolean(rawManifest.truncated),
+      truncationReasons,
+      items,
+      warnings
+    });
+    const snapshot: BootstrapContextSnapshot = {
+      contractVersion: 1,
+      workspaceGeneration: record.generation,
+      digest,
+      createdAt: new Date().toISOString(),
+      truncated: Boolean(rawManifest.truncated),
+      truncationReasons,
+      items,
+      warnings
+    };
+    await this.persistBootstrapContext(record, snapshot);
+    return snapshot;
+  }
+
+  private async ensureBootstrapContext(record: WorkspaceRecord, signal?: AbortSignal): Promise<BootstrapContextSnapshot> {
+    const cached = await this.loadBootstrapContext(record);
+    if (cached) return cached;
+    const pending = this.bootstrapRefreshes.get(record.id);
+    if (pending) return await pending;
+    const refresh = this.refreshBootstrapContext(record, signal)
+      .finally(() => this.bootstrapRefreshes.delete(record.id));
+    this.bootstrapRefreshes.set(record.id, refresh);
+    return await refresh;
+  }
+
+  private async invalidateBootstrapContext(record: WorkspaceRecord): Promise<void> {
+    const pending = this.bootstrapRefreshes.get(record.id);
+    if (pending) await pending.catch(() => undefined);
+    await rm(this.bootstrapContextPath(record), { force: true }).catch(() => undefined);
+  }
+
+  private async prepareAgentBootstrapContext(
+    workspace: WorkspaceRecord,
+    profile: AgentModelProfile,
+    userPrompt: string,
+    maxPromptBytes: number
+  ) {
+    const snapshot = await this.ensureBootstrapContext(workspace);
+    const clientProfile = bootstrapClientProfileForModel(profile);
+    return composeAgentBootstrapPrompt({
+      snapshot,
+      clientProfile,
+      userPrompt,
+      maxPromptBytes
+    });
   }
 
   private requireArtifacts(): ArtifactStore {
@@ -935,13 +1110,19 @@ export class WorkspaceService {
       const cloneViolation = await this.resourceViolation(record);
       if (cloneViolation) throw new HarnessError('LIMIT_EXCEEDED', cloneViolation, 507, false);
       const containerName = await this.createExecutor(record, repositoryPath, validatedWorkspaceEnvironment(environment ?? {}));
+      const bootstrapContext = await this.refreshBootstrapContext({ ...record, containerName });
       const active = this.store.updateFenced(workspaceId, record.generation, ['CREATING'], { containerName, status: 'ACTIVE', lastActivityAt: Date.now(), error: null });
       if (!active) {
         await removeContainer(containerName);
         throw new HarnessError('CONFLICT', 'workspace creation lost its lifecycle lease', 409, true);
       }
       await this.runLifecycleHooks(active, 'on_workspace_open').catch(() => undefined);
-      return { ok: true, message: 'Workspace opened', data: this.publicWorkspaceRecord(active), truncated: false };
+      return {
+        ok: true,
+        message: 'Workspace opened',
+        data: { ...this.publicWorkspaceRecord(active), bootstrapContext: this.publicBootstrapContext(bootstrapContext) },
+        truncated: false
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'workspace creation failed';
       this.store.updateFenced(workspaceId, record.generation, ['CREATING'], { status: 'FAILED', error: message.slice(0, 2_000) });
@@ -2690,15 +2871,33 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
       const caps = this.computeWorkspaceCapabilities(record);
       let manifest: unknown = undefined;
       try {
-        const scanRes = await this.runWorker(record, 'workspace_context', validated, signal);
+        const requestedInclude = Array.isArray((validated as { include?: string[] }).include)
+          ? (validated as { include?: string[] }).include!
+          : ['instructions', 'languages', 'test_commands', 'skills'];
+        const bootstrapContext = requestedInclude.includes('instructions')
+          ? await this.ensureBootstrapContext(record, signal)
+          : undefined;
+        const workerInclude = requestedInclude.filter((item) => item !== 'instructions');
+        const scanRes = await this.runWorker(record, 'workspace_context', { ...validated, include: workerInclude }, signal);
         if (scanRes.ok && scanRes.data && typeof scanRes.data === 'object' && 'manifest' in scanRes.data) {
           const rawManifest = scanRes.data.manifest as Record<string, unknown>;
-          const rawItems = Array.isArray(rawManifest.items) ? rawManifest.items : [];
+          const clientProfile = ((validated as { clientProfile?: 'all' | 'claude' | 'codex' | 'cursor' | 'aider' }).clientProfile ?? 'all');
+          const bootstrapItems = bootstrapContext
+            ? selectBootstrapItems(bootstrapContext, clientProfile).map((item) =>
+                (validated as { contentMode?: string }).contentMode === 'excerpt' ? item : { ...item, excerpt: undefined })
+            : [];
+          const rawItems = [
+            ...bootstrapItems,
+            ...(Array.isArray(rawManifest.items) ? rawManifest.items : [])
+          ];
           const maxBytes = Math.min(Math.max(Number((validated as { maxBytes?: number }).maxBytes || 32768), 4096), 131072);
           const sanitizedItems: any[] = [];
           let accumulatedBytes = 0;
-          let truncated = Boolean(rawManifest.truncated);
-          const truncationReasons = Array.isArray(rawManifest.truncationReasons) ? [...rawManifest.truncationReasons] : [];
+          let truncated = Boolean(rawManifest.truncated) || Boolean(bootstrapContext?.truncated);
+          const truncationReasons = [
+            ...(bootstrapContext?.truncationReasons ?? []),
+            ...(Array.isArray(rawManifest.truncationReasons) ? rawManifest.truncationReasons.filter((reason): reason is string => typeof reason === 'string') : [])
+          ];
 
           for (const rawItem of rawItems as Record<string, unknown>[]) {
             const item = sanitizeAndAttributeProvenance(rawItem, {
@@ -2754,8 +2953,7 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             accumulatedBytes = nextBytes;
           };
 
-          const include = Array.isArray((validated as any).include) ? (validated as any).include : ['instructions', 'languages', 'test_commands', 'skills'];
-          if (include.includes('skills')) {
+          if (requestedInclude.includes('skills')) {
             // The Runner host trusts only the per-workspace owner toolkit projection it composed and
             // mounted. `/opt/cloud-harness/owner-skills` is the executor mount target; reading it here
             // would attribute host-global content that is not scoped to this workspace or principal.
@@ -2830,7 +3028,10 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
             truncationReasons,
             cursor: typeof rawManifest.cursor === 'string' ? rawManifest.cursor : undefined,
             items: sanitizedItems,
-            warnings: Array.isArray(rawManifest.warnings) ? rawManifest.warnings : []
+            warnings: [
+              ...(bootstrapContext?.warnings ?? []),
+              ...(Array.isArray(rawManifest.warnings) ? rawManifest.warnings : [])
+            ]
           };
         }
       } catch {
@@ -3795,9 +3996,13 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
 
   if (isMutationOperation(operation, validated)) {
     const opTimeout = typeof validated.timeoutMs === 'number' ? validated.timeoutMs : undefined;
-    return await this.withMutationLease(record, dispatchAction, opTimeout);
+    const result = await this.withMutationLease(record, dispatchAction, opTimeout);
+    if (result.ok && operationMayMutateCheckout(operation, validated)) await this.invalidateBootstrapContext(record);
+    return result;
   }
-  return await dispatchAction();
+  const result = await dispatchAction();
+  if (result.ok && operationMayMutateCheckout(operation, validated)) await this.invalidateBootstrapContext(record);
+  return result;
 }
 
   /**
@@ -4422,6 +4627,9 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     if (after.generation !== request.workspaceGeneration || after.networkProfile !== 'network-none') {
       throw new HarnessError('EXPIRED', 'agent tool execution lost its workspace fence', 410, false);
     }
+    if (result.ok && operationMayMutateCheckout(operation, validated)) {
+      await this.invalidateBootstrapContext(after);
+    }
     const violation = await this.resourceViolation(after);
     if (violation) {
       void this.closeRecord(after, violation).catch(() => undefined);
@@ -4438,6 +4646,16 @@ git -c http.followRedirects=false -c core.hooksPath=/dev/null ls-remote "$1" "$2
     }
     return record;
   }
+}
+
+function operationMayMutateCheckout(operation: RunnerOperation, validated: Record<string, unknown>): boolean {
+  if (operation === 'shell_io' || operation === 'sessions_io') return typeof validated.input === 'string' && validated.input.length > 0;
+  if (operation === 'tasks_run' || operation === 'exec_run') return true;
+  return [
+    'files_write', 'files_write_batch', 'files_apply_patch', 'files_delete', 'files_move', 'files_mkdir',
+    'git_checkout', 'git_commit', 'git_pull', 'git_merge', 'git_rebase',
+    'workspace_finalize', 'skills_run', 'hooks_run', 'deployments_run', 'artifacts_restore'
+  ].includes(operation);
 }
 
 function isMutationOperation(operation: RunnerOperation, validated: Record<string, unknown>): boolean {

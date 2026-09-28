@@ -438,6 +438,8 @@ async function scanWorkspaceContext(input = {}) {
     { path: 'CLAUDE.md', kind: 'instruction', format: 'claude', clients: ['claude'] },
     { path: '.claude/CLAUDE.md', kind: 'instruction', format: 'claude', clients: ['claude'] },
     { path: 'CLAUDE.local.md', kind: 'instruction', format: 'claude', clients: ['claude'] },
+    { path: 'REVIEW.md', kind: 'instruction', format: 'shared', clients: ['all'] },
+    { path: 'DESIGN.md', kind: 'instruction', format: 'shared', clients: ['all'] },
     { path: '.cursorrules', kind: 'instruction', format: 'cursor', clients: ['cursor'] },
     { path: '.aider.conf.yml', kind: 'instruction', format: 'aider', clients: ['aider'] },
     { path: 'CONVENTIONS.md', kind: 'instruction', format: 'aider', clients: ['aider'] },
