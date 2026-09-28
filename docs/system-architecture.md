@@ -171,10 +171,12 @@ outside that contract.
 
 Cloud Harness MCP provides a portable coding context plane across agent clients without elevating repository text or scripts to trusted policy:
 
-1. **Passive Context Scanner:**
-   `worker/harness-worker.mjs` executes bounded passive discovery of allowlisted instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`, `.aider.conf.yml`), language manifests, and test declarations. The scanner performs zero dynamic execution and enforces strict byte budgets (32 KiB default, 128 KiB max) and a 250ms deadline.
+1. **Passive Context Scanner and Bootstrap Snapshot:**
+   `worker/harness-worker.mjs` executes bounded passive discovery of allowlisted instruction files (`AGENTS.md`, `AGENTS.override.md`, the Claude instruction variants, `REVIEW.md`, `DESIGN.md`, `.cursor/rules/*.mdc`, `.aider.conf.yml`), language manifests, and test declarations. The scanner performs zero dynamic execution and enforces strict byte budgets (32 KiB default, 128 KiB max) and a 250ms deadline. During `workspace_open`, the Runner eagerly persists the instruction subset under runner-owned workspace state as a digest-addressed snapshot tied to the workspace generation. Checkout mutations invalidate the snapshot and the next context consumer refreshes it.
 
-2. **Runner Provenance Resolver:**
+2. **Runner Provenance Resolver and Agent Bootstrap:**
+   The trusted Runner control plane (`apps/runner/src/workspace-service.ts`) is the single owner of snapshot selection and injection. It resolves model targeting (`AGENTS*.md` for Codex-style profiles, `CLAUDE*.md` for Claude/Anthropic profiles, shared `REVIEW.md`/`DESIGN.md` for all), applies `AGENTS.override.md` precedence, and composes the selected repository text ahead of the unchanged user task. The injected block is explicitly labelled repository-controlled/untrusted and its digest, selected paths, skipped paths, and truncation state are recorded in bounded agent logs.
+   The same control plane stamps canonical provenance metadata (`source`, `trust`, `mutableBy`, `contentSha256`, `discoveredAt`) based on physical isolation boundaries:
    The trusted Runner control plane (`apps/runner/src/workspace-service.ts`) stamps canonical provenance metadata (`source`, `trust`, `mutableBy`, `contentSha256`, `discoveredAt`) based on physical isolation boundaries:
    - `built-in` (`trust: trusted-control-plane`, `mutableBy: release`)
    - `owner` (`trust: owner-controlled`, `mutableBy: owner`)

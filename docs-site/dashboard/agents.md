@@ -22,6 +22,8 @@ reported** rather than `0%`, and an over-spend clamps at 100%.
 
 ## One agent
 
+When an agent starts, Cloud Harness automatically supplies the repository guidance applicable to its selected model profile before the first turn. Codex-style profiles receive `AGENTS*.md` guidance (with `AGENTS.override.md` taking precedence), Claude/Anthropic profiles receive Claude guidance, and `REVIEW.md`/`DESIGN.md` are shared. The injected block is always marked repository-controlled/untrusted, while the task prompt remains unchanged. A bounded `bootstrap` log event records the snapshot digest, injected paths, skipped paths, and truncation state.
+
 Opening an agent shows four sections:
 
 - **Overview** — status, profile, parent, start and terminal times, expiry, terminal

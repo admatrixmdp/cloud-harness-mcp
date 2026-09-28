@@ -114,9 +114,15 @@ and
 Agent calls do not refresh the parent workspace idle TTL.
 
 - `agent_spawn` durably reserves the prompt, budgets, profile, parent, and
-  requested proxy-tool subset before launch. Its result is an acknowledgement
-  with an opaque ID, generation, status, and replay flag—not prompt
-  completion.
+  requested proxy-tool subset before launch. Before the first model turn, the
+  runner automatically prepends applicable repository guidance from the
+  workspace-generation bootstrap snapshot (`AGENTS*.md` for Codex-style
+  profiles, `CLAUDE*.md` for Claude/Anthropic profiles, plus shared
+  `REVIEW.md`/`DESIGN.md`). The repository block is explicitly
+  `untrusted-executor`, the caller's prompt is appended unchanged, and
+  bounded bootstrap metadata is available through `agent_logs`. Its result
+  is an acknowledgement with an opaque ID, generation, status, and replay
+  flag—not prompt completion.
 - `agent_status` accepts exactly one of the agent ID or spawn idempotency key.
   While full state is retained, it reports lineage, configured policy and
   budgets, usage, timestamps, terminal reason, and `outcomeUnknown`.

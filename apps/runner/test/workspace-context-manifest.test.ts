@@ -21,6 +21,8 @@ describe('workspace_context manifest and passive scanner', () => {
     await writeFile(join(dir, 'CLAUDE.md'), '# Claude Guidelines\nFollow clean architecture.');
     await writeFile(join(dir, 'AGENTS.md'), '# Agents instructions\nUse tool safely.');
     await writeFile(join(dir, 'CONVENTIONS.md'), '# Aider conventions');
+    await writeFile(join(dir, 'REVIEW.md'), '# Review guidance\nCheck regressions.');
+    await writeFile(join(dir, 'DESIGN.md'), '# Design guidance\nPreserve the design system.');
     
     await mkdir(join(dir, '.cursor', 'rules'), { recursive: true });
     await writeFile(join(dir, '.cursor', 'rules', 'typescript.mdc'), '# TS rules for Cursor');
@@ -68,6 +70,11 @@ describe('workspace_context manifest and passive scanner', () => {
       trust: 'untrusted-executor',
       mutableBy: 'repository-commit'
     });
+
+    const reviewItem = items.find((it) => it.path === 'REVIEW.md');
+    expect(reviewItem).toMatchObject({ kind: 'instruction', format: 'shared', clients: ['all'] });
+    const designItem = items.find((it) => it.path === 'DESIGN.md');
+    expect(designItem).toMatchObject({ kind: 'instruction', format: 'shared', clients: ['all'] });
 
     // Verify package.json item
     const pkgItem = items.find((it) => it.path === 'package.json' && it.kind === 'language-manifest');

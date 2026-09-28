@@ -181,6 +181,7 @@ Spawn an owner-bound, budgeted Pi coding-agent subagent in an isolated container
 
 - Required: `prompt`, `idempotencyKey`, `profileId`, `proxyOperations`.
 - Optional: `workspaceId`, `parentAgentId`, `ttlSeconds`, `maxOutputBytes`, `maxInputTokens`, `maxOutputTokens`, `maxCostMicros`.
+- Repository guidance is automatic: before the first turn, the runner selects the model-applicable instruction items from the workspace bootstrap snapshot, prepends them inside an explicit `repository / untrusted-executor` boundary, then appends the requested `prompt` unchanged. Do not manually re-read and prepend `AGENTS.md` or `CLAUDE.md` just to start an agent. Bootstrap paths, digests, skipped items, and truncation are recorded as a bounded `bootstrap` event in `agent_logs`.
 
 <!-- cloudharness-example:agent_spawn
 {"prompt":"Implement feature","idempotencyKey":"spawn-subagent-1234","profileId":"default","proxyOperations":["files_read","files_write","files_apply_patch"]}

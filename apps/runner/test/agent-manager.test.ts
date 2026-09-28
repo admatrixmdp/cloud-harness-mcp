@@ -5,7 +5,7 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { RunnerAgentsConfigSchema, type RunnerOperation } from '@cloud-harness/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AgentManager } from '../src/agent-manager.js';
+import { AgentManager, type AgentManagerDependencies } from '../src/agent-manager.js';
 import type { AgentGatewayControl, AgentLeaseGrant } from '../src/agent-gateway-control.js';
 import type { AgentLaunchSpec, AgentLauncher, AgentRuntimeProcess } from '../src/agent-launcher.js';
 import { AgentStateRepository } from '../src/agent-state-repository.js';
@@ -48,7 +48,8 @@ function workspace(networkProfile: WorkspaceRecord['networkProfile'] = 'network-
 function setup(
   networkProfile: WorkspaceRecord['networkProfile'] = 'network-none',
   config = agentsConfig,
-  now?: () => number
+  now?: () => number,
+  bootstrapContext?: AgentManagerDependencies['bootstrapContext']
 ) {
   const directory = mkdtempSync(join(tmpdir(), 'agent-manager-'));
   directories.push(directory);
@@ -61,7 +62,14 @@ function setup(
   const launcher = new FakeLauncher();
   const gateway = new FakeGateway();
   const toolExecutor = vi.fn(async () => ({ ok: true as const, message: 'read', data: { content: 'ok' }, truncated: false }));
-  const manager = new AgentManager(config, store, { repository, launcher, gateway, toolExecutor, ...(now ? { now } : {}) });
+  const manager = new AgentManager(config, store, {
+    repository,
+    launcher,
+    gateway,
+    toolExecutor,
+    ...(bootstrapContext ? { bootstrapContext } : {}),
+    ...(now ? { now } : {})
+  });
   return { store, record, repository, launcher, gateway, toolExecutor, manager };
 }
 
@@ -168,6 +176,55 @@ describe('AgentManager', () => {
     expect(AgentManager.isPublicOperation('files_read')).toBe(false);
     expect(AgentManager.isPublicOperation('git_push')).toBe(false);
     expect(AgentManager.isPublicOperation('deployments_run')).toBe(false);
+  });
+
+  it('injects prepared repository bootstrap before the first agent turn and records bootstrap metadata', async () => {
+    const bootstrapContext = vi.fn<NonNullable<AgentManagerDependencies['bootstrapContext']>>(async ({ userPrompt }) => ({
+      prompt: `[CloudHarness repository context]\n> use repository guidance\n\n[User task]\n${userPrompt}`,
+      metadata: {
+        snapshotDigest: 'a'.repeat(64),
+        injectedDigest: 'b'.repeat(64),
+        workspaceGeneration: 1,
+        clientProfile: 'codex',
+        injectedBytes: 24,
+        injectedItems: [{ path: 'AGENTS.md', contentSha256: 'c'.repeat(64), byteCount: 24 }],
+        skippedItems: [],
+        truncated: false,
+        warnings: []
+      }
+    }));
+    const { manager, record, launcher, store } = setup('network-none', agentsConfig, undefined, bootstrapContext);
+    await manager.dispatch(record.ownerId, record, 'agent_spawn', spawnInput(record));
+    const agentId = await waitForRunning(manager, record);
+
+    const chunks: Buffer[] = [];
+    launcher.inputs[0]!.on('data', (chunk: Buffer) => chunks.push(chunk));
+    await vi.waitFor(() => expect(Buffer.concat(chunks).toString('utf8')).toContain('"type":"start"'));
+    const start = Buffer.concat(chunks).toString('utf8').trim().split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((item) => item.type === 'start') as { prompt: string };
+    expect(start.prompt).toContain('[CloudHarness repository context]');
+    expect(start.prompt.endsWith('[User task]\ninspect the repository')).toBe(true);
+    expect(bootstrapContext).toHaveBeenCalledWith(expect.objectContaining({
+      workspace: record,
+      userPrompt: 'inspect the repository'
+    }));
+
+    const logs = await manager.dispatch(record.ownerId, record, 'agent_logs', {
+      workspaceId: record.id,
+      agentId,
+      cursor: '0',
+      limitBytes: 65_536
+    });
+    const bootstrapEvent = (logs.data as { events: Array<{ type: string; content: string }> }).events
+      .find((event) => event.type === 'bootstrap');
+    expect(bootstrapEvent).toBeDefined();
+    expect(JSON.parse(bootstrapEvent!.content)).toMatchObject({
+      snapshotDigest: 'a'.repeat(64),
+      injectedDigest: 'b'.repeat(64),
+      injectedItems: [{ path: 'AGENTS.md' }]
+    });
+    store.close();
   });
 
   it('atomically replays concurrent spawn admission with one runtime launch (32-way fan-out)', async () => {

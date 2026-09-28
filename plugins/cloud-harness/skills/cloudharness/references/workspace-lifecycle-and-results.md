@@ -90,7 +90,10 @@ Clone an approved repository and start its bounded executor.
   `networkProfile: "network-none"` only when the owner asks for isolation; it
   blocks all executor egress. The legacy `networkMode` field is rejected.
 - Returns workspace metadata including opaque `workspaceId`, status, network
-  profile, timestamps, and expiry.
+  profile, timestamps, expiry, and a bounded `bootstrapContext` summary. The
+  runner eagerly scans known repository guidance during open and records the
+  snapshot digest, applicable client metadata, provenance, truncation state,
+  and warnings without executing repository code.
 - `toolkits` accepts `{ kind: 'preset' | 'git' | 'agentkit' }` selections.
   Licensed AgentKit kits (`kind: 'agentkit'`, e.g. `kitId: 'engineer'`) stay
   `owner`-scoped, need an operator-pinned registry signing key plus a stored
@@ -179,10 +182,11 @@ Recover an active or recoverable expired workspace to active state, or inspect, 
 <!-- cloudharness-tool:workspace_context -->
 ### `workspace_context`
 
-Read compact active workspace overview, branch, remaining lease, and Git identity.
+Read compact active workspace overview, branch, remaining lease, Git identity, and bounded repository context manifest.
 
-- Optional: `workspaceId`.
-- Returns active workspace ID, repository URL, current branch, remaining lease time, and default Git author.
+- Optional: `workspaceId`, `clientProfile`, `include`, `contentMode`, `maxBytes`.
+- Instruction items come from the same workspace-generation bootstrap snapshot used by `agent_spawn`, so profile targeting and `AGENTS.override.md` precedence cannot drift between external clients and Pi agents. Use `contentMode: "excerpt"` only when repository text is needed; provenance remains `repository / untrusted-executor`.
+- Returns active workspace metadata plus the selected context manifest, truncation reasons, and warnings.
 
 <!-- cloudharness-example:workspace_context
 {"workspaceId":"ws_aaaaaaaaaaaaaaaaaaaa"}

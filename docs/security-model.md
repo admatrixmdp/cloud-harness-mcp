@@ -432,9 +432,11 @@ Cloud Harness MCP provides vendor-neutral coding context across AI agents (Claud
 
 ### Passive discovery and zero execution
 
-- `workspace_context` passively inspects known allowlisted instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`, `.aider.conf.yml`), language manifests, and declared test commands.
+- Repository context discovery passively inspects known allowlisted instruction files (`AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `REVIEW.md`, `DESIGN.md`, `.cursor/rules/*.mdc`, `.aider.conf.yml`), language manifests, and declared test commands.
+- `workspace_open` eagerly captures the instruction subset into a bounded, digest-addressed snapshot tied to the workspace generation. `workspace_context` and `agent_spawn` reuse that snapshot so external clients and Pi agents cannot drift onto different repository guidance. Successful checkout-mutating operations invalidate it; the next consumer refreshes it passively.
+- `agent_spawn` injects only the model-profile-applicable snapshot items before the user task. Repository text remains explicitly marked `repository / untrusted-executor`; the original user prompt is appended unchanged and is never reclassified as repository content.
 - Passive discovery performs **zero script executions**, invokes no package managers, and triggers no Git hooks.
-- Files are read under strict size and time bounds (max 256 candidate files, 250ms deadline, 32 KiB default response budget).
+- Files are read under strict size and time bounds (max 256 candidate files, 250ms deadline, 128 KiB snapshot response budget); agent injection also has a separate bounded byte budget and reports skipped/truncated guidance in bootstrap metadata.
 
 ### Immutable provenance attribution
 
