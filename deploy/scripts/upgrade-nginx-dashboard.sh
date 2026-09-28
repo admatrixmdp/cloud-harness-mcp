@@ -117,16 +117,25 @@ normalize_block() {
     -e '/^$/d'
 }
 expected_dashboard_entry=$'location = /dashboard {\nproxy_pass http://127.0.0.1:3100/dashboard;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\n}'
-expected_dashboard_prefix=$'location ^~ /dashboard/ {\nproxy_pass http://127.0.0.1:3100/dashboard/;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\n}'
+legacy_dashboard_prefix=$'location ^~ /dashboard/ {\nproxy_pass http://127.0.0.1:3100/dashboard/;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\n}'
+expected_dashboard_prefix=$'location ^~ /dashboard/ {\nclient_max_body_size 8m;\nproxy_pass http://127.0.0.1:3100/dashboard/;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\n}'
 expected_api_key=$'location = /mcp-api-key {\nproxy_pass http://127.0.0.1:3100/mcp-api-key;\nproxy_http_version 1.1;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\nproxy_set_header Connection "";\nproxy_buffering off;\nproxy_request_buffering off;\nproxy_cache off;\nproxy_read_timeout 3600s;\nadd_header X-Accel-Buffering no always;\n}'
 expected_gateway=$'location = /mcp-gateway {\nproxy_pass http://127.0.0.1:3100/mcp-gateway;\nproxy_http_version 1.1;\nproxy_set_header Host $host;\nproxy_set_header X-Forwarded-Proto $scheme;\nproxy_set_header Connection "";\nproxy_buffering off;\nproxy_request_buffering off;\nproxy_cache off;\nproxy_read_timeout 3600s;\nadd_header X-Accel-Buffering no always;\n}'
 
 dashboard_installed=0
+dashboard_legacy=0
+normalized_dashboard_entry=$(normalize_block <<< "$dashboard_entry_block")
+normalized_dashboard_prefix=$(normalize_block <<< "$dashboard_prefix_block")
 if [[ $dashboard_entry_count -eq 1 && $dashboard_prefix_count -eq 1 &&
-      $(normalize_block <<< "$dashboard_entry_block") == "$expected_dashboard_entry" &&
-      $(normalize_block <<< "$dashboard_prefix_block") == "$expected_dashboard_prefix" ]]; then
+      $normalized_dashboard_entry == "$expected_dashboard_entry" &&
+      $normalized_dashboard_prefix == "$expected_dashboard_prefix" ]]; then
   dashboard_installed=1
+elif [[ $dashboard_entry_count -eq 1 && $dashboard_prefix_count -eq 1 &&
+        $normalized_dashboard_entry == "$expected_dashboard_entry" &&
+        $normalized_dashboard_prefix == "$legacy_dashboard_prefix" ]]; then
+  dashboard_legacy=1
 fi
+dashboard_present=$((dashboard_installed || dashboard_legacy))
 api_key_installed=0
 if [[ $api_key_count -eq 1 && $(normalize_block <<< "$api_key_block") == "$expected_api_key" ]]; then
   api_key_installed=1
@@ -141,7 +150,7 @@ if [[ $dashboard_installed -eq 1 && $api_key_installed -eq 1 && $gateway_install
   echo "Cloud Harness dashboard, API-key, and gateway nginx routes are already installed"
   exit 0
 fi
-if [[ $dashboard_installed -eq 0 ]] &&
+if [[ $dashboard_present -eq 0 ]] &&
    { [[ $dashboard_entry_count -ne 0 || $dashboard_prefix_count -ne 0 ]] || grep -Fq '127.0.0.1:3100/dashboard' "$block_file"; }; then
   echo "existing dashboard nginx routing is not the managed shape; refusing to overwrite it" >&2
   exit 6
@@ -157,7 +166,12 @@ if [[ $gateway_installed -eq 0 ]] &&
   exit 8
 fi
 
-awk -v closing="$end_line" -v add_dashboard="$((1 - dashboard_installed))" -v add_api_key="$((1 - api_key_installed))" -v add_gateway="$((1 - gateway_installed))" '
+awk -v opening="$start_line" -v closing="$end_line" -v add_dashboard="$((1 - dashboard_present))" -v upgrade_dashboard="$dashboard_legacy" -v add_api_key="$((1 - api_key_installed))" -v add_gateway="$((1 - gateway_installed))" '
+  upgrade_dashboard && NR >= opening && NR <= closing && $0 == "    location ^~ /dashboard/ {" {
+    print
+    print "        client_max_body_size 8m;"
+    next
+  }
   NR == closing {
     if (add_gateway) {
       print "    location = /mcp-gateway {"
@@ -197,6 +211,7 @@ awk -v closing="$end_line" -v add_dashboard="$((1 - dashboard_installed))" -v ad
       print "    }"
       print ""
       print "    location ^~ /dashboard/ {"
+      print "        client_max_body_size 8m;"
       print "        proxy_pass http://127.0.0.1:3100/dashboard/;"
       print "        proxy_set_header Host $host;"
       print "        proxy_set_header X-Forwarded-Proto $scheme;"

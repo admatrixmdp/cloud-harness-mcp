@@ -35,6 +35,7 @@ URLs, or raw command content into tickets or shared logs.
 | `403 forbidden_origin` | A supplied `Origin` is absent from `API_ALLOWED_ORIGINS`. Add only the exact trusted origin; CLI clients normally omit this header. |
 | `403 origin_required` or CSRF rejection on dashboard mutation | The browser request was not same-origin or did not use the current dashboard session token. Fix the trusted origin/session flow; do not relax the mutation check. |
 | `415 unsupported_media_type` | An MCP POST was not JSON. Use an MCP Streamable HTTP client. |
+| Dashboard skill ZIP upload returns `413` for an archive below 8 MiB | The application accepts skill archives up to 8 MiB, but an older managed nginx dashboard route can still inherit the server's 1 MiB request cap. Run the current `deploy/scripts/upgrade-nginx-dashboard.sh` (or the normal release deployment, which runs it) so `/dashboard/` gets `client_max_body_size 8m`; archives above 8 MiB remain intentionally rejected by the API and runner. |
 | `429 rate_limited` | The process-local request window or active-request bound was exceeded. Wait for `Retry-After`; investigate stuck/parallel clients before restarting. |
 | Public `/healthz` works but `/readyz` is 503 | API is up but cannot reach the runner. Inspect the Compose runner health, internal network, and matching `RUNNER_TOKEN`. |
 | Local stdio: `--workspace path is not a directory` or `must be absolute` | Stdio mode requires an existing directory and an absolute path format (e.g. `/home/user/project` or `/path/to/repo`). Check the `--workspace` parameter. |

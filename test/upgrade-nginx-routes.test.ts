@@ -5,6 +5,18 @@ import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 const upgradeScript = join(process.cwd(), 'deploy/scripts/upgrade-nginx-dashboard.sh');
+const legacyDashboardRoutes = `
+    location = /dashboard {
+        proxy_pass http://127.0.0.1:3100/dashboard;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ^~ /dashboard/ {
+        proxy_pass http://127.0.0.1:3100/dashboard/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }`;
 const dashboardRoutes = `
     location = /dashboard {
         proxy_pass http://127.0.0.1:3100/dashboard;
@@ -13,6 +25,7 @@ const dashboardRoutes = `
     }
 
     location ^~ /dashboard/ {
+        client_max_body_size 8m;
         proxy_pass http://127.0.0.1:3100/dashboard/;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
@@ -44,7 +57,7 @@ const gatewayRoute = `
         add_header X-Accel-Buffering no always;
     }`;
 
-function createFixture(extraRoutes = dashboardRoutes) {
+function createFixture(extraRoutes = legacyDashboardRoutes) {
   const root = mkdtempSync(join(tmpdir(), 'cloud-harness-nginx-'));
   const site = join(root, 'etc/nginx/sites-available/cloud-harness-mcp.conf');
   const enabled = join(root, 'etc/nginx/sites-enabled/cloud-harness-mcp.conf');
@@ -90,6 +103,7 @@ describe.skipIf(process.platform === 'win32')('nginx route upgrade', () => {
     const fixture = createFixture();
     const first = runUpgrade(fixture.root);
     expect(first.status, first.stderr).toBe(0);
+    expect(readFileSync(fixture.site, 'utf8')).toContain(dashboardRoutes);
     expect(readFileSync(fixture.site, 'utf8')).toContain(apiKeyRoute);
     expect(readFileSync(fixture.site, 'utf8')).toContain(gatewayRoute);
     expect(backups(fixture.root)).toHaveLength(1);
@@ -102,7 +116,7 @@ describe.skipIf(process.platform === 'win32')('nginx route upgrade', () => {
   });
 
   it('adds only the missing gateway route to a dashboard and API-key install', () => {
-    const fixture = createFixture(`${dashboardRoutes}\n${apiKeyRoute}`);
+    const fixture = createFixture(`${legacyDashboardRoutes}\n${apiKeyRoute}`);
     const first = runUpgrade(fixture.root);
     expect(first.status, first.stderr).toBe(0);
     const installed = readFileSync(fixture.site, 'utf8');

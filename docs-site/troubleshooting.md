@@ -129,7 +129,13 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 **Cause:** A teardown that failed before its final `CLOSED` write leaves the record in `REAPING`. A `REAPING` record holds no capacity slot, so it never blocks `workspace_open`; the visible symptom is a workspace that will not disappear from the dashboard.
 **Fix:** Call `workspace_close` again on that workspace. The close path skips the claim for a record already in `REAPING` and retries container and path removal, so a repeat close is the supported remedy. Only the fenced dashboard close refuses a `REAPING` record with `409 CONFLICT`. If removal keeps failing, fix the underlying Docker or filesystem fault rather than running broad Docker or database cleanup.
 
-### 14. `agentkit` toolkit fails during `workspace_open`
+### 14. Dashboard skill ZIP upload returns `413` below 8 MiB
+**Cause:** Older managed nginx dashboard routes inherit the server-level 1 MiB request cap even though Cloud Harness accepts skill archives up to 8 MiB.
+**Fix:** Deploy the current release or run `deploy/scripts/upgrade-nginx-dashboard.sh` on the host. The managed `/dashboard/` route is upgraded to `client_max_body_size 8m`. Archives larger than 8 MiB are still rejected intentionally by the API and runner.
+
+---
+
+### 15. `agentkit` toolkit fails during `workspace_open`
 **Cause:** The licensed AgentKit kit kind fails closed by design, and each message names the missing prerequisite.
 **Fix:**
 1. `AgentKit kits are not configured on this instance` — the operator must set both `AGENTKIT_REGISTRY_KEY_ID` and `AGENTKIT_REGISTRY_PUBLIC_KEY` (the pinned Ed25519 registry signing key) and restart the runner.

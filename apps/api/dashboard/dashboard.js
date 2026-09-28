@@ -58,6 +58,7 @@ import {
 import { DASHBOARD_GROUPS, navGroups, navigationPageId, pageById, pageForPath, palettePageCommands } from './dashboard-pages.js';
 
 const focusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const SKILL_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024;
 
 export function trapModalFocus(container, event) {
   if (event.key !== 'Tab') return;
@@ -1676,6 +1677,10 @@ export function initializeDashboard() {
       const file = document.querySelector('#skill-upload-file')?.files?.[0];
       if (results) results.replaceChildren();
       if (!file) { if (status) status.textContent = 'Choose a .zip archive first.'; return; }
+      if (file.size > SKILL_ARCHIVE_MAX_BYTES) {
+        if (status) status.textContent = 'Archive must be 8 MiB or smaller.';
+        return;
+      }
       if (status) status.textContent = `Uploading ${file.name}\u2026`;
       void file.arrayBuffer().then(async (buffer) => {
         const response = await api('/skill-archives', {
