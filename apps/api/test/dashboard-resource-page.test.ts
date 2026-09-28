@@ -89,6 +89,13 @@ describe('shared resource-page layout', () => {
     expect(script).not.toContain('globalThis.location.href =');
   });
 
+  it('gates executor-backed cockpit calls on workspace lifecycle state', () => {
+    const script = readFileSync(new URL('../dashboard/dashboard.js', import.meta.url), 'utf8');
+    expect(script).toContain("workspaceHasAction(item, 'workspace_context')");
+    expect(script).toContain("if (!workspaceTabAvailable(workspace, tab)) return renderWorkspaceUnavailableTab(workspace, tab);");
+    expect(script).toContain("workspaceHasAction(item, 'workspace_finalize') ? renderFinalizeDialog() : ''");
+  });
+
   it('binds dialog opening by delegation so the shell action slot is covered', () => {
     // Browser QA caught the original shape of this: the openers were bound only on
     // `#content`, so the primary action — which lives in the shell header — opened

@@ -49,6 +49,7 @@ import {
   renderSecondaryAction,
   renderWorkspaceCockpitHeader, renderWorkspaceTabs, renderWorkspaceSummary,
   renderWorkspaceArtifacts, renderWorkspaceActivity, renderFinalizeDialog,
+  renderWorkspaceUnavailableTab, workspaceHasAction, workspaceTabAvailable,
   renderAgentsIndex, renderAgentDetail,
   renderRuntimePanel, renderGitPanel,
   renderAutomationPanel, renderDeployPanel,
@@ -3076,26 +3077,30 @@ export function initializeDashboard() {
     selectNavigation('workspaces');
     document.querySelector('#command-surface').hidden = true; detail.hidden = true;
     const item = await workspace(id);
-    // A missing context response must not hide the cockpit: the header and the
-    // lifecycle actions still work from the workspace record alone.
-    const contextResult = await api(`/workspaces/${encodeURIComponent(id)}/context`).catch(() => undefined);
+    // Context is an executor-backed operation. Terminal workspaces must not emit
+    // predictable 409s merely because the cockpit shell rendered.
+    const contextResult = workspaceHasAction(item, 'workspace_context')
+      ? await api(`/workspaces/${encodeURIComponent(id)}/context`).catch(() => undefined)
+      : undefined;
     setTitle(repositoryName(item.repositoryUrl), 'Workspace cockpit: summary, agents, runtime, files, git, automation, deploy, artifacts, and activity.');
     const body = await cockpitTabBody(id, tab, item, contextResult?.data, io);
     // A tab body may need to bind controls once it is in the document, so the Files tab
     // returns its markup plus that hook instead of reaching into the DOM early.
     const markup = typeof body === 'string' ? body : body.markup;
-    insertRendered(content, `${renderWorkspaceCockpitHeader(item)}${renderWorkspaceTabs(id, tab)}${markup}${renderFinalizeDialog()}`);
+    const finalizeDialog = workspaceHasAction(item, 'workspace_finalize') ? renderFinalizeDialog() : '';
+    insertRendered(content, `${renderWorkspaceCockpitHeader(item)}${renderWorkspaceTabs(id, tab)}${markup}${finalizeDialog}`);
     bindCockpitActions(item);
     if (typeof body !== 'string' && body.afterRender) body.afterRender();
-    if (tab === 'runtime') bindRuntimeControls(id);
-    if (tab === 'git') bindGitControls(id);
-    if (tab === 'automation') bindAutomationControls(id);
-    if (tab === 'deploy') bindDeployControls(id);
+    if (workspaceTabAvailable(item, tab) && tab === 'runtime') bindRuntimeControls(id);
+    if (workspaceTabAvailable(item, tab) && tab === 'git') bindGitControls(id);
+    if (workspaceTabAvailable(item, tab) && tab === 'automation') bindAutomationControls(id);
+    if (workspaceTabAvailable(item, tab) && tab === 'deploy') bindDeployControls(id);
   }
   /** Which body a cockpit tab renders, kept out of the loader so the switch stays readable. */
   async function cockpitTabBody(workspaceId, tab, workspace, context, io) {
     if (tab === 'summary') return renderWorkspaceSummary({ workspace, context });
     if (tab === 'agents') return renderWorkspaceAgents(workspaceId);
+    if (!workspaceTabAvailable(workspace, tab)) return renderWorkspaceUnavailableTab(workspace, tab);
     if (tab === 'runtime') return runtimePanel(workspaceId, io);
     if (tab === 'files') return filesPanel(workspaceId);
     // The diff toggle is a URL parameter, so a staged/unstaged view is shareable and

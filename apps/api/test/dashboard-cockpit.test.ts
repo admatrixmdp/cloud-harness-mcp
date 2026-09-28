@@ -3,7 +3,7 @@ import { DASHBOARD_SHELL_PATHS } from '../src/dashboard-assets.js';
 import {
   WORKSPACE_TABS, renderFinalizeDialog, renderWorkspaceAttentionPanel, renderWorkspaceCockpitHeader,
   renderWorkspaceSummary, renderWorkspaceArtifacts, renderWorkspaceActivity, renderWorkspaceTabs, workspaceAttention,
-  workspaceLeaseState
+  renderWorkspaceUnavailableTab, workspaceHasAction, workspaceTabAvailable, workspaceLeaseState
 } from '../dashboard/dashboard-render.js';
 import { pageForPath } from '../dashboard/dashboard-pages.js';
 
@@ -43,13 +43,35 @@ describe('workspace cockpit', () => {
     expect(header).toContain('example/project');
     expect(header).toContain('id="renew-workspace-lease"');
     expect(header).toContain('data-dialog="finalize-workspace-dialog"');
-    expect(header).toContain('id="recover-workspace"');
+    expect(header).not.toContain('id="recover-workspace"');
     expect(header).toContain('id="close-workspace"');
     expect(header).toContain('Dependency access');
     expect(header).toContain(`data-copy="${workspaceId}"`);
     expect(header).toContain('Nothing needs attention');
     // Closing needs a lifecycle generation; without one the control is disabled.
     expect(renderWorkspaceCockpitHeader({ ...base, version: undefined })).toContain('id="close-workspace" class="danger" type="button" disabled');
+  });
+
+  it('treats failed workspaces as terminal without offering live executor actions', () => {
+    const failed = { ...base, status: 'FAILED', availableActions: ['workspace_open'] };
+    expect(workspaceHasAction(failed, 'workspace_context')).toBe(false);
+    expect(workspaceHasAction(failed, 'workspace_recover')).toBe(false);
+    expect(workspaceHasAction(failed, 'workspace_open')).toBe(true);
+    for (const tab of ['runtime', 'files', 'git', 'automation', 'deploy']) {
+      expect(workspaceTabAvailable(failed, tab), tab).toBe(false);
+    }
+    for (const tab of ['summary', 'agents', 'artifacts', 'activity']) {
+      expect(workspaceTabAvailable(failed, tab), tab).toBe(true);
+    }
+    const header = renderWorkspaceCockpitHeader(failed);
+    expect(header).toContain('Open new workspace');
+    expect(header).not.toContain('id="renew-workspace-lease"');
+    expect(header).not.toContain('id="finalize-workspace"');
+    expect(header).not.toContain('id="recover-workspace"');
+    expect(header).not.toContain('id="close-workspace"');
+    const unavailable = renderWorkspaceUnavailableTab(failed, 'files');
+    expect(unavailable).toContain('Files is unavailable');
+    expect(unavailable).toContain('temporary checkout has already been cleaned up');
   });
 
   it('derives lease emphasis from thresholds rather than decoration', () => {

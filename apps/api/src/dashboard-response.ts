@@ -27,6 +27,11 @@ function cleanWorkspace(value: unknown): Record<string, unknown> {
   const allowed = ['workspaceId', 'repositoryUrl', 'ref', 'status', 'networkProfile', 'createdAt', 'lastActivityAt', 'expiresAt'];
   const clean = Object.fromEntries(allowed.filter((key) => item[key] !== undefined).map((key) => [key, item[key]]));
   if (typeof item.generation === 'number') clean.version = item.generation;
+  if (typeof item.canRenewLease === 'boolean') clean.canRenewLease = item.canRenewLease;
+  if (typeof item.leaseState === 'string') clean.leaseState = item.leaseState;
+  if (Array.isArray(item.availableActions)) {
+    clean.availableActions = item.availableActions.filter((action): action is string => typeof action === 'string').slice(0, 16);
+  }
   if (item.status === 'FAILED' && typeof item.error === 'string') clean.error = 'Workspace setup failed. Review runner logs.';
   return clean;
 }
