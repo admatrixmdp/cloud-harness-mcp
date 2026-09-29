@@ -3,6 +3,7 @@ import express, { type NextFunction, type Response, type Router } from 'express'
 import { API_KEY_MAX_EXPIRY_DAYS, ApiKeyManagementResponseSchema, MCP_GATEWAY_AUTHENTICATED_SSE_MESSAGE, type ApiConfig, type ApiKeyManagementOperation, type MetadataRunnerOperation, type RunnerPrincipalSelector } from '@cloud-harness/contracts';
 import { z } from 'zod';
 import { sendRunnerResponse } from './dashboard-response.js';
+import { requireArchiveMediaType, SKILL_ARCHIVE_MEDIA_TYPES, SKILL_ARCHIVE_PATH } from './dashboard-security.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
 import { validateGatewayEndpoint } from './mcp-gateway/url-policy.js';
 import type { McpGatewayService } from './mcp-gateway/service.js';
@@ -82,7 +83,7 @@ export function registerDashboardControlRoutes(
   // JSON limit that would reject the request before the archive cap is ever checked. The bytes then
   // travel to the runner as base64 inside the existing envelope, because the API is forbidden from
   // writing into the runner's mounts.
-  router.post('/api/v1/skill-archives', express.raw({ type: () => true, limit: SKILL_ARCHIVE_MAX_BYTES }), endpoint('skill_archive_import', (request) => ({
+  router.post(SKILL_ARCHIVE_PATH, requireArchiveMediaType, express.raw({ type: SKILL_ARCHIVE_MEDIA_TYPES, limit: SKILL_ARCHIVE_MAX_BYTES }), endpoint('skill_archive_import', (request) => ({
     archiveBase64: Buffer.isBuffer(request.body) ? request.body.toString('base64') : '',
     expectedGeneration: 0
   })));

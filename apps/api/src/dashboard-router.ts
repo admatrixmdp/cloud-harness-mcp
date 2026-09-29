@@ -3,7 +3,7 @@ import { TOOL_SCHEMA_BY_NAME, type ApiConfig, type RunnerOperation, type RunnerP
 import { z } from 'zod';
 import { principalFromAuthInfo } from './auth.js';
 import { agentNeedsAttention, buildActivityProjection, buildMetricsProjection, buildOverviewProjection, buildReliabilityProjection, METRIC_WINDOWS, mapDashboardData, sendRunnerResponse, type DashboardResponseOperation } from './dashboard-response.js';
-import { dashboardSecurity, requireJson } from './dashboard-security.js';
+import { dashboardSecurity, requireJson, SKILL_ARCHIVE_PATH } from './dashboard-security.js';
 import { createDashboardSessions } from './dashboard-session.js';
 import type { DashboardRequest, DashboardRunnerClient } from './dashboard-types.js';
 import { registerDashboardControlRoutes } from './dashboard-control-router.js';
@@ -107,7 +107,11 @@ export function createDashboardRouter(config: ApiConfig, runner: DashboardRunner
   const sessions = createDashboardSessions();
   router.use(dashboardSecurity(config));
   router.use(express.json({ limit: Math.min(config.maxBodyBytes, 1_048_576), strict: true }));
-  router.use(requireJson);
+  // The skills archive is the one binary upload, and its route validates its own media type.
+  router.use((request, response, next) => {
+    if (request.method === 'POST' && request.path === SKILL_ARCHIVE_PATH) next();
+    else requireJson(request, response, next);
+  });
   router.get('/api/v1/session', (request: DashboardRequest, response) => sessions.bootstrap(request, response));
   router.use('/api/v1', (request: DashboardRequest, response, next) => {
     if (!principal(request, response)) return;

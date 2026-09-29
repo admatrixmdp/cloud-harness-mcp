@@ -73,6 +73,27 @@ describe('internal runner HTTP boundary', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('accepts an archive-sized body on the internal endpoint but keeps the small default elsewhere', async () => {
+    const execute = vi.fn(); const executeInternal = vi.fn();
+    const controls = { execute: vi.fn(async () => ({ ok: true, message: 'Imported', data: { results: [] }, truncated: false })) };
+    const { url, token } = await start({ execute, executeInternal }, controls);
+    // A base64 archive at the 8 MiB cap is ~10.7 MiB, far above the 1 MiB default every other route keeps.
+    const archiveBase64 = 'A'.repeat(11_184_816);
+    const body = { version: 2, principal: { kind: 'external', issuer: 'https://access.example.com', subject: 'owner' }, operation: 'skill_archive_import', input: { archiveBase64, expectedGeneration: 0 } };
+    const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+
+    const internal = await fetch(`${url}/v1/internal/dashboard-operations`, { method: 'POST', headers, body: JSON.stringify(body) });
+    expect(internal.status).toBe(200);
+    expect(controls.execute).toHaveBeenCalledTimes(1);
+
+    const publicResponse = await fetch(`${url}/v1/operations`, { method: 'POST', headers, body: JSON.stringify(body) });
+    expect(publicResponse.status).toBe(413);
+
+    // The larger allowance sits behind service authentication, so it is not an unauthenticated parse.
+    const unauthenticated = await fetch(`${url}/v1/internal/dashboard-operations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    expect(unauthenticated.status).toBe(401);
+  });
+
   it('exposes the first Zod validation issue on the internal endpoint', async () => {
     const controls = {
       execute: vi.fn(() => {

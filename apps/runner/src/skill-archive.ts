@@ -19,9 +19,15 @@ import { extractFrontmatter } from './skill-version.js';
 export const SKILL_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024;
 /** Bounds how many skills one upload can create. */
 export const SKILL_ARCHIVE_MAX_ENTRIES = 200;
-/** One skill document is small; a larger entry is a red flag rather than a use case. */
+/**
+ * Bounds how many files the central directory may list. Skills ship with assets, references, and macOS
+ * resource forks, so this counts far more than the skills themselves; it only keeps the directory scan
+ * and per-file inflate loop finite. The byte caps below still bound what any of them can expand to.
+ */
+export const SKILL_ARCHIVE_MAX_FILES = 20_000;
+/** One skill document is small; a larger one is a red flag rather than a use case. Assets are not inflated, so this does not apply to them. */
 export const SKILL_ARCHIVE_MAX_ENTRY_BYTES = 2 * 1024 * 1024;
-/** Defeats a zip bomb whose entries are each individually under the per-entry cap. */
+/** Defeats a zip bomb whose documents are each individually under the per-entry cap. */
 export const SKILL_ARCHIVE_MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 /** Matches the bound the single-skill path applies to authored instructions. */
 export const SKILL_INSTRUCTIONS_MAX_LENGTH = 65_536;
@@ -81,9 +87,9 @@ function readCentralDirectory(bytes: Buffer): CentralEntry[] {
   const centralOffset = bytes.readUInt32LE(eocd + 16);
 
   if (entryCount === 0) return invalid('the archive contains no entries');
-  // Refuse before reading any content, so an archive with far too many entries costs nothing.
-  if (entryCount > SKILL_ARCHIVE_MAX_ENTRIES) {
-    invalid(`the archive contains ${entryCount} entries, above the limit of ${SKILL_ARCHIVE_MAX_ENTRIES}`);
+  // Refuse before reading any content, so an archive with far too many files costs nothing.
+  if (entryCount > SKILL_ARCHIVE_MAX_FILES) {
+    invalid(`the archive contains ${entryCount} files, above the limit of ${SKILL_ARCHIVE_MAX_FILES}`);
   }
   if (centralOffset + centralSize > bytes.length) invalid('the archive central directory is truncated');
 
@@ -173,14 +179,18 @@ export function readSkillArchive(archive: Buffer): SkillArchiveEntry[] {
   const central = readCentralDirectory(archive);
   const documents = central.filter((entry) => entry.name.split('/').pop() === 'SKILL.md');
   if (documents.length === 0) invalid('the archive contains no SKILL.md, so it holds no skills');
+  // The skill cap counts skills, not files, and is checked before any entry is inflated.
+  if (documents.length > SKILL_ARCHIVE_MAX_ENTRIES) {
+    invalid(`the archive contains ${documents.length} skills, above the limit of ${SKILL_ARCHIVE_MAX_ENTRIES}`);
+  }
 
-  // Every entry is measured, not only the SKILL.md documents. The total cap bounds the whole archive's
-  // expansion, and a zip bomb hides in the entries nothing else reads. Measuring only the documents
-  // would leave the total cap unreachable, because each document is already bounded by the
-  // instructions limit.
+  // Only the SKILL.md documents are inflated. Bundled assets are never stored or read, so expanding them
+  // would spend memory on bytes nobody uses and would reject a valid skill for shipping a large library.
+  // Leaving them compressed also leaves nothing of them to blow up. The total cap still bounds what the
+  // documents can expand to, so many under-cap documents cannot add up to a bomb.
   const contents = new Map<string, Buffer>();
   let total = 0;
-  for (const entry of central) {
+  for (const entry of documents) {
     const data = readEntryData(archive, entry);
     total += data.length;
     if (total > SKILL_ARCHIVE_MAX_TOTAL_BYTES) {

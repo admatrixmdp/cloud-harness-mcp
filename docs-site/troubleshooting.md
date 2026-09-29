@@ -133,6 +133,8 @@ Lowering the limit never reaps an existing workspace; it only blocks new admissi
 **Cause:** Older managed nginx dashboard routes inherit the server-level 1 MiB request cap even though Cloud Harness accepts skill archives up to 8 MiB.
 **Fix:** Deploy the current release or run `deploy/scripts/upgrade-nginx-dashboard.sh` on the host. The managed `/dashboard/` route is upgraded to `client_max_body_size 8m`. Archives larger than 8 MiB are still rejected intentionally by the API and runner.
 
+**Also rejected as `INVALID_INPUT`:** an archive with more than 200 `SKILL.md` documents, more than 20,000 files, or a `SKILL.md` longer than 64 Ki characters. Only `SKILL.md` documents are imported, so bundled assets and macOS `__MACOSX` entries are ignored rather than counted against the skill limit. Split a larger library into several archives.
+
 ---
 
 ### 15. `agentkit` toolkit fails during `workspace_open`

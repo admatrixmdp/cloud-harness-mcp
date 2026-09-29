@@ -183,6 +183,32 @@ describe('dashboard BFF', () => {
     expect(calls.findLast((call) => call.operation === 'skill_set_delete')?.input).toEqual({ skillSetId, expectedGeneration: 2 });
   });
 
+  it('accepts a zip upload on the skill archive route without the JSON media-type rule', async () => {
+    const session = await send('/api/v1/session');
+    const cookie = String(session.headers['set-cookie']?.[0]).split(';', 1)[0];
+    const archive = Buffer.from('PK-fake-archive-bytes');
+    const base = { origin: 'https://dashboard.example', cookie, 'x-csrf-token': session.json.csrfToken };
+
+    const response = await send('/api/v1/skill-archives', {
+      method: 'POST', headers: { ...base, 'content-type': 'application/zip', 'content-length': String(archive.length) }, body: archive as unknown as string
+    });
+    expect(response.status).toBe(200);
+    expect(calls.at(-1)?.operation).toBe('skill_archive_import');
+    expect(calls.at(-1)?.input).toEqual({ archiveBase64: archive.toString('base64'), expectedGeneration: 0 });
+
+    // Only an archive media type is accepted here, so a JSON body cannot reach the raw parser by accident.
+    const json = await send('/api/v1/skill-archives', {
+      method: 'POST', headers: { ...base, 'content-type': 'application/json', 'content-length': '2' }, body: '{}'
+    });
+    expect(json.status).toBe(415);
+
+    // Every other mutation keeps the JSON-only rule.
+    const other = await send('/api/v1/skills', {
+      method: 'POST', headers: { ...base, 'content-type': 'application/zip', 'content-length': '2' }, body: 'PK'
+    });
+    expect(other.status).toBe(415);
+  });
+
   it('rejects a skills identifier that does not match the contract shape', async () => {
     const response = await send('/api/v1/skills/not-a-skill-id');
     expect(response.status).toBe(400);

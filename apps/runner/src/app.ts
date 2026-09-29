@@ -11,9 +11,17 @@ import type { ApiKeyService } from './api-key-service.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL ?? 'info', redact: ['req.headers.authorization', 'authorization', '*.token', '*.content', '*.command'] });
 
+/** Holds the base64 form of an 8 MiB skills archive plus the operation envelope around it. */
+const DASHBOARD_OPERATION_BODY_LIMIT = '12mb';
+
 export function createRunnerApp(config: RunnerConfig, service: WorkspaceService, controls?: DashboardControlService, apiKeys?: ApiKeyService): Express {
   const app = express();
   app.disable('x-powered-by');
+  // A skills archive travels to the runner as base64 in this one route's envelope (up to ~10.7 MiB), so it
+  // gets a larger body allowance than the 1 MiB every other route keeps. Authentication runs first so the
+  // larger parse is never spent on an unauthenticated caller, and the parser marks the body as read so the
+  // default one below skips it.
+  app.use('/v1/internal/dashboard-operations', serviceAuth(config.serviceToken), express.json({ limit: DASHBOARD_OPERATION_BODY_LIMIT, strict: true }));
   app.use(express.json({ limit: '1mb', strict: true }));
   app.get('/healthz', (_request, response) => response.json({ status: 'ok' }));
   app.post('/v1/operations', serviceAuth(config.serviceToken), async (request: Request, response: Response) => {

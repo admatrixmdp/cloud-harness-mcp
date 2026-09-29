@@ -41,3 +41,16 @@ export function requireJson(request: Request, response: Response, next: NextFunc
   }
   next();
 }
+
+/** The one dashboard route that takes a binary body; it is exempt from the router-wide JSON rule. */
+export const SKILL_ARCHIVE_PATH = '/api/v1/skill-archives';
+/** Media types a browser or CLI legitimately labels a zip with. */
+export const SKILL_ARCHIVE_MEDIA_TYPES = ['application/zip', 'application/x-zip-compressed', 'application/octet-stream'];
+
+export function requireArchiveMediaType(request: Request, response: Response, next: NextFunction): void {
+  if (!request.is(SKILL_ARCHIVE_MEDIA_TYPES)) {
+    response.status(415).json({ error: 'unsupported_media_type' });
+    return;
+  }
+  next();
+}

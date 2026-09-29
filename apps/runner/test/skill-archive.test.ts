@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   SKILL_ARCHIVE_MAX_ENTRIES,
+  SKILL_ARCHIVE_MAX_FILES,
   SKILL_ARCHIVE_MAX_ENTRY_BYTES,
   readSkillArchive
 } from '../src/skill-archive.js';
@@ -128,19 +129,37 @@ describe('skill archive caps', () => {
     expectRejected(() => readSkillArchive(makeZip(entries)), /above the limit/);
   });
 
+  it('accepts an archive whose bundled assets far exceed the skill cap', () => {
+    // Skills routinely ship with assets, references, and macOS resource forks, so the skill cap must
+    // count skills rather than every file in the zip.
+    const assets = Array.from({ length: SKILL_ARCHIVE_MAX_ENTRIES * 5 }, (_, index) => ({ name: `alpha/assets/file-${index}.txt`, data: 'x' }));
+    const resourceForks = [{ name: '__MACOSX/alpha/._SKILL.md', data: 'fork' }];
+    const entries = readSkillArchive(makeZip([skill('alpha'), ...resourceForks, ...assets]));
+    expect(entries.map((entry) => entry.slug)).toEqual(['alpha']);
+  });
+
+  it('rejects an archive holding more files than the file cap', () => {
+    const files = Array.from({ length: SKILL_ARCHIVE_MAX_FILES + 1 }, (_, index) => ({ name: `alpha/assets/file-${index}.txt`, data: 'x' }));
+    expectRejected(() => readSkillArchive(makeZip([skill('alpha'), ...files])), /files, above the limit/);
+  });
+
   it('rejects an entry larger than the per-entry cap', () => {
     // Highly repetitive content keeps the archive small while the decompressed entry is over the cap.
     const huge = 'a'.repeat(SKILL_ARCHIVE_MAX_ENTRY_BYTES + 1);
     expectRejected(() => readSkillArchive(makeZip([{ name: 'bomb/SKILL.md', data: document('bomb', huge) }])), /per-entry limit/);
   });
 
-  it('rejects many entries whose combined size exceeds the total cap while each stays under the per-entry cap', () => {
-    // This is the zip-bomb case the total cap exists for: every entry passes on its own, and only the
-    // running total catches it. The bulk sits in entries no other check reads, which is exactly why
-    // the cap has to be measured across the whole archive rather than across the SKILL.md documents.
+  it('rejects many documents whose combined size exceeds the total cap while each stays under the per-entry cap', () => {
+    // Every document passes the per-entry cap on its own, and only the running total catches the bomb.
     const each = 'a'.repeat(SKILL_ARCHIVE_MAX_ENTRY_BYTES - 4096);
-    const bulk = Array.from({ length: 17 }, (_, index) => ({ name: `assets/blob-${index}.bin`, data: each }));
-    expectRejected(() => readSkillArchive(makeZip([skill('alpha'), ...bulk])), /total limit/);
+    const bulk = Array.from({ length: 17 }, (_, index) => skill(`bulk-${index}`, each));
+    expectRejected(() => readSkillArchive(makeZip(bulk)), /total limit/);
+  });
+
+  it('does not inflate bundled assets, so a large or bomb-like asset cannot fail or slow a valid skill', () => {
+    const hugeAsset = 'a'.repeat(SKILL_ARCHIVE_MAX_ENTRY_BYTES * 3);
+    const entries = readSkillArchive(makeZip([skill('alpha'), { name: 'alpha/assets/library.min.js', data: hugeAsset }]));
+    expect(entries.map((entry) => entry.slug)).toEqual(['alpha']);
   });
 
   it('rejects an archive larger than the archive cap', () => {
