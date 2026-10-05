@@ -350,3 +350,102 @@ func TestWorktreesStayConfinedAndRejectDashNames(t *testing.T) {
 		t.Fatalf("worktree still present: %v", err)
 	}
 }
+
+func TestSkillsListReadOverlayAndConfine(t *testing.T) {
+	root := t.TempDir()
+	builtin := t.TempDir()
+	t.Setenv("BUILTIN_SKILLS_ROOT", builtin)
+	t.Setenv("CH_OWNER_SKILLS_ROOT", t.TempDir())
+	writeSkill := func(dir, name, body string) {
+		skillDir := filepath.Join(dir, name)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSkill(builtin, "alpha", "---\ndescription: builtin alpha\n---\nbuilt-in body")
+	writeSkill(filepath.Join(root, ".agents", "skills"), "alpha", "repo alpha")
+	writeSkill(filepath.Join(root, ".agents", "skills"), "beta", "repo beta")
+	ws := Workspace{Root: root}
+	listed := ws.Execute(context.Background(), protocol.OpSkillsList, json.RawMessage(`{}`))
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	listedSkills := asMaps(listed.Data.(map[string]any)["skills"])
+	if len(listedSkills) != 2 {
+		t.Fatalf("want 2 skills, got %+v", listed.Data)
+	}
+	var alpha map[string]any
+	for _, m := range listedSkills {
+		if m["name"] == "alpha" {
+			alpha = m
+		}
+	}
+	if alpha["source"] != "built-in" {
+		t.Fatalf("overlay %+v", alpha)
+	}
+	if len(asMaps(alpha["shadowed"])) != 1 {
+		t.Fatalf("shadowed %+v", alpha["shadowed"])
+	}
+	read := ws.Execute(context.Background(), protocol.OpSkillsRead, json.RawMessage(`{"name":"alpha"}`))
+	if !read.OK {
+		t.Fatalf("read: %+v", read)
+	}
+	if !strings.Contains(read.Data.(map[string]any)["content"].(string), "built-in body") {
+		t.Fatalf("read content %+v", read.Data)
+	}
+	repoRead := ws.Execute(context.Background(), protocol.OpSkillsRead, json.RawMessage(`{"name":"alpha","source":"repository"}`))
+	if !repoRead.OK {
+		t.Fatalf("repo read: %+v", repoRead)
+	}
+	if repoRead.Data.(map[string]any)["content"] != "repo alpha" {
+		t.Fatalf("repo content %+v", repoRead.Data)
+	}
+	missing := ws.Execute(context.Background(), protocol.OpSkillsRead, json.RawMessage(`{"name":"nope"}`))
+	if missing.OK || missing.Error.Code != protocol.ErrorNotFound {
+		t.Fatalf("missing: %+v", missing)
+	}
+	badName := ws.Execute(context.Background(), protocol.OpSkillsRead, json.RawMessage(`{"name":"../escape"}`))
+	if badName.OK || badName.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("bad name: %+v", badName)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.md"), []byte("nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	escapeDir := filepath.Join(root, ".agents", "skills", "escape")
+	if err := os.MkdirAll(escapeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.md"), filepath.Join(escapeDir, "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+	escaped := ws.Execute(context.Background(), protocol.OpSkillsList, json.RawMessage(`{}`))
+	if !escaped.OK {
+		t.Fatalf("list with escape: %+v", escaped)
+	}
+	for _, item := range asMaps(escaped.Data.(map[string]any)["skills"]) {
+		if item["name"] == "escape" {
+			t.Fatal("symlink-escaping skill must not be listed")
+		}
+	}
+}
+
+func asMaps(raw any) []map[string]any {
+	switch v := raw.(type) {
+	case []map[string]any:
+		return v
+	case []any:
+		out := make([]map[string]any, 0, len(v))
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
