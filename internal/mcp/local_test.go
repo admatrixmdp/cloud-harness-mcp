@@ -68,4 +68,8 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if !skills.OK {
 		t.Fatalf("local skills list: %+v", skills)
 	}
+	hooks := b.Call(context.Background(), protocol.OpHooksList, json.RawMessage(`{}`))
+	if !hooks.OK {
+		t.Fatalf("local hooks list: %+v", hooks)
+	}
 }

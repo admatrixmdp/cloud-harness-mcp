@@ -78,6 +78,7 @@ type pathInput struct {
 	FastForward     string   `json:"fastForward"`
 	Upstream        string   `json:"upstream"`
 	Mode            string   `json:"mode"`
+	Event           string   `json:"event"`
 	Files           []struct {
 		Path           string `json:"path"`
 		Content        string `json:"content"`
@@ -146,6 +147,8 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.skillsList(in)
 	case protocol.OpSkillsRead:
 		return w.skillsRead(in)
+	case protocol.OpHooksList:
+		return w.hooksList(in)
 	case protocol.OpWorkspaceRecover:
 		return w.recover(ctx, in)
 	case protocol.OpArtifactsRestore:

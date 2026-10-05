@@ -433,6 +433,75 @@ func TestSkillsListReadOverlayAndConfine(t *testing.T) {
 	}
 }
 
+func TestHooksListConfinedAndFiltersEvents(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{Root: root}
+	empty := ws.Execute(context.Background(), protocol.OpHooksList, json.RawMessage(`{}`))
+	if !empty.OK {
+		t.Fatalf("empty: %+v", empty)
+	}
+	if empty.Data.(map[string]any)["manifestSha256"] != nil {
+		t.Fatalf("missing manifest should be null: %+v", empty.Data)
+	}
+	if len(asMaps(empty.Data.(map[string]any)["hooks"])) != 0 {
+		t.Fatalf("want no hooks: %+v", empty.Data)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".cloud-harness"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{
+  "version": 1,
+  "hooks": [
+    {"name":"lint","events":["pre_commit"],"failurePolicy":"block","order":10},
+    {"name":"--help","events":["manual"]},
+    {"name":"notify","event":"post_commit","failurePolicy":"warn","order":20}
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(root, ".cloud-harness", "hooks.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listed := ws.Execute(context.Background(), protocol.OpHooksList, json.RawMessage(`{}`))
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	hooks := asMaps(listed.Data.(map[string]any)["hooks"])
+	if len(hooks) != 2 {
+		t.Fatalf("dash name must be skipped: %+v", listed.Data)
+	}
+	if hooks[0]["name"] != "lint" || hooks[0]["failurePolicy"] != "block" {
+		t.Fatalf("lint %+v", hooks[0])
+	}
+	filtered := ws.Execute(context.Background(), protocol.OpHooksList, json.RawMessage(`{"event":"pre_commit"}`))
+	if !filtered.OK {
+		t.Fatalf("filter: %+v", filtered)
+	}
+	page := asMaps(filtered.Data.(map[string]any)["hooks"])
+	if len(page) != 1 || page[0]["name"] != "lint" {
+		t.Fatalf("pre_commit %+v", filtered.Data)
+	}
+	bad := ws.Execute(context.Background(), protocol.OpHooksList, json.RawMessage(`{"event":"--help"}`))
+	if bad.OK || bad.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("dash event: %+v", bad)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "hooks.json"), []byte(`{"hooks":[{"name":"escape","events":["manual"]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, ".cloud-harness", "hooks.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "hooks.json"), filepath.Join(root, ".cloud-harness", "hooks.json")); err != nil {
+		t.Fatal(err)
+	}
+	escaped := ws.Execute(context.Background(), protocol.OpHooksList, json.RawMessage(`{}`))
+	if escaped.OK {
+		t.Fatalf("symlink escape must fail: %+v", escaped)
+	}
+	if escaped.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("escape code: %+v", escaped)
+	}
+}
+
 func asMaps(raw any) []map[string]any {
 	switch v := raw.(type) {
 	case []map[string]any:
