@@ -17,7 +17,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | Concern | TypeScript owner | Go package |
 | --- | --- | --- |
 | CLI flags | `apps/api/src/cli-options.ts` | `internal/config`, `cmd/cloud-harness-mcp` |
-| Owner bearer / Access JWT | `apps/api/src/auth.ts`, `access-jwt-verifier.ts` | `internal/auth` |
+| Owner bearer / Access JWT | `apps/api/src/auth.ts`, `access-jwt-verifier.ts` | `internal/auth` (RS256 Access JWT + JWKS; Access mode ignores opaque client bearer) |
 | Request security | `apps/api/src/request-security.ts` | `internal/api` (later) |
 | Dashboard BFF | `apps/api/src/dashboard-*.ts` | `internal/api` (later) |
 | Ingress proxy | `deploy/ingress-proxy.mjs` | `cmd/ingress-proxy` |
@@ -27,7 +27,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | SQLite metadata / state | `apps/runner/src/metadata-store.ts`, `state-store.ts` | `internal/store` (`Memory` + `SQLite` via `database/sql` + `modernc.org/sqlite`; CHECK rejects raw `bridge`) |
 | Secrets keyring | `apps/runner/src/secret-keyring.ts` | `internal/secrets` |
 | Workspace + Docker policy | `apps/runner/src/workspace-service.ts`, `docker-engine.ts` | `internal/runner`, `internal/sandbox` |
-| GitHub App + transfer helpers | `apps/runner/src/github-*.ts`, `worker/*-helper.sh` | `internal/git` (RS256 App JWT + installation mint; token on helper stdin only, never argv/logs) |
+| GitHub App + transfer helpers | `apps/runner/src/github-*.ts`, `worker/*-helper.sh` | `internal/git` (RS256 App JWT + clone/transfer helpers; token on docker stdin only, never argv/logs) |
 | Executor worker | `worker/harness-worker.mjs` | `cmd/harness-worker`, `internal/executor` (path confinement, truncation, unique `files_apply_patch`, confined `grep_search`; TS remains image entry until Compose switches) |
 | Model gateway / agents | `apps/model-gateway`, `apps/agent-runtime`, `apps/runner/src/agent-*.ts` | `cmd/model-gateway`, `internal/agent` (opaque hashed leases, per-agent internal network, no host/repo/secret mounts). TS Compose remains runtime of record; Go images live in `docker/go-*.Dockerfile` |
 

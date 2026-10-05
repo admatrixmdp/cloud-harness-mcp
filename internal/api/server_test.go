@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/bestagentkits/cloud-harness-mcp/internal/auth"
 )
 
 func TestHealthz(t *testing.T) {
@@ -30,6 +32,22 @@ func TestReadyzWithoutRunner(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status %d", res.StatusCode)
+	}
+}
+
+func TestAccessModeIgnoresOpaqueBearer(t *testing.T) {
+	srv := httptest.NewServer(Handler(Options{Mode: auth.ModeCloudflareAccess, BearerToken: "owner-secret"}))
+	t.Cleanup(srv.Close)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer owner-secret")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotFound && res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("opaque bearer must not authenticate Access mode, got %d", res.StatusCode)
 	}
 }
 

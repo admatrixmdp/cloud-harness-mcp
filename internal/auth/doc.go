@@ -2,8 +2,9 @@
 //
 // The API never treats an opaque client bearer as identity in Access mode.
 // Secrets, assertions, and minted tokens must not appear in logs or dashboard
-// responses. Implementation lands in a later task; this package currently
-// holds the boundary types.
+// responses. Owner-bearer compares a configured secret; Cloudflare Access
+// verifies RS256 JWTs from Cf-Access-Jwt-Assertion and never treats an opaque
+// client bearer as identity.
 package auth
 
 // Principal is a verified operator identity.
