@@ -200,6 +200,66 @@ func TestWorkspaceOpenClonesWithStdinTokenOnly(t *testing.T) {
 	}
 }
 
+func TestGitFetchUsesTransferHelperStdinOnly(t *testing.T) {
+	var seen [][]string
+	var stdin []string
+	cloner := &git.Cloner{Engine: sandbox.Engine{
+		Run: func(_ context.Context, args []string, in string) (sandbox.Result, error) {
+			seen = append(seen, append([]string{}, args...))
+			stdin = append(stdin, in)
+			return sandbox.Result{ExitCode: 0, Stdout: "ok"}, nil
+		},
+	}}
+	svc := NewService(Config{
+		NetworkProfile: protocol.NetworkNone,
+		JobsRoot:       t.TempDir(),
+		ExecutorImage:  "cloud-harness-executor:local",
+	}, nil, nil).WithCloner(cloner)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-fetch-1","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	id := open.Data.(map[string]any)["workspaceId"].(string)
+	got := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpGitFetch,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","remote":"origin"}`),
+	})
+	if !got.OK {
+		t.Fatalf("fetch: %+v", got)
+	}
+	joined := ""
+	for _, args := range seen {
+		line := strings.Join(args, " ")
+		joined += line + "\n"
+		if git.ArgsContainSecret(args, "ghs_") {
+			t.Fatal("token in argv")
+		}
+	}
+	if !strings.Contains(joined, "git-transfer-helper.sh") {
+		t.Fatalf("missing transfer helper: %s", joined)
+	}
+	if !strings.Contains(joined, "--network none") {
+		t.Fatal("import must stay network-none")
+	}
+	denied := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpGitFetch,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","refspec":"--upload-pack=evil"}`),
+	})
+	if denied.OK || denied.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("evil refspec: %+v", denied)
+	}
+	push := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpGitPush,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","refspec":"HEAD:refs/heads/main"}`),
+	})
+	if push.OK || push.Error.Code != protocol.ErrorRepositoryOperationNotAuthorized {
+		t.Fatalf("push without app: %+v", push)
+	}
+}
+
 func TestWorkspaceLeaseRenewCapsAtHardExpiry(t *testing.T) {
 	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, IdleTTL: time.Minute, WallTTL: 2 * time.Minute}, nil, nil)
 	open := svc.Execute(context.Background(), protocol.RunnerRequest{

@@ -21,7 +21,7 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 		t.Fatalf("open: %+v", got)
 	}
 	got = b.Call(context.Background(), protocol.OpGitPush, json.RawMessage(`{}`))
-	if got.OK || got.Error.Code != protocol.ErrorForbidden {
+	if got.OK || got.Error.Code != protocol.ErrorRepositoryOperationNotAuthorized {
 		t.Fatalf("push without flag: %+v", got)
 	}
 	listed := b.Call(context.Background(), protocol.OpFilesList, json.RawMessage(`{"path":"."}`))

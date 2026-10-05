@@ -48,13 +48,13 @@ func (b LocalBackend) Call(ctx context.Context, op protocol.Operation, input jso
 		return protocol.Fail(protocol.ErrorInvalidInput, string(op)+" is unsupported in local stdio mode because retained artifacts require remote runner storage", false)
 	case protocol.OpGitFetch, protocol.OpGitPull, protocol.OpGitPush:
 		if op == protocol.OpGitPush && !b.GitPush {
-			return protocol.Fail(protocol.ErrorForbidden, "git push requires --git-push", false)
+			return protocol.Fail(protocol.ErrorRepositoryOperationNotAuthorized, "Git push operations are disabled in local mode; pass --git-push to enable", false)
 		}
 		if !b.GitNetwork {
-			return protocol.Fail(protocol.ErrorForbidden, "git network operations require --git-network", false)
+			return protocol.Fail(protocol.ErrorForbidden, "network Git operations are disabled in local mode; pass --git-network to enable", false)
 		}
 		return protocol.Fail(protocol.ErrorUnavailable, "local git network operations are not wired in this Go-port slice", true)
-	case protocol.OpFilesList, protocol.OpFilesRead, protocol.OpFilesWrite, protocol.OpFilesDelete, protocol.OpFilesMkdir, protocol.OpFilesApplyPatch, protocol.OpFilesWriteBatch, protocol.OpFilesMove, protocol.OpGrepSearch, protocol.OpSymbolsSearch, protocol.OpSymbolsReferences, protocol.OpExecRun, protocol.OpGitStatus, protocol.OpGitDiff, protocol.OpGitLog, protocol.OpGitBranch, protocol.OpGitCheckout, protocol.OpGitAdd, protocol.OpGitCommit:
+	case protocol.OpFilesList, protocol.OpFilesRead, protocol.OpFilesWrite, protocol.OpFilesDelete, protocol.OpFilesMkdir, protocol.OpFilesApplyPatch, protocol.OpFilesWriteBatch, protocol.OpFilesMove, protocol.OpGrepSearch, protocol.OpSymbolsSearch, protocol.OpSymbolsReferences, protocol.OpExecRun, protocol.OpGitStatus, protocol.OpGitDiff, protocol.OpGitLog, protocol.OpGitBranch, protocol.OpGitCheckout, protocol.OpGitAdd, protocol.OpGitCommit, protocol.OpGitMerge, protocol.OpGitRebase:
 		return (executor.Workspace{Root: b.Root}).Execute(ctx, op, input)
 	default:
 		return protocol.Fail(protocol.ErrorUnavailable, "Go-port stdio has not implemented "+string(op)+" yet", true)

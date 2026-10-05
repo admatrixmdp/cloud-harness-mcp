@@ -140,3 +140,31 @@ func TestParseGitHubRepositoryRejectsExtraPath(t *testing.T) {
 		t.Fatal("ambiguous GitHub path must fail before minting")
 	}
 }
+
+func TestFetchHistorySpecAndPushRefspec(t *testing.T) {
+	got, err := FetchHistorySpec(nil, true, "")
+	if err != nil || got != "full" {
+		t.Fatalf("unshallow %q %v", got, err)
+	}
+	depth := 12
+	got, err = FetchHistorySpec(&depth, false, "")
+	if err != nil || got != "depth:12" {
+		t.Fatalf("depth %q %v", got, err)
+	}
+	if _, err := FetchHistorySpec(&depth, true, ""); err == nil {
+		t.Fatal("mutually exclusive options")
+	}
+	if ValidFetchRef("--upload-pack=evil") || ValidFetchRef("main:other") {
+		t.Fatal("option-like fetch ref")
+	}
+	ref, err := NormalizePushRefspec("", "main")
+	if err != nil || ref != "HEAD:refs/heads/main" {
+		t.Fatalf("%q %v", ref, err)
+	}
+	if _, err := NormalizePushRefspec(":refs/heads/main", ""); err == nil {
+		t.Fatal("delete refspec")
+	}
+	if _, err := NormalizePushRefspec("main:refs/tags/v1", ""); err == nil {
+		t.Fatal("tag push")
+	}
+}

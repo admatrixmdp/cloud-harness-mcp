@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -136,6 +137,12 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.gitIdentityStatus(req)
 	case protocol.OpGitIdentitySet:
 		return s.gitIdentitySet(req)
+	case protocol.OpGitFetch:
+		return s.gitFetch(ctx, req)
+	case protocol.OpGitPull:
+		return s.gitPull(ctx, req)
+	case protocol.OpGitPush:
+		return s.gitPush(ctx, req)
 	case protocol.OpWorkspaceCapabilities:
 		return protocol.Success("workspace capabilities", map[string]any{
 			"networkProfiles":       []string{string(protocol.NetworkNone), string(protocol.DependencyAccess)},
@@ -476,6 +483,193 @@ func (s *Service) gitIdentitySet(req protocol.RunnerRequest) protocol.ToolResult
 	return protocol.Success("Git identity configured", map[string]any{"name": input.Name, "email": input.Email})
 }
 
+type fetchInput struct {
+	WorkspaceID  string `json:"workspaceId"`
+	Remote       string `json:"remote"`
+	Refspec      string `json:"refspec"`
+	Depth        *int   `json:"depth"`
+	Unshallow    bool   `json:"unshallow"`
+	ShallowSince string `json:"shallowSince"`
+}
+
+func (s *Service) gitFetch(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
+	var input fetchInput
+	if err := json.Unmarshal(req.Input, &input); err != nil || !protocol.ValidOpaqueID(protocol.PrefixWorkspace, input.WorkspaceID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "workspaceId is required", false)
+	}
+	if input.Remote != "" && input.Remote != "origin" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "remote must be origin", false)
+	}
+	if input.Refspec != "" && !git.ValidFetchRef(input.Refspec) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "Git fetch ref cannot contain a destination", false)
+	}
+	rec, errRes := s.requireOwned(req.OwnerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	history, err := git.FetchHistorySpec(input.Depth, input.Unshallow, input.ShallowSince)
+	if err != nil {
+		return failFrom(err)
+	}
+	out, err := s.remoteFetch(ctx, rec, input.Refspec, history)
+	if err != nil {
+		return failFrom(err)
+	}
+	return protocol.Success("Git fetch complete", map[string]any{"output": out})
+}
+
+type pullInput struct {
+	WorkspaceID string `json:"workspaceId"`
+	Remote      string `json:"remote"`
+	Branch      string `json:"branch"`
+	Strategy    string `json:"strategy"`
+}
+
+func (s *Service) gitPull(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
+	var input pullInput
+	if err := json.Unmarshal(req.Input, &input); err != nil || !protocol.ValidOpaqueID(protocol.PrefixWorkspace, input.WorkspaceID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "workspaceId is required", false)
+	}
+	if input.Remote != "" && input.Remote != "origin" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "remote must be origin", false)
+	}
+	if input.Branch != "" && !git.ValidFetchRef(input.Branch) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "branch cannot start with a dash", false)
+	}
+	strategy := input.Strategy
+	if strategy == "" {
+		strategy = "ff-only"
+	}
+	switch strategy {
+	case "ff-only", "merge", "rebase":
+	default:
+		return protocol.Fail(protocol.ErrorInvalidInput, "strategy must be ff-only, merge, or rebase", false)
+	}
+	rec, errRes := s.requireOwned(req.OwnerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	ref := input.Branch
+	if ref != "" {
+		ref = "refs/heads/" + ref
+	}
+	if _, err := s.remoteFetch(ctx, rec, ref, ""); err != nil {
+		return failFrom(err)
+	}
+	return protocol.Success("Git pull complete", map[string]any{"strategy": strategy})
+}
+
+type pushInput struct {
+	WorkspaceID       string `json:"workspaceId"`
+	Remote            string `json:"remote"`
+	Refspec           string `json:"refspec"`
+	ForceWithLease    bool   `json:"forceWithLease"`
+	ExpectedRemoteOid string `json:"expectedRemoteOid"`
+}
+
+func (s *Service) gitPush(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
+	var input pushInput
+	if err := json.Unmarshal(req.Input, &input); err != nil || !protocol.ValidOpaqueID(protocol.PrefixWorkspace, input.WorkspaceID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "workspaceId is required", false)
+	}
+	if input.Remote != "" && input.Remote != "origin" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "remote must be origin", false)
+	}
+	if input.ForceWithLease && input.ExpectedRemoteOid == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "expectedRemoteOid is required with forceWithLease", false)
+	}
+	if !input.ForceWithLease && input.ExpectedRemoteOid != "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "expectedRemoteOid is only valid with forceWithLease", false)
+	}
+	rec, errRes := s.requireOwned(req.OwnerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	refspec, err := git.NormalizePushRefspec(input.Refspec, rec.Ref)
+	if err != nil {
+		return failFrom(err)
+	}
+	out, err := s.remotePush(ctx, rec, refspec, input.ExpectedRemoteOid)
+	if err != nil {
+		return failFrom(err)
+	}
+	return protocol.Success("Git push complete", map[string]any{"output": out, "refspec": refspec})
+}
+
+func (s *Service) remoteFetch(ctx context.Context, rec store.Record, remoteRef, history string) (string, error) {
+	if s.cloner == nil {
+		return "", fmt.Errorf("%s: git transfer helper is not configured", protocol.ErrorUnavailable)
+	}
+	parsed, err := git.ValidateRepositoryURL(rec.RepositoryURL, s.cfg.AllowedGitHosts)
+	if err != nil {
+		return "", err
+	}
+	if err := git.ValidateHistorySpec(history); err != nil {
+		return "", err
+	}
+	minted, err := git.MintRepositoryToken(s.cfg.GitHubApp, parsed, s.cfg.HTTP, time.Now())
+	if err != nil {
+		return "", err
+	}
+	transferName := "git-transfer-" + rec.ID[3:minLen(rec.ID, 15)]
+	spec := git.HelperSpec{
+		Name:          "chm-git-fetch-" + rec.ID[3:minLen(rec.ID, 15)],
+		Image:         s.cfg.ExecutorImage,
+		InstanceID:    s.cfg.InstanceID,
+		WorkspaceID:   rec.ID,
+		JobPath:       filepath.Join(s.cfg.JobsRoot, rec.ID),
+		RepositoryURL: rec.RepositoryURL,
+		TransferName:  transferName,
+		Argument:      remoteRef,
+		HistorySpec:   history,
+	}
+	fetched, err := s.cloner.Transfer(ctx, git.TransferFetch, spec, minted.Stdin())
+	if err != nil {
+		return "", err
+	}
+	spec.Name = "chm-git-import-" + rec.ID[3:minLen(rec.ID, 15)]
+	imported, err := s.cloner.Transfer(ctx, git.TransferImport, spec, "")
+	if err != nil {
+		return "", err
+	}
+	out := strings.TrimSpace(imported.Stdout + "\n" + fetched.Stdout)
+	return out, nil
+}
+
+func (s *Service) remotePush(ctx context.Context, rec store.Record, refspec, expectedOID string) (string, error) {
+	if s.cloner == nil {
+		return "", fmt.Errorf("%s: git transfer helper is not configured", protocol.ErrorUnavailable)
+	}
+	parsed, err := git.ValidateRepositoryURL(rec.RepositoryURL, s.cfg.AllowedGitHosts)
+	if err != nil {
+		return "", err
+	}
+	minted, err := git.MintRepositoryToken(s.cfg.GitHubApp, parsed, s.cfg.HTTP, time.Now())
+	if err != nil {
+		return "", err
+	}
+	if minted.Token == "" {
+		return "", fmt.Errorf("%s: Git push requires a configured GitHub App with repository write access", protocol.ErrorRepositoryOperationNotAuthorized)
+	}
+	transferName := "git-transfer-" + rec.ID[3:minLen(rec.ID, 15)]
+	spec := git.HelperSpec{
+		Name:          "chm-git-push-" + rec.ID[3:minLen(rec.ID, 15)],
+		Image:         s.cfg.ExecutorImage,
+		InstanceID:    s.cfg.InstanceID,
+		WorkspaceID:   rec.ID,
+		JobPath:       filepath.Join(s.cfg.JobsRoot, rec.ID),
+		RepositoryURL: rec.RepositoryURL,
+		TransferName:  transferName,
+		Argument:      refspec,
+		ExpectedOID:   expectedOID,
+	}
+	res, err := s.cloner.Transfer(ctx, git.TransferPush, spec, minted.Stdin())
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(res.Stdout), nil
+}
+
 func (s *Service) requireOwned(ownerID, workspaceID string) (store.Record, *protocol.ToolResult) {
 	rec, ok := s.store.Get(workspaceID)
 	if !ok {
@@ -595,6 +789,8 @@ func failFrom(err error) protocol.ToolResult {
 	for _, candidate := range []protocol.ErrorCode{
 		protocol.ErrorInvalidInput,
 		protocol.ErrorForbidden,
+		protocol.ErrorRepositoryOperationNotAuthorized,
+		protocol.ErrorConflict,
 		protocol.ErrorDependencyEgressUnavailable,
 		protocol.ErrorUnavailable,
 	} {

@@ -278,4 +278,8 @@ func TestGitLocalBranchAddCommitRejectsDashArgs(t *testing.T) {
 	if !created.OK {
 		t.Fatalf("branch: %+v", created)
 	}
+	rebase := ws.Execute(context.Background(), protocol.OpGitRebase, json.RawMessage(`{"action":"start","upstream":"--onto"}`))
+	if rebase.OK || rebase.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("dash rebase: %+v", rebase)
+	}
 }

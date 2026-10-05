@@ -154,6 +154,56 @@ func ValidateHistorySpec(spec string) error {
 	}
 }
 
+// FetchHistorySpec maps git_fetch options onto the helper positional spec.
+func FetchHistorySpec(depth *int, unshallow bool, shallowSince string) (string, error) {
+	selected := 0
+	if depth != nil {
+		selected++
+	}
+	if unshallow {
+		selected++
+	}
+	if shallowSince != "" {
+		selected++
+	}
+	if selected > 1 {
+		return "", fmt.Errorf("%s: choose at most one of depth, unshallow, or shallowSince", protocol.ErrorInvalidInput)
+	}
+	if unshallow {
+		return "full", nil
+	}
+	if shallowSince != "" {
+		return "since:" + shallowSince, nil
+	}
+	if depth != nil {
+		return fmt.Sprintf("depth:%d", *depth), nil
+	}
+	return "", nil
+}
+
+// ValidFetchRef rejects option-like refs and destination refspecs.
+func ValidFetchRef(value string) bool {
+	return value != "" && !strings.HasPrefix(value, "-") && !strings.Contains(value, "\x00") && !strings.Contains(value, ":") && len(value) <= 255
+}
+
+// NormalizePushRefspec constrains push to origin heads. Empty requested uses branch.
+func NormalizePushRefspec(requested, branch string) (string, error) {
+	refspec := requested
+	if refspec == "" {
+		if branch == "" {
+			return "", fmt.Errorf("%s: git_push requires refspec when HEAD is detached", protocol.ErrorConflict)
+		}
+		refspec = "HEAD:refs/heads/" + branch
+	}
+	if strings.HasPrefix(refspec, "-") || strings.Contains(refspec, "\x00") || strings.HasPrefix(refspec, ":") {
+		return "", fmt.Errorf("%s: invalid push refspec", protocol.ErrorInvalidInput)
+	}
+	if strings.Contains(refspec, "refs/tags/") || strings.Contains(refspec, "refs/notes/") {
+		return "", fmt.Errorf("%s: invalid push refspec", protocol.ErrorInvalidInput)
+	}
+	return refspec, nil
+}
+
 // ArgsContainSecret reports whether argv leaked a token or docker.sock.
 func ArgsContainSecret(args []string, token string) bool {
 	joined := strings.Join(args, " ")

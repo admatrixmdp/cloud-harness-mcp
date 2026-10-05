@@ -71,6 +71,8 @@ type pathInput struct {
 	Message        string   `json:"message"`
 	AuthorName     string   `json:"authorName"`
 	AuthorEmail    string   `json:"authorEmail"`
+	FastForward    string   `json:"fastForward"`
+	Upstream       string   `json:"upstream"`
 	Files          []struct {
 		Path           string `json:"path"`
 		Content        string `json:"content"`
@@ -125,6 +127,10 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.gitAdd(ctx, in)
 	case protocol.OpGitCommit:
 		return w.gitCommit(ctx, in)
+	case protocol.OpGitMerge:
+		return w.gitMerge(ctx, in)
+	case protocol.OpGitRebase:
+		return w.gitRebase(ctx, in)
 	default:
 		return protocol.Fail(protocol.ErrorInvalidInput, "unsupported worker operation "+string(op), false)
 	}
@@ -690,6 +696,60 @@ func (w Workspace) gitCommit(ctx context.Context, in pathInput) protocol.ToolRes
 		data["authorEmail"] = email
 	}
 	return got
+}
+
+func (w Workspace) gitMerge(ctx context.Context, in pathInput) protocol.ToolResult {
+	if !validGitArg(in.Ref) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "ref is required and cannot start with a dash", false)
+	}
+	args := []string{"merge", "--no-edit"}
+	switch in.FastForward {
+	case "", "allow":
+	case "only":
+		args = append(args, "--ff-only")
+	case "never":
+		args = append(args, "--no-ff")
+	default:
+		return protocol.Fail(protocol.ErrorInvalidInput, "fastForward must be allow, only, or never", false)
+	}
+	if in.Message != "" {
+		if strings.ContainsAny(in.Message, "\x00") {
+			return protocol.Fail(protocol.ErrorInvalidInput, "message must not contain null bytes", false)
+		}
+		args = append(args, "-m", in.Message)
+	}
+	args = append(args, in.Ref)
+	got := w.gitCmd(ctx, "Git merge complete", args...)
+	if !got.OK || exitOf(got) == 0 {
+		return got
+	}
+	return protocol.Fail(protocol.ErrorConflict, stringFrom(got, "output"), false)
+}
+
+func (w Workspace) gitRebase(ctx context.Context, in pathInput) protocol.ToolResult {
+	action := in.Action
+	if action == "" {
+		action = "start"
+	}
+	args := []string{"rebase"}
+	switch action {
+	case "continue":
+		args = append(args, "--continue")
+	case "abort":
+		args = append(args, "--abort")
+	case "start":
+		if !validGitArg(in.Upstream) {
+			return protocol.Fail(protocol.ErrorInvalidInput, "upstream is required when starting a rebase", false)
+		}
+		args = append(args, in.Upstream)
+	default:
+		return protocol.Fail(protocol.ErrorInvalidInput, "action must be start, continue, or abort", false)
+	}
+	got := w.gitCmd(ctx, "Git rebase "+action+" complete", args...)
+	if !got.OK || exitOf(got) == 0 {
+		return got
+	}
+	return protocol.Fail(protocol.ErrorConflict, stringFrom(got, "output"), false)
 }
 
 func exitOf(got protocol.ToolResult) int {
