@@ -21,8 +21,29 @@ func (b LocalBackend) Call(ctx context.Context, op protocol.Operation, input jso
 	switch op {
 	case protocol.OpWorkspaceOpen:
 		return protocol.Fail(protocol.ErrorInvalidInput, "workspace_open is unsupported in local stdio mode because the workspace is selected at startup via --workspace", false)
-	case protocol.OpWorkspaceClose, protocol.OpWorkspaceRecover:
+	case protocol.OpWorkspaceClose, protocol.OpWorkspaceSetActive, protocol.OpWorkspaceFinalize:
 		return protocol.Fail(protocol.ErrorInvalidInput, string(op)+" is unsupported in local stdio mode because the workspace is selected at startup via --workspace", false)
+	case protocol.OpWorkspaceRecover:
+		mode := "resume"
+		if len(input) > 0 {
+			var parsed struct {
+				Mode string `json:"mode"`
+			}
+			_ = json.Unmarshal(input, &parsed)
+			if parsed.Mode != "" {
+				mode = parsed.Mode
+			}
+		}
+		if mode != "resume" {
+			return protocol.Fail(protocol.ErrorUnavailable, "local workspace_recover mode "+mode+" is not wired in this Go-port slice", true)
+		}
+		return protocol.Success("Local workspace is already active", map[string]any{"status": "ACTIVE"})
+	case protocol.OpWorkspaceContext:
+		return protocol.Success("workspace context", map[string]any{
+			"status":           "ACTIVE",
+			"workspaceRoot":    b.Root,
+			"availableActions": []string{"workspace_context"},
+		})
 	case protocol.OpSecretsList, protocol.OpArtifactsSnapshot, protocol.OpArtifactsList, protocol.OpArtifactsRead, protocol.OpArtifactsRestore, protocol.OpArtifactsDelete:
 		return protocol.Fail(protocol.ErrorInvalidInput, string(op)+" is unsupported in local stdio mode because retained artifacts require remote runner storage", false)
 	case protocol.OpGitFetch, protocol.OpGitPull, protocol.OpGitPush:

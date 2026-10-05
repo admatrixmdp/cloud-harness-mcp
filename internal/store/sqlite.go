@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS workspaces (
   hard_expires_at INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_idempotency ON workspaces(owner_id, idempotency_key);
+CREATE TABLE IF NOT EXISTS owner_state (
+  owner_id TEXT PRIMARY KEY,
+  preferred_workspace_id TEXT,
+  git_author_name TEXT,
+  git_author_email TEXT
+);
 `); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -134,6 +140,60 @@ func (s *SQLite) RenewLease(id string, expiresAt, lastActivityAt time.Time) (Rec
 		return Record{}, false
 	}
 	return s.Get(id)
+}
+
+// Activate returns an idle-expired or quarantined workspace to ACTIVE.
+func (s *SQLite) Activate(id string, expiresAt, lastActivityAt time.Time) (Record, bool) {
+	rec, ok := s.Get(id)
+	if !ok {
+		return Record{}, false
+	}
+	switch rec.Status {
+	case StatusActive, StatusExpiredRecoverable, StatusNetworkQuarantined:
+	default:
+		return rec, false
+	}
+	if expiresAt.After(rec.HardExpiresAt) {
+		expiresAt = rec.HardExpiresAt
+	}
+	if _, err := s.db.Exec(`UPDATE workspaces SET status = ?, expires_at = ?, last_activity_at = ? WHERE id = ?`,
+		string(StatusActive), expiresAt.UnixMilli(), lastActivityAt.UnixMilli(), id); err != nil {
+		return Record{}, false
+	}
+	return s.Get(id)
+}
+
+// SetPreferredWorkspace stores the owner default used when workspaceId is omitted.
+func (s *SQLite) SetPreferredWorkspace(ownerID, workspaceID string) {
+	_, _ = s.db.Exec(`INSERT INTO owner_state (owner_id, preferred_workspace_id) VALUES (?, ?)
+		ON CONFLICT(owner_id) DO UPDATE SET preferred_workspace_id = excluded.preferred_workspace_id`, ownerID, workspaceID)
+}
+
+// PreferredWorkspace returns the owner default.
+func (s *SQLite) PreferredWorkspace(ownerID string) (string, bool) {
+	var id sql.NullString
+	if err := s.db.QueryRow(`SELECT preferred_workspace_id FROM owner_state WHERE owner_id = ?`, ownerID).Scan(&id); err != nil || !id.Valid || id.String == "" {
+		return "", false
+	}
+	return id.String, true
+}
+
+// SetGitIdentity stores the owner commit identity.
+func (s *SQLite) SetGitIdentity(ownerID, name, email string) {
+	_, _ = s.db.Exec(`INSERT INTO owner_state (owner_id, git_author_name, git_author_email) VALUES (?, ?, ?)
+		ON CONFLICT(owner_id) DO UPDATE SET git_author_name = excluded.git_author_name, git_author_email = excluded.git_author_email`, ownerID, name, email)
+}
+
+// GitIdentity returns the owner commit identity.
+func (s *SQLite) GitIdentity(ownerID string) (string, string, bool) {
+	var name, email sql.NullString
+	if err := s.db.QueryRow(`SELECT git_author_name, git_author_email FROM owner_state WHERE owner_id = ?`, ownerID).Scan(&name, &email); err != nil {
+		return "", "", false
+	}
+	if !name.Valid || name.String == "" {
+		return "", "", false
+	}
+	return name.String, email.String, true
 }
 
 func (s *SQLite) scanOne(query string, args ...any) (Record, bool) {

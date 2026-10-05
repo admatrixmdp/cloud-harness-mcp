@@ -48,3 +48,43 @@ func TestSQLiteRoundTripAndRejectsBridge(t *testing.T) {
 		t.Fatalf("close: %+v", closed)
 	}
 }
+
+func TestSQLiteOwnerStateAndActivate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	now := time.Now()
+	rec := Record{
+		ID:             "ws_cccccccccccccccccccccccc",
+		OwnerID:        "owner",
+		IdempotencyKey: "open-recover-sql-1",
+		RepositoryURL:  "https://github.com/bestagentkits/cloud-harness-mcp",
+		Status:         StatusExpiredRecoverable,
+		NetworkProfile: protocol.NetworkNone,
+		Generation:     1,
+		CreatedAt:      now,
+		LastActivityAt: now,
+		ExpiresAt:      now.Add(-time.Minute),
+		HardExpiresAt:  now.Add(15 * time.Minute),
+	}
+	if err := db.Put(rec); err != nil {
+		t.Fatal(err)
+	}
+	activated, ok := db.Activate(rec.ID, now.Add(time.Minute), now)
+	if !ok || activated.Status != StatusActive {
+		t.Fatalf("activate: %+v", activated)
+	}
+	db.SetPreferredWorkspace("owner", rec.ID)
+	pref, ok := db.PreferredWorkspace("owner")
+	if !ok || pref != rec.ID {
+		t.Fatalf("preferred %q", pref)
+	}
+	db.SetGitIdentity("owner", "Agent", "agent@example.com")
+	name, email, ok := db.GitIdentity("owner")
+	if !ok || name != "Agent" || email != "agent@example.com" {
+		t.Fatalf("%s %s", name, email)
+	}
+}

@@ -126,6 +126,12 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.close(ctx, req)
 	case protocol.OpWorkspaceLeaseRenew:
 		return s.renew(req)
+	case protocol.OpWorkspaceRecover:
+		return s.recover(ctx, req)
+	case protocol.OpWorkspaceContext:
+		return s.contextOf(req)
+	case protocol.OpWorkspaceSetActive:
+		return s.setActive(req)
 	case protocol.OpWorkspaceCapabilities:
 		return protocol.Success("workspace capabilities", map[string]any{
 			"networkProfiles":       []string{string(protocol.NetworkNone), string(protocol.DependencyAccess)},
@@ -319,7 +325,159 @@ func (s *Service) renew(req protocol.RunnerRequest) protocol.ToolResult {
 	return protocol.Success("workspace lease renewed", publicRecord(updated))
 }
 
+type recoverInput struct {
+	WorkspaceID string `json:"workspaceId"`
+	Mode        string `json:"mode"`
+}
+
+func (s *Service) recover(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
+	_ = ctx
+	var input recoverInput
+	if err := json.Unmarshal(req.Input, &input); err != nil || !protocol.ValidOpaqueID(protocol.PrefixWorkspace, input.WorkspaceID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "workspaceId is required", false)
+	}
+	mode := input.Mode
+	if mode == "" {
+		mode = "resume"
+	}
+	switch mode {
+	case "resume", "status", "patch", "export":
+	default:
+		return protocol.Fail(protocol.ErrorInvalidInput, "mode must be resume, status, patch, or export", false)
+	}
+	rec, errRes := s.requireOwned(req.OwnerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	if rec.Status == store.StatusClosed || rec.Status == store.StatusFailed {
+		return protocol.Fail(protocol.ErrorExpired, "workspace is "+strings.ToLower(string(rec.Status))+" and cannot be recovered", false)
+	}
+	if rec.Status == store.StatusCreating || rec.Status == store.StatusReaping {
+		return protocol.Fail(protocol.ErrorConflict, "workspace is "+strings.ToLower(string(rec.Status)), true)
+	}
+	if mode != "resume" {
+		return protocol.Fail(protocol.ErrorUnavailable, "workspace_recover mode "+mode+" is not wired in this Go-port slice", true)
+	}
+	now := time.Now()
+	if !rec.HardExpiresAt.After(now) {
+		return protocol.Fail(protocol.ErrorExpired, "Workspace hard lease limit reached and cannot be recovered to active state; use mode: export to save work", false)
+	}
+	expires := now.Add(s.cfg.IdleTTL)
+	if expires.After(rec.HardExpiresAt) {
+		expires = rec.HardExpiresAt
+	}
+	updated, ok := s.store.Activate(rec.ID, expires, now)
+	if !ok {
+		return protocol.Fail(protocol.ErrorConflict, "workspace lifecycle changed during recovery", true)
+	}
+	return protocol.Success("Workspace recovered to active state", publicRecord(updated))
+}
+
+func (s *Service) contextOf(req protocol.RunnerRequest) protocol.ToolResult {
+	var input idInput
+	if len(req.Input) > 0 {
+		_ = json.Unmarshal(req.Input, &input)
+	}
+	rec, errRes := s.resolveWorkspace(req.OwnerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	name, email, ok := s.store.GitIdentity(rec.OwnerID)
+	source := "owner"
+	if !ok {
+		name, email, source = "Cloud Harness Agent", "agent@cloud-harness.local", "default"
+	}
+	data := publicRecord(rec)
+	data["gitIdentity"] = map[string]any{"name": name, "email": email, "source": source}
+	return protocol.Success("workspace context", data)
+}
+
+func (s *Service) setActive(req protocol.RunnerRequest) protocol.ToolResult {
+	var input idInput
+	if err := json.Unmarshal(req.Input, &input); err != nil || !protocol.ValidOpaqueID(protocol.PrefixWorkspace, input.WorkspaceID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "workspaceId is required", false)
+	}
+	rec, errRes := s.requireOwned(req.OwnerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	active := 0
+	for _, sibling := range s.store.List(rec.OwnerID) {
+		if sibling.Status == store.StatusActive || sibling.Status == store.StatusCreating {
+			active++
+		}
+	}
+	isActive := rec.Status == store.StatusActive || rec.Status == store.StatusCreating
+	isRecoverable := rec.Status == store.StatusExpiredRecoverable || rec.Status == store.StatusNetworkQuarantined
+	if isActive && active > 1 {
+		return protocol.Fail(protocol.ErrorConflict, "more than one active workspace exists; pass workspaceId on each call instead of setting a default", true)
+	}
+	if isRecoverable && active > 0 {
+		return protocol.Fail(protocol.ErrorConflict, "an active workspace exists, so a recoverable workspace cannot become the default; pass workspaceId explicitly", true)
+	}
+	if !isActive && !isRecoverable {
+		return protocol.Fail(protocol.ErrorConflict, "workspace is "+strings.ToLower(string(rec.Status))+" and cannot be set as the active workspace", true)
+	}
+	s.store.SetPreferredWorkspace(rec.OwnerID, rec.ID)
+	return protocol.Success("Active workspace set", map[string]any{
+		"activeWorkspaceId": rec.ID,
+		"workspace":         publicRecord(rec),
+	})
+}
+
+func (s *Service) requireOwned(ownerID, workspaceID string) (store.Record, *protocol.ToolResult) {
+	rec, ok := s.store.Get(workspaceID)
+	if !ok {
+		fail := protocol.Fail(protocol.ErrorNotFound, "workspace not found", false)
+		return store.Record{}, &fail
+	}
+	if ownerID != "" && rec.OwnerID != ownerID {
+		fail := protocol.Fail(protocol.ErrorForbidden, "workspace access not authorized", false)
+		return store.Record{}, &fail
+	}
+	return rec, nil
+}
+
+func (s *Service) resolveWorkspace(ownerID, workspaceID string) (store.Record, *protocol.ToolResult) {
+	if workspaceID != "" {
+		return s.requireOwned(ownerID, workspaceID)
+	}
+	if preferred, ok := s.store.PreferredWorkspace(ownerID); ok {
+		return s.requireOwned(ownerID, preferred)
+	}
+	var candidates []store.Record
+	for _, rec := range s.store.List(ownerID) {
+		if rec.Status == store.StatusActive || rec.Status == store.StatusCreating {
+			candidates = append(candidates, rec)
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	if len(candidates) > 1 {
+		fail := protocol.Fail(protocol.ErrorConflict, "Multiple active workspaces found. Specify workspaceId on each call.", true)
+		return store.Record{}, &fail
+	}
+	fail := protocol.Fail(protocol.ErrorNotFound, "workspace not found", false)
+	return store.Record{}, &fail
+}
+
 func publicRecord(rec store.Record) map[string]any {
+	now := time.Now()
+	remaining := maxInt64(0, rec.ExpiresAt.Sub(now).Milliseconds())
+	hardRemaining := maxInt64(0, rec.HardExpiresAt.Sub(now).Milliseconds())
+	canRenew := (rec.Status == store.StatusActive || rec.Status == store.StatusExpiredRecoverable) && hardRemaining > 60_000
+	leaseState := "ACTIVE"
+	switch rec.Status {
+	case store.StatusExpiredRecoverable:
+		leaseState = "EXPIRED_RECOVERABLE"
+	case store.StatusNetworkQuarantined, store.StatusClosed, store.StatusFailed:
+		leaseState = "EXPIRED"
+	default:
+		if remaining <= 300_000 && rec.Status == store.StatusActive {
+			leaseState = "WARNING"
+		}
+	}
 	return map[string]any{
 		"workspaceId":      rec.ID,
 		"repositoryUrl":    rec.RepositoryURL,
@@ -330,8 +488,35 @@ func publicRecord(rec store.Record) map[string]any {
 		"createdAt":        rec.CreatedAt.UTC().Format(time.RFC3339Nano),
 		"lastActivityAt":   rec.LastActivityAt.UTC().Format(time.RFC3339Nano),
 		"expiresAt":        rec.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		"idleExpiresAt":    rec.ExpiresAt.UTC().Format(time.RFC3339Nano),
 		"hardExpiresAt":    rec.HardExpiresAt.UTC().Format(time.RFC3339Nano),
-		"remainingLeaseMs": maxInt64(0, time.Until(rec.ExpiresAt).Milliseconds()),
+		"remainingLeaseMs": remaining,
+		"canRenewLease":    canRenew,
+		"leaseState":       leaseState,
+		"availableActions": availableActions(rec.Status, canRenew),
+	}
+}
+
+func availableActions(status store.Status, canRenew bool) []string {
+	switch status {
+	case store.StatusActive:
+		if canRenew {
+			return []string{"workspace_lease_renew", "workspace_close", "workspace_context", "workspace_finalize"}
+		}
+		return []string{"workspace_close", "workspace_context", "workspace_finalize"}
+	case store.StatusExpiredRecoverable:
+		if canRenew {
+			return []string{"workspace_recover", "workspace_lease_renew", "workspace_close"}
+		}
+		return []string{"workspace_recover", "workspace_close"}
+	case store.StatusNetworkQuarantined:
+		return []string{"workspace_recover", "workspace_close", "workspace_context"}
+	case store.StatusCreating, store.StatusReaping:
+		return []string{"workspace_status"}
+	case store.StatusClosed, store.StatusFailed:
+		return []string{"workspace_open"}
+	default:
+		return []string{}
 	}
 }
 

@@ -232,3 +232,61 @@ func TestWorkspaceLeaseRenewCapsAtHardExpiry(t *testing.T) {
 		t.Fatalf("closed renew: %+v", again)
 	}
 }
+
+func TestWorkspaceRecoverResumeAndSetActive(t *testing.T) {
+	st := store.NewMemory()
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, IdleTTL: time.Minute, WallTTL: 15 * time.Minute}, st, nil)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-recover-1","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	id := open.Data.(map[string]any)["workspaceId"].(string)
+	if _, ok := st.UpdateStatus(id, store.StatusExpiredRecoverable); !ok {
+		t.Fatal("expire")
+	}
+	recovered := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceRecover,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","mode":"resume"}`),
+	})
+	if !recovered.OK {
+		t.Fatalf("recover: %+v", recovered)
+	}
+	data := recovered.Data.(map[string]any)
+	if data["status"] != "ACTIVE" {
+		t.Fatalf("status %v", data["status"])
+	}
+	set := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceSetActive,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `"}`),
+	})
+	if !set.OK {
+		t.Fatalf("set active: %+v", set)
+	}
+	ctx := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceContext,
+		Input: json.RawMessage(`{}`),
+	})
+	if !ctx.OK {
+		t.Fatalf("context: %+v", ctx)
+	}
+	if ctx.Data.(map[string]any)["workspaceId"] != id {
+		t.Fatalf("preferred context %+v", ctx.Data)
+	}
+	closed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceClose,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `"}`),
+	})
+	if !closed.OK {
+		t.Fatal(closed)
+	}
+	again := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceRecover,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `"}`),
+	})
+	if again.OK || again.Error.Code != protocol.ErrorExpired {
+		t.Fatalf("closed recover: %+v", again)
+	}
+}

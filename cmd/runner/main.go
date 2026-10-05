@@ -28,7 +28,7 @@ func main() {
 		Long: `Owns Docker authority, SQLite state, GitHub App brokering, and cleanup.
 
 This process is the only Compose service that may mount the Docker socket.
-This slice implements workspace_open/list/status/close/capabilities in-process
+This slice implements workspace_open/list/status/close/lease_renew/recover/context/set_active/capabilities in-process
 (with a noop engine until Docker is wired) and fail-closed network policy.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			healthcheck.MaybeExit(healthcheckURL, listen, "/healthz")

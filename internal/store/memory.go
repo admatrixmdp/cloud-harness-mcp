@@ -46,18 +46,32 @@ type Store interface {
 	List(ownerID string) []Record
 	UpdateStatus(id string, status Status) (Record, bool)
 	RenewLease(id string, expiresAt, lastActivityAt time.Time) (Record, bool)
+	Activate(id string, expiresAt, lastActivityAt time.Time) (Record, bool)
+	SetPreferredWorkspace(ownerID, workspaceID string)
+	PreferredWorkspace(ownerID string) (string, bool)
+	SetGitIdentity(ownerID, name, email string)
+	GitIdentity(ownerID string) (name, email string, ok bool)
 }
 
 // Memory is a process-local store used until SQLite is wired.
 type Memory struct {
-	mu     sync.Mutex
-	byID   map[string]*Record
-	byIdem map[string]*Record
+	mu        sync.Mutex
+	byID      map[string]*Record
+	byIdem    map[string]*Record
+	preferred map[string]string
+	gitName   map[string]string
+	gitEmail  map[string]string
 }
 
 // NewMemory returns an empty in-process workspace store.
 func NewMemory() *Memory {
-	return &Memory{byID: map[string]*Record{}, byIdem: map[string]*Record{}}
+	return &Memory{
+		byID:      map[string]*Record{},
+		byIdem:    map[string]*Record{},
+		preferred: map[string]string{},
+		gitName:   map[string]string{},
+		gitEmail:  map[string]string{},
+	}
 }
 
 // Put inserts or replaces a record.
@@ -143,4 +157,60 @@ func (m *Memory) RenewLease(id string, expiresAt, lastActivityAt time.Time) (Rec
 		rec.Status = StatusActive
 	}
 	return *rec, true
+}
+
+// Activate returns an idle-expired or quarantined workspace to ACTIVE.
+func (m *Memory) Activate(id string, expiresAt, lastActivityAt time.Time) (Record, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.byID[id]
+	if !ok {
+		return Record{}, false
+	}
+	switch rec.Status {
+	case StatusActive, StatusExpiredRecoverable, StatusNetworkQuarantined:
+	default:
+		return *rec, false
+	}
+	if expiresAt.After(rec.HardExpiresAt) {
+		expiresAt = rec.HardExpiresAt
+	}
+	rec.Status = StatusActive
+	rec.ExpiresAt = expiresAt
+	rec.LastActivityAt = lastActivityAt
+	return *rec, true
+}
+
+// SetPreferredWorkspace stores the owner default used when workspaceId is omitted.
+func (m *Memory) SetPreferredWorkspace(ownerID, workspaceID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.preferred[ownerID] = workspaceID
+}
+
+// PreferredWorkspace returns the owner default.
+func (m *Memory) PreferredWorkspace(ownerID string) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id, ok := m.preferred[ownerID]
+	return id, ok && id != ""
+}
+
+// SetGitIdentity stores the owner commit identity.
+func (m *Memory) SetGitIdentity(ownerID, name, email string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gitName[ownerID] = name
+	m.gitEmail[ownerID] = email
+}
+
+// GitIdentity returns the owner commit identity.
+func (m *Memory) GitIdentity(ownerID string) (string, string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	name, ok := m.gitName[ownerID]
+	if !ok {
+		return "", "", false
+	}
+	return name, m.gitEmail[ownerID], true
 }

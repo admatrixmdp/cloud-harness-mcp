@@ -64,6 +64,8 @@ func statusFor(result protocol.ToolResult) int {
 		return http.StatusForbidden
 	case protocol.ErrorNotFound:
 		return http.StatusNotFound
+	case protocol.ErrorExpired:
+		return http.StatusGone
 	case protocol.ErrorConflict, protocol.ErrorStaleGeneration, protocol.ErrorStaleHead:
 		return http.StatusConflict
 	case protocol.ErrorUnavailable, protocol.ErrorDependencyEgressUnavailable:
