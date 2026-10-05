@@ -132,6 +132,10 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.contextOf(req)
 	case protocol.OpWorkspaceSetActive:
 		return s.setActive(req)
+	case protocol.OpGitIdentityStatus:
+		return s.gitIdentityStatus(req)
+	case protocol.OpGitIdentitySet:
+		return s.gitIdentitySet(req)
 	case protocol.OpWorkspaceCapabilities:
 		return protocol.Success("workspace capabilities", map[string]any{
 			"networkProfiles":       []string{string(protocol.NetworkNone), string(protocol.DependencyAccess)},
@@ -423,6 +427,53 @@ func (s *Service) setActive(req protocol.RunnerRequest) protocol.ToolResult {
 		"activeWorkspaceId": rec.ID,
 		"workspace":         publicRecord(rec),
 	})
+}
+
+func (s *Service) gitIdentityStatus(req protocol.RunnerRequest) protocol.ToolResult {
+	ownerID := req.OwnerID
+	if ownerID == "" {
+		ownerID = "owner"
+	}
+	name, email, ok := s.store.GitIdentity(ownerID)
+	source := "owner"
+	if !ok {
+		name, email, source = "Cloud Harness Agent", "agent@cloud-harness.local", "default"
+	}
+	return protocol.Success("Git identity status", map[string]any{
+		"name":   name,
+		"email":  email,
+		"source": source,
+	})
+}
+
+type identityInput struct {
+	WorkspaceID string `json:"workspaceId"`
+	Name        string `json:"name"`
+	Email       string `json:"email"`
+}
+
+func (s *Service) gitIdentitySet(req protocol.RunnerRequest) protocol.ToolResult {
+	var input identityInput
+	if err := json.Unmarshal(req.Input, &input); err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid git_identity_set input", false)
+	}
+	if strings.TrimSpace(input.Name) == "" || len(input.Name) > 200 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "name is required", false)
+	}
+	if !strings.Contains(input.Email, "@") || strings.ContainsAny(input.Email, " \n") {
+		return protocol.Fail(protocol.ErrorInvalidInput, "email is required", false)
+	}
+	ownerID := req.OwnerID
+	if ownerID == "" {
+		ownerID = "owner"
+	}
+	if input.WorkspaceID != "" {
+		if _, errRes := s.requireOwned(ownerID, input.WorkspaceID); errRes != nil {
+			return *errRes
+		}
+	}
+	s.store.SetGitIdentity(ownerID, input.Name, input.Email)
+	return protocol.Success("Git identity configured", map[string]any{"name": input.Name, "email": input.Email})
 }
 
 func (s *Service) requireOwned(ownerID, workspaceID string) (store.Record, *protocol.ToolResult) {

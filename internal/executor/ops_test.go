@@ -247,3 +247,35 @@ func TestSymbolsStayInsideWorkspace(t *testing.T) {
 		t.Fatal("symbols path escape must fail")
 	}
 }
+
+func TestGitLocalBranchAddCommitRejectsDashArgs(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{Root: root}
+	init := ws.gitCmd(context.Background(), "init", "init")
+	if !init.OK || exitOf(init) != 0 {
+		t.Fatalf("init: %+v", init)
+	}
+	cfg := ws.gitCmd(context.Background(), "cfg", "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "--allow-empty", "-m", "seed")
+	if !cfg.OK {
+		t.Fatalf("seed: %+v", cfg)
+	}
+	rejected := ws.Execute(context.Background(), protocol.OpGitCheckout, json.RawMessage(`{"ref":"--help"}`))
+	if rejected.OK || rejected.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("dash ref: %+v", rejected)
+	}
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("hi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	added := ws.Execute(context.Background(), protocol.OpGitAdd, json.RawMessage(`{"all":true}`))
+	if !added.OK {
+		t.Fatalf("add: %+v", added)
+	}
+	committed := ws.Execute(context.Background(), protocol.OpGitCommit, json.RawMessage(`{"message":"test: note","authorName":"Harness Test","authorEmail":"harness@example.invalid"}`))
+	if !committed.OK {
+		t.Fatalf("commit: %+v", committed)
+	}
+	created := ws.Execute(context.Background(), protocol.OpGitBranch, json.RawMessage(`{"action":"create","name":"feature"}`))
+	if !created.OK {
+		t.Fatalf("branch: %+v", created)
+	}
+}

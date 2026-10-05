@@ -40,4 +40,8 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if !ctx.OK {
 		t.Fatalf("context: %+v", ctx)
 	}
+	dash := b.Call(context.Background(), protocol.OpGitCheckout, json.RawMessage(`{"ref":"--help"}`))
+	if dash.OK || dash.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("dash checkout: %+v", dash)
+	}
 }

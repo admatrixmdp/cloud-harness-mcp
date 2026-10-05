@@ -290,3 +290,38 @@ func TestWorkspaceRecoverResumeAndSetActive(t *testing.T) {
 		t.Fatalf("closed recover: %+v", again)
 	}
 }
+
+func TestGitIdentitySetAndStatus(t *testing.T) {
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)
+	status := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpGitIdentityStatus, Input: json.RawMessage(`{}`),
+	})
+	if !status.OK {
+		t.Fatalf("%+v", status)
+	}
+	data := status.Data.(map[string]any)
+	if data["source"] != "default" || data["email"] != "agent@cloud-harness.local" {
+		t.Fatalf("%v", data)
+	}
+	set := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpGitIdentitySet,
+		Input: json.RawMessage(`{"name":"Alice Developer","email":"alice@example.com"}`),
+	})
+	if !set.OK {
+		t.Fatalf("set: %+v", set)
+	}
+	again := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpGitIdentityStatus, Input: json.RawMessage(`{}`),
+	})
+	got := again.Data.(map[string]any)
+	if got["name"] != "Alice Developer" || got["source"] != "owner" {
+		t.Fatalf("%v", got)
+	}
+	bad := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpGitIdentitySet,
+		Input: json.RawMessage(`{"name":"Alice","email":"not-an-email"}`),
+	})
+	if bad.OK || bad.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("bad email: %+v", bad)
+	}
+}

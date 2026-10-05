@@ -39,27 +39,38 @@ func (w Workspace) root() string {
 }
 
 type pathInput struct {
-	Path           string `json:"path"`
-	Content        string `json:"content"`
-	ExpectedSHA256 string `json:"expectedSha256"`
-	Cursor         string `json:"cursor"`
-	Offset         *int   `json:"offset"`
-	Limit          *int   `json:"limit"`
-	ReadAll        bool   `json:"readAll"`
-	Cwd            string `json:"cwd"`
-	Command        string `json:"command"`
-	TimeoutMs      int    `json:"timeoutMs"`
-	MaxOutputBytes int    `json:"maxOutputBytes"`
-	OldText        string `json:"oldText"`
-	NewText        string `json:"newText"`
-	Pattern        string `json:"pattern"`
-	Glob           string `json:"glob"`
-	MaxResults     int    `json:"maxResults"`
-	Source         string `json:"source"`
-	Destination    string `json:"destination"`
-	Overwrite      bool   `json:"overwrite"`
-	Query          string `json:"query"`
-	Symbol         string `json:"symbol"`
+	Path           string   `json:"path"`
+	Content        string   `json:"content"`
+	ExpectedSHA256 string   `json:"expectedSha256"`
+	Cursor         string   `json:"cursor"`
+	Offset         *int     `json:"offset"`
+	Limit          *int     `json:"limit"`
+	ReadAll        bool     `json:"readAll"`
+	Cwd            string   `json:"cwd"`
+	Command        string   `json:"command"`
+	TimeoutMs      int      `json:"timeoutMs"`
+	MaxOutputBytes int      `json:"maxOutputBytes"`
+	OldText        string   `json:"oldText"`
+	NewText        string   `json:"newText"`
+	Pattern        string   `json:"pattern"`
+	Glob           string   `json:"glob"`
+	MaxResults     int      `json:"maxResults"`
+	Source         string   `json:"source"`
+	Destination    string   `json:"destination"`
+	Overwrite      bool     `json:"overwrite"`
+	Query          string   `json:"query"`
+	Symbol         string   `json:"symbol"`
+	Action         string   `json:"action"`
+	Name           string   `json:"name"`
+	StartPoint     string   `json:"startPoint"`
+	Force          bool     `json:"force"`
+	Ref            string   `json:"ref"`
+	Create         bool     `json:"create"`
+	All            bool     `json:"all"`
+	Paths          []string `json:"paths"`
+	Message        string   `json:"message"`
+	AuthorName     string   `json:"authorName"`
+	AuthorEmail    string   `json:"authorEmail"`
 	Files          []struct {
 		Path           string `json:"path"`
 		Content        string `json:"content"`
@@ -106,6 +117,14 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.gitCmd(ctx, "Git diff", "diff", "--no-ext-diff")
 	case protocol.OpGitLog:
 		return w.gitCmd(ctx, "Git log", "log", "--oneline", "-n", "50")
+	case protocol.OpGitBranch:
+		return w.gitBranch(ctx, in)
+	case protocol.OpGitCheckout:
+		return w.gitCheckout(ctx, in)
+	case protocol.OpGitAdd:
+		return w.gitAdd(ctx, in)
+	case protocol.OpGitCommit:
+		return w.gitCommit(ctx, in)
 	default:
 		return protocol.Fail(protocol.ErrorInvalidInput, "unsupported worker operation "+string(op), false)
 	}
@@ -548,6 +567,150 @@ func (w Workspace) exec(ctx context.Context, in pathInput) protocol.ToolResult {
 
 func (w Workspace) gitStatus(ctx context.Context) protocol.ToolResult {
 	return w.gitCmd(ctx, "Git status", "status", "--short", "--branch", "--untracked-files=all")
+}
+
+func validGitArg(value string) bool {
+	return value != "" && !strings.HasPrefix(value, "-") && !strings.Contains(value, "\x00") && len(value) <= 255
+}
+
+func (w Workspace) gitBranch(ctx context.Context, in pathInput) protocol.ToolResult {
+	action := in.Action
+	if action == "" {
+		action = "list"
+	}
+	var args []string
+	switch action {
+	case "list":
+		args = []string{"branch", "--list", "--format=%(refname:short)"}
+	case "create":
+		if !validGitArg(in.Name) {
+			return protocol.Fail(protocol.ErrorInvalidInput, "name is required for create and delete", false)
+		}
+		args = []string{"branch", in.Name}
+		if in.StartPoint != "" {
+			if !validGitArg(in.StartPoint) {
+				return protocol.Fail(protocol.ErrorInvalidInput, "startPoint cannot start with a dash", false)
+			}
+			args = append(args, in.StartPoint)
+		}
+	case "delete":
+		if !validGitArg(in.Name) {
+			return protocol.Fail(protocol.ErrorInvalidInput, "name is required for create and delete", false)
+		}
+		flag := "-d"
+		if in.Force {
+			flag = "-D"
+		}
+		args = []string{"branch", flag, in.Name}
+	default:
+		return protocol.Fail(protocol.ErrorInvalidInput, "action must be list, create, or delete", false)
+	}
+	got := w.gitCmd(ctx, "Git branch operation complete", args...)
+	if !got.OK || exitOf(got) == 0 {
+		return got
+	}
+	return protocol.Fail(protocol.ErrorConflict, stringFrom(got, "output"), false)
+}
+
+func (w Workspace) gitCheckout(ctx context.Context, in pathInput) protocol.ToolResult {
+	if !validGitArg(in.Ref) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "ref is required and cannot start with a dash", false)
+	}
+	args := []string{"checkout"}
+	if in.Create {
+		args = append(args, "-b")
+	}
+	args = append(args, in.Ref)
+	got := w.gitCmd(ctx, "Git checkout complete", args...)
+	if !got.OK || exitOf(got) == 0 {
+		return got
+	}
+	return protocol.Fail(protocol.ErrorConflict, stringFrom(got, "output"), false)
+}
+
+func (w Workspace) gitAdd(ctx context.Context, in pathInput) protocol.ToolResult {
+	if in.All && len(in.Paths) > 0 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "paths must be empty when all is true", false)
+	}
+	if !in.All && len(in.Paths) == 0 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "paths are required unless all is true", false)
+	}
+	args := []string{"add"}
+	if in.All {
+		args = append(args, "--all")
+	} else {
+		for _, p := range in.Paths {
+			if _, err := SafePath(w.root(), p, false); err != nil {
+				return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+			}
+		}
+		args = append(args, "--")
+		args = append(args, in.Paths...)
+	}
+	got := w.gitCmd(ctx, "Git changes staged", args...)
+	if !got.OK || exitOf(got) == 0 {
+		return got
+	}
+	return protocol.Fail(protocol.ErrorConflict, stringFrom(got, "output"), false)
+}
+
+func (w Workspace) gitCommit(ctx context.Context, in pathInput) protocol.ToolResult {
+	if strings.TrimSpace(in.Message) == "" || len(in.Message) > 10_000 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "message is required", false)
+	}
+	if in.All {
+		added := w.gitCmd(ctx, "Git changes staged", "add", "--all")
+		if !added.OK || exitOf(added) != 0 {
+			if !added.OK {
+				return added
+			}
+			return protocol.Fail(protocol.ErrorConflict, stringFrom(added, "output"), false)
+		}
+	}
+	name := in.AuthorName
+	if name == "" {
+		name = "Cloud Harness Agent"
+	}
+	email := in.AuthorEmail
+	if email == "" {
+		email = "agent@cloud-harness.local"
+	}
+	if strings.ContainsAny(name, "\n\x00") || strings.ContainsAny(email, "\n\x00") {
+		return protocol.Fail(protocol.ErrorInvalidInput, "author fields must not contain newlines", false)
+	}
+	got := w.gitCmd(ctx, "Git commit created", "-c", "user.name="+name, "-c", "user.email="+email, "commit", "--no-gpg-sign", "-m", in.Message)
+	if !got.OK || exitOf(got) != 0 {
+		if !got.OK {
+			return got
+		}
+		return protocol.Fail(protocol.ErrorConflict, stringFrom(got, "output"), false)
+	}
+	if data, ok := got.Data.(map[string]any); ok {
+		data["authorName"] = name
+		data["authorEmail"] = email
+	}
+	return got
+}
+
+func exitOf(got protocol.ToolResult) int {
+	data, _ := got.Data.(map[string]any)
+	switch v := data["exitCode"].(type) {
+	case int:
+		return v
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
+func stringFrom(got protocol.ToolResult, key string) string {
+	data, _ := got.Data.(map[string]any)
+	s, _ := data[key].(string)
+	if s == "" {
+		return "Git operation failed"
+	}
+	return s
 }
 
 func (w Workspace) gitCmd(ctx context.Context, message string, args ...string) protocol.ToolResult {
