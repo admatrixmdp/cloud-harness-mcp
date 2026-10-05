@@ -44,11 +44,30 @@ type sessionHub struct {
 	running map[string]string
 }
 
-var sessions = sessionHub{
-	byID:    map[string]*sessionRecord{},
-	byKey:   map[string]string{},
-	running: map[string]string{},
+type interactiveKind struct {
+	prefix   string
+	openMsg  string
+	ioMsg    string
+	closeMsg string
+	notFound string
+	needName bool
+	limitMsg string
 }
+
+var (
+	sessionKind = interactiveKind{
+		prefix: protocol.PrefixSession, openMsg: "Coding session opened", ioMsg: "Coding session output",
+		closeMsg: "Coding session closed", notFound: "interactive session not found", needName: true,
+		limitMsg: "too many running sessions",
+	}
+	shellKind = interactiveKind{
+		prefix: protocol.PrefixShell, openMsg: "Shell opened", ioMsg: "Shell output",
+		closeMsg: "Shell closed", notFound: "interactive session not found", needName: false,
+		limitMsg: "too many running shells",
+	}
+	sessions = sessionHub{byID: map[string]*sessionRecord{}, byKey: map[string]string{}, running: map[string]string{}}
+	shells   = sessionHub{byID: map[string]*sessionRecord{}, byKey: map[string]string{}, running: map[string]string{}}
+)
 
 func validSessionName(name string) bool {
 	if name == "" || len(name) > 80 || strings.HasPrefix(name, "-") {
@@ -63,8 +82,8 @@ func validSessionName(name string) bool {
 	return true
 }
 
-func (h *sessionHub) open(root, name, cwd, key string) protocol.ToolResult {
-	if !validSessionName(name) {
+func (h *sessionHub) open(kind interactiveKind, root, name, cwd, key string) protocol.ToolResult {
+	if kind.needName && !validSessionName(name) {
 		return protocol.Fail(protocol.ErrorInvalidInput, "invalid session name", false)
 	}
 	if !protocol.ValidIdempotencyKey(key) {
@@ -79,7 +98,7 @@ func (h *sessionHub) open(root, name, cwd, key string) protocol.ToolResult {
 	if priorID, ok := h.byKey[mapKey]; ok {
 		rec := h.byID[priorID]
 		h.mu.Unlock()
-		return protocol.Success("Coding session opened", rec.view())
+		return protocol.Success(kind.openMsg, rec.view())
 	}
 	n := 0
 	for _, rec := range h.byID {
@@ -89,12 +108,14 @@ func (h *sessionHub) open(root, name, cwd, key string) protocol.ToolResult {
 	}
 	if n >= maxSessionsPerRoot {
 		h.mu.Unlock()
-		return protocol.Fail(protocol.ErrorLimitExceeded, "too many running sessions", false)
+		return protocol.Fail(protocol.ErrorLimitExceeded, kind.limitMsg, false)
 	}
-	if existingID, ok := h.running[root+":"+name]; ok {
-		if rec := h.byID[existingID]; rec != nil && rec.status == "running" {
-			h.mu.Unlock()
-			return protocol.Fail(protocol.ErrorConflict, "session "+name+" is already running", false)
+	if kind.needName {
+		if existingID, ok := h.running[root+":"+name]; ok {
+			if rec := h.byID[existingID]; rec != nil && rec.status == "running" {
+				h.mu.Unlock()
+				return protocol.Fail(protocol.ErrorConflict, "session "+name+" is already running", false)
+			}
 		}
 	}
 	cmd := exec.Command("/bin/bash", "--noprofile", "--norc", "-i")
@@ -106,7 +127,7 @@ func (h *sessionHub) open(root, name, cwd, key string) protocol.ToolResult {
 		return protocol.Fail(protocol.ErrorInternal, err.Error(), true)
 	}
 	rec := &sessionRecord{
-		id:             protocol.NewOpaqueID(protocol.PrefixSession),
+		id:             protocol.NewOpaqueID(kind.prefix),
 		root:           root,
 		name:           name,
 		cwd:            absCwd,
@@ -142,20 +163,22 @@ func (h *sessionHub) open(root, name, cwd, key string) protocol.ToolResult {
 	}()
 	h.byID[rec.id] = rec
 	h.byKey[mapKey] = rec.id
-	h.running[root+":"+name] = rec.id
+	if kind.needName {
+		h.running[root+":"+name] = rec.id
+	}
 	h.mu.Unlock()
-	return protocol.Success("Coding session opened", rec.view())
+	return protocol.Success(kind.openMsg, rec.view())
 }
 
-func (h *sessionHub) io(root, id, input, cursor string, waitMs int) protocol.ToolResult {
-	if !protocol.ValidOpaqueID(protocol.PrefixSession, id) {
-		return protocol.Fail(protocol.ErrorInvalidInput, "sessionId is required", false)
+func (h *sessionHub) io(kind interactiveKind, root, id, input, cursor string, waitMs int) protocol.ToolResult {
+	if !protocol.ValidOpaqueID(kind.prefix, id) {
+		return protocol.Fail(protocol.ErrorInvalidInput, kind.prefix+" id is required", false)
 	}
 	h.mu.Lock()
 	rec := h.byID[id]
 	h.mu.Unlock()
 	if rec == nil || rec.root != root {
-		return protocol.Fail(protocol.ErrorNotFound, "interactive session not found", false)
+		return protocol.Fail(protocol.ErrorNotFound, kind.notFound, false)
 	}
 	if input != "" {
 		if len(input) > 65_536 {
@@ -181,21 +204,21 @@ func (h *sessionHub) io(root, id, input, cursor string, waitMs int) protocol.Too
 	if err != nil {
 		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
 	}
-	got := protocol.Success("Coding session output", page.data)
+	got := protocol.Success(kind.ioMsg, page.data)
 	got.Cursor = page.cursor
 	got.Truncated = page.truncated
 	return got
 }
 
-func (h *sessionHub) close(root, id string) protocol.ToolResult {
-	if !protocol.ValidOpaqueID(protocol.PrefixSession, id) {
-		return protocol.Fail(protocol.ErrorInvalidInput, "sessionId is required", false)
+func (h *sessionHub) close(kind interactiveKind, root, id string) protocol.ToolResult {
+	if !protocol.ValidOpaqueID(kind.prefix, id) {
+		return protocol.Fail(protocol.ErrorInvalidInput, kind.prefix+" id is required", false)
 	}
 	h.mu.Lock()
 	rec := h.byID[id]
 	h.mu.Unlock()
 	if rec == nil || rec.root != root {
-		return protocol.Fail(protocol.ErrorNotFound, "interactive session not found", false)
+		return protocol.Fail(protocol.ErrorNotFound, kind.notFound, false)
 	}
 	rec.mu.Lock()
 	if rec.status == "running" {
@@ -209,7 +232,7 @@ func (h *sessionHub) close(root, id string) protocol.ToolResult {
 	}
 	view := rec.unlockedView()
 	rec.mu.Unlock()
-	return protocol.Success("Coding session closed", view)
+	return protocol.Success(kind.closeMsg, view)
 }
 
 func (h *sessionHub) list(root string, cursor string, limit int) protocol.ToolResult {
@@ -297,13 +320,16 @@ func (r *sessionRecord) view() map[string]any {
 }
 
 func (r *sessionRecord) unlockedView() map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"id":       r.id,
 		"status":   r.status,
 		"exitCode": r.exitCode,
 		"output":   r.buf.String(),
-		"name":     r.name,
 	}
+	if r.name != "" {
+		out["name"] = r.name
+	}
+	return out
 }
 
 func (r *sessionRecord) summary() map[string]any {
@@ -354,7 +380,7 @@ func (r *sessionRecord) viewSince(cursor string) (sessionPage, error) {
 }
 
 func (w Workspace) sessionsOpen(in pathInput) protocol.ToolResult {
-	return sessions.open(w.root(), in.Name, in.Cwd, in.IdempotencyKey)
+	return sessions.open(sessionKind, w.root(), in.Name, in.Cwd, in.IdempotencyKey)
 }
 
 func (w Workspace) sessionsIO(in pathInput) protocol.ToolResult {
@@ -362,11 +388,27 @@ func (w Workspace) sessionsIO(in pathInput) protocol.ToolResult {
 	if wait < 0 {
 		wait = 0
 	}
-	return sessions.io(w.root(), in.SessionID, in.Input, in.Cursor, wait)
+	return sessions.io(sessionKind, w.root(), in.SessionID, in.Input, in.Cursor, wait)
 }
 
 func (w Workspace) sessionsClose(in pathInput) protocol.ToolResult {
-	return sessions.close(w.root(), in.SessionID)
+	return sessions.close(sessionKind, w.root(), in.SessionID)
+}
+
+func (w Workspace) shellOpen(in pathInput) protocol.ToolResult {
+	return shells.open(shellKind, w.root(), "", in.Cwd, in.IdempotencyKey)
+}
+
+func (w Workspace) shellIO(in pathInput) protocol.ToolResult {
+	wait := in.WaitMs
+	if wait < 0 {
+		wait = 0
+	}
+	return shells.io(shellKind, w.root(), in.ShellID, in.Input, in.Cursor, wait)
+}
+
+func (w Workspace) shellClose(in pathInput) protocol.ToolResult {
+	return shells.close(shellKind, w.root(), in.ShellID)
 }
 
 func (w Workspace) sessionsList(in pathInput) protocol.ToolResult {

@@ -763,6 +763,48 @@ func TestSessionsOpenIOCloseAndIdempotency(t *testing.T) {
 	}
 }
 
+func TestShellOpenIOCloseAndIdempotency(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{Root: root}
+	missing := ws.Execute(context.Background(), protocol.OpShellOpen, json.RawMessage(`{"cwd":"."}`))
+	if missing.OK || missing.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("missing key: %+v", missing)
+	}
+	open := ws.Execute(context.Background(), protocol.OpShellOpen, json.RawMessage(`{"cwd":".","idempotencyKey":"shell-key-01"}`))
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	id, _ := open.Data.(map[string]any)["id"].(string)
+	if !protocol.ValidOpaqueID(protocol.PrefixShell, id) {
+		t.Fatalf("id %q", id)
+	}
+	if _, ok := open.Data.(map[string]any)["name"]; ok {
+		t.Fatalf("shell should not carry a name %+v", open.Data)
+	}
+	replay := ws.Execute(context.Background(), protocol.OpShellOpen, json.RawMessage(`{"cwd":".","idempotencyKey":"shell-key-01"}`))
+	if !replay.OK || replay.Data.(map[string]any)["id"] != id {
+		t.Fatalf("replay: %+v", replay)
+	}
+	io := ws.Execute(context.Background(), protocol.OpShellIO, json.RawMessage(`{"shellId":"`+id+`","input":"echo shell-ok\n","waitMs":300}`))
+	if !io.OK {
+		t.Fatalf("io: %+v", io)
+	}
+	if !strings.Contains(io.Data.(map[string]any)["output"].(string), "shell-ok") {
+		t.Fatalf("output %+v", io.Data)
+	}
+	future := ws.Execute(context.Background(), protocol.OpShellIO, json.RawMessage(`{"shellId":"`+id+`","cursor":"999999999","waitMs":0}`))
+	if future.OK || future.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("future cursor: %+v", future)
+	}
+	closed := ws.Execute(context.Background(), protocol.OpShellClose, json.RawMessage(`{"shellId":"`+id+`"}`))
+	if !closed.OK {
+		t.Fatalf("close: %+v", closed)
+	}
+	if closed.Data.(map[string]any)["status"] != "cancelled" {
+		t.Fatalf("status %+v", closed.Data)
+	}
+}
+
 func asMaps(raw any) []map[string]any {
 	switch v := raw.(type) {
 	case []map[string]any:

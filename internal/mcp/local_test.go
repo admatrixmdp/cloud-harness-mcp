@@ -115,4 +115,13 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if !sessions.OK {
 		t.Fatalf("local sessions list: %+v", sessions)
 	}
+	shell := b.Call(context.Background(), protocol.OpShellOpen, json.RawMessage(`{"cwd":".","idempotencyKey":"local-shell-01"}`))
+	if !shell.OK {
+		t.Fatalf("local shell open: %+v", shell)
+	}
+	shellID, _ := shell.Data.(map[string]any)["id"].(string)
+	closed := b.Call(context.Background(), protocol.OpShellClose, json.RawMessage(`{"shellId":"`+shellID+`"}`))
+	if !closed.OK {
+		t.Fatalf("local shell close: %+v", closed)
+	}
 }

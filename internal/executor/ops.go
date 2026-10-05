@@ -85,6 +85,7 @@ type pathInput struct {
 	Prompt                 string   `json:"prompt"`
 	IdempotencyKey         string   `json:"idempotencyKey"`
 	SessionID              string   `json:"sessionId"`
+	ShellID                string   `json:"shellId"`
 	Input                  string   `json:"input"`
 	WaitMs                 int      `json:"waitMs"`
 	Args                   []string `json:"args"`
@@ -168,6 +169,12 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.sessionsIO(in)
 	case protocol.OpSessionsClose:
 		return w.sessionsClose(in)
+	case protocol.OpShellOpen:
+		return w.shellOpen(in)
+	case protocol.OpShellIO:
+		return w.shellIO(in)
+	case protocol.OpShellClose:
+		return w.shellClose(in)
 	case protocol.OpHooksList:
 		return w.hooksList(in)
 	case protocol.OpHooksRun:
