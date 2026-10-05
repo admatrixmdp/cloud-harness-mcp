@@ -12,16 +12,18 @@ import (
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/api"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/config"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/healthcheck"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcp"
 )
 
 var (
-	transport   string
-	workspace   string
-	gitNetwork  bool
-	gitPush     bool
-	showVersion bool
-	listen      string
+	transport      string
+	workspace      string
+	gitNetwork     bool
+	gitPush        bool
+	showVersion    bool
+	listen         string
+	healthcheckURL string
 )
 
 func main() {
@@ -44,6 +46,7 @@ Local stdio executes confined file/search/exec tools in --workspace.`,
 			fmt.Fprintln(cmd.OutOrStdout(), "cloud-harness-mcp (go-port)")
 			return nil
 		}
+		healthcheck.MaybeExit(healthcheckURL, listen, "/healthz")
 		opts := config.Options{
 			Transport:  config.Transport(transport),
 			Workspace:  workspace,
@@ -96,4 +99,6 @@ func init() {
 	rootCmd.Flags().BoolVar(&gitPush, "git-push", false, "enable local git push (implies --git-network)")
 	rootCmd.Flags().BoolVarP(&showVersion, "version", "v", false, "print version")
 	rootCmd.Flags().StringVar(&listen, "listen", "127.0.0.1:3000", "HTTP listen address (loopback by default)")
+	rootCmd.Flags().StringVar(&healthcheckURL, "healthcheck", "", "GET this URL and exit (Compose probe)")
+	rootCmd.Flags().Lookup("healthcheck").NoOptDefVal = "auto"
 }

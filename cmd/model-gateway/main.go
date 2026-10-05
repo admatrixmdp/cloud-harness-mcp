@@ -11,9 +11,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/agent"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/healthcheck"
 )
 
-var listen string
+var (
+	listen         string
+	healthcheckURL string
+)
 
 func main() {
 	cmd := &cobra.Command{
@@ -23,6 +27,7 @@ func main() {
 Provider credentials stay on this process. Subagent containers get only the
 lease token and a per-agent internal network.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			healthcheck.MaybeExit(healthcheckURL, listen, "/healthz")
 			profiles := map[string]agent.Profile{}
 			if url := os.Getenv("MODEL_UPSTREAM_URL"); url != "" {
 				profiles["default"] = agent.Profile{
@@ -41,6 +46,8 @@ lease token and a per-agent internal network.`,
 		},
 	}
 	cmd.Flags().StringVar(&listen, "listen", "127.0.0.1:3210", "HTTP listen address (loopback by default)")
+	cmd.Flags().StringVar(&healthcheckURL, "healthcheck", "", "GET this URL and exit (Compose probe)")
+	cmd.Flags().Lookup("healthcheck").NoOptDefVal = "auto"
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

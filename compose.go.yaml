@@ -1,0 +1,60 @@
+# Opt-in Go binary overlay. TypeScript compose.yaml remains the runtime of record
+# until this file is merged into the shipped stack.
+#
+#   docker compose -f compose.yaml -f compose.go.yaml up
+#
+# Security boundaries stay in compose.yaml: only ingress publishes a loopback
+# host port; API/runner publish none; Docker socket stays on runner; ingress
+# still has no secrets and does not join the control network. This overlay
+# only swaps images, entrypoints, and distroless healthchecks.
+services:
+  api:
+    image: cloud-harness-api-go:local
+    build:
+      context: .
+      dockerfile: docker/go-api.Dockerfile
+    command: ["/cloud-harness-mcp", "--listen", "0.0.0.0:3000"]
+    healthcheck:
+      test: ["CMD", "/cloud-harness-mcp", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  ingress:
+    image: cloud-harness-api-go:local
+    command: ["/ingress-proxy"]
+    healthcheck:
+      test: ["CMD", "/ingress-proxy", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  runner:
+    image: cloud-harness-runner-go:local
+    build:
+      context: .
+      dockerfile: docker/go-runner.Dockerfile
+    command: ["/runner", "--listen", "0.0.0.0:3001"]
+    healthcheck:
+      test: ["CMD", "/runner", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  model-gateway:
+    image: cloud-harness-model-gateway-go:local
+    build:
+      context: .
+      dockerfile: docker/go-model-gateway.Dockerfile
+    command: ["/model-gateway", "--listen", "0.0.0.0:3210"]
+    healthcheck:
+      test: ["CMD", "/model-gateway", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  executor-image:
+    image: cloud-harness-executor:local
+    build:
+      context: .
+      dockerfile: docker/go-executor.Dockerfile

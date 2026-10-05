@@ -10,12 +10,16 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/healthcheck"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/runner"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
 
-var listen string
+var (
+	listen         string
+	healthcheckURL string
+)
 
 func main() {
 	cmd := &cobra.Command{
@@ -27,6 +31,7 @@ This process is the only Compose service that may mount the Docker socket.
 This slice implements workspace_open/list/status/close/capabilities in-process
 (with a noop engine until Docker is wired) and fail-closed network policy.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			healthcheck.MaybeExit(healthcheckURL, listen, "/healthz")
 			profile := protocol.NetworkProfile(os.Getenv("WORKSPACE_NETWORK_PROFILE"))
 			if profile == "" {
 				profile = sandbox.DefaultNetworkProfile
@@ -45,6 +50,8 @@ This slice implements workspace_open/list/status/close/capabilities in-process
 		},
 	}
 	cmd.Flags().StringVar(&listen, "listen", "127.0.0.1:3001", "HTTP listen address (loopback by default)")
+	cmd.Flags().StringVar(&healthcheckURL, "healthcheck", "", "GET this URL and exit (Compose probe)")
+	cmd.Flags().Lookup("healthcheck").NoOptDefVal = "auto"
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

@@ -20,12 +20,12 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | Owner bearer / Access JWT | `apps/api/src/auth.ts`, `access-jwt-verifier.ts` | `internal/auth` (RS256 Access JWT + JWKS; Access mode ignores opaque client bearer) |
 | Request security | `apps/api/src/request-security.ts` | `internal/api` (Host/Origin allowlist, `no-store`/`nosniff`/`X-Accel-Buffering`, pre-auth 429) |
 | Dashboard BFF | `apps/api/src/dashboard-*.ts` | `internal/api` (later) |
-| Ingress proxy | `deploy/ingress-proxy.mjs` | `cmd/ingress-proxy` |
+| Ingress proxy | `deploy/ingress-proxy.mjs` | `cmd/ingress-proxy` + `internal/ingress` (raw TCP byte pipe, no secrets, SIGINT/SIGTERM). Opt-in overlay `compose.go.yaml`; TS `compose.yaml` stays shipped |
 | API-key Worker | `apps/api-key-gateway` | Keep Wrangler TS (Cloudflare Worker). Go hashes/verifies `chm_key_` secrets in `internal/auth` + `internal/store` and never logs plaintext |
 | Public contracts | `packages/contracts/src/` | `pkg/protocol` |
 | Runner HTTP RPC | `apps/runner/src/app.ts`, `internal-runner-operations.ts` | `cmd/runner`, `internal/runner` |
 | SQLite metadata / state | `apps/runner/src/metadata-store.ts`, `state-store.ts` | `internal/store` (`Memory` + `SQLite` via `database/sql` + `modernc.org/sqlite`; CHECK rejects raw `bridge`) |
-| Secrets keyring | `apps/runner/src/secret-keyring.ts` | `internal/secrets` |
+| Secrets keyring | `apps/runner/src/secret-keyring.ts` | `internal/secrets` (AES-256-GCM, associated data `[principalId, environmentId, name, version]`; plaintext never logged) |
 | Workspace + Docker policy | `apps/runner/src/workspace-service.ts`, `docker-engine.ts` | `internal/runner`, `internal/sandbox` |
 | GitHub App + transfer helpers | `apps/runner/src/github-*.ts`, `worker/*-helper.sh` | `internal/git` (RS256 App JWT + clone/transfer helpers; token on docker stdin only, never argv/logs) |
 | Executor worker | `worker/harness-worker.mjs` | `cmd/harness-worker`, `internal/executor` (path confinement, truncation, unique `files_apply_patch`, confined `grep_search`/`files_write_batch`/`files_move`/`symbols_*`; TS remains image entry until Compose switches) |
@@ -64,3 +64,8 @@ Unit tests live next to the Go packages (`go test ./...`). TypeScript tests
 remain until Compose switches. Docker-dependent checks use the `docker` build
 tag (`go test -tags docker ./internal/sandbox`) and must not weaken host-side
 policy assertions when the daemon is unavailable.
+
+Go Compose images (`docker/go-*.Dockerfile`) and healthchecks (`--healthcheck`)
+are wired only through `compose.go.yaml`. `scripts/verify-go-compose-overlay.mjs`
+asserts the overlay does not publish extra ports, remount the Docker socket, or
+inject secrets, and that `compose.yaml` still ships TypeScript.
