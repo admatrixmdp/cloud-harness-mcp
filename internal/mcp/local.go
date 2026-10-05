@@ -44,6 +44,8 @@ func (b LocalBackend) Call(ctx context.Context, op protocol.Operation, input jso
 			"workspaceRoot":    b.Root,
 			"availableActions": []string{"workspace_context"},
 		})
+	case protocol.OpGitHubAction, protocol.OpGitHubRead:
+		return protocol.Fail(protocol.ErrorRepositoryOperationNotAuthorized, string(op)+" is unsupported in local mode", false)
 	case protocol.OpSecretsList, protocol.OpArtifactsSnapshot, protocol.OpArtifactsList, protocol.OpArtifactsRead, protocol.OpArtifactsRestore, protocol.OpArtifactsDelete:
 		return protocol.Fail(protocol.ErrorInvalidInput, string(op)+" is unsupported in local stdio mode because retained artifacts require remote runner storage", false)
 	case protocol.OpGitFetch, protocol.OpGitPull, protocol.OpGitPush:

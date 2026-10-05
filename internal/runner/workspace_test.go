@@ -385,3 +385,41 @@ func TestGitIdentitySetAndStatus(t *testing.T) {
 		t.Fatalf("bad email: %+v", bad)
 	}
 }
+
+func TestGitHubReadRejectsWriteAndMissingApp(t *testing.T) {
+	called := 0
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, JobsRoot: t.TempDir()}, nil, nil).WithCloner(&git.Cloner{Engine: sandbox.Engine{
+		Run: func(_ context.Context, args []string, _ string) (sandbox.Result, error) {
+			called++
+			if strings.Contains(strings.Join(args, " "), "gh-helper.sh") {
+				t.Fatal("github helper must not run without an App token")
+			}
+			return sandbox.Result{ExitCode: 0}, nil
+		},
+	}})
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-gh-1","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	id := open.Data.(map[string]any)["workspaceId"].(string)
+	writeOnRead := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpGitHubRead,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","action":"pr_create","title":"x","head":"feat"}`),
+	})
+	if writeOnRead.OK || writeOnRead.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("write via read: %+v", writeOnRead)
+	}
+	missing := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpGitHubRead,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","action":"pr_list"}`),
+	})
+	if missing.OK || missing.Error.Code != protocol.ErrorRepositoryOperationNotAuthorized {
+		t.Fatalf("missing app: %+v", missing)
+	}
+	if called == 0 {
+		t.Fatal("clone helper should still run on open")
+	}
+}

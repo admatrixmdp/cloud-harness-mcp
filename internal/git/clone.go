@@ -74,6 +74,33 @@ func (c Cloner) Transfer(ctx context.Context, mode TransferMode, spec HelperSpec
 	return res, nil
 }
 
+// GH runs gh-helper.sh. Token rides stdin; argv never includes GH_TOKEN.
+func (c Cloner) GH(ctx context.Context, spec HelperSpec, token string) (sandbox.Result, error) {
+	if _, err := ValidateRepositoryURL(spec.RepositoryURL, []string{"github.com"}); err != nil {
+		return sandbox.Result{}, err
+	}
+	if _, ok := RequiredGitHubPermissions(spec.Action); !ok {
+		return sandbox.Result{}, fmt.Errorf("%s: unsupported github_action: %s", protocol.ErrorInvalidInput, spec.Action)
+	}
+	args := GHArgs(spec)
+	if ArgsContainSecret(args, token) {
+		return sandbox.Result{}, fmt.Errorf("%s: gh helper argv must not contain the token", protocol.ErrorInternal)
+	}
+	run := c.Engine.Run
+	if run == nil {
+		return sandbox.Result{}, fmt.Errorf("%s: docker runner is not configured", protocol.ErrorUnavailable)
+	}
+	res, err := run(ctx, args, sandbox.HelperStdin(token))
+	if err != nil {
+		return res, err
+	}
+	if token != "" {
+		res.Stdout = RedactToken(res.Stdout, token)
+		res.Stderr = RedactToken(res.Stderr, token)
+	}
+	return res, nil
+}
+
 // StdinWasUsed reports whether the docker runner received a token line matching token.
 func StdinWasUsed(gotStdin, token string) bool {
 	return strings.TrimSpace(gotStdin) == token

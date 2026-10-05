@@ -143,6 +143,8 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.gitPull(ctx, req)
 	case protocol.OpGitPush:
 		return s.gitPush(ctx, req)
+	case protocol.OpGitHubAction, protocol.OpGitHubRead:
+		return s.githubCall(ctx, req)
 	case protocol.OpWorkspaceCapabilities:
 		return protocol.Success("workspace capabilities", map[string]any{
 			"networkProfiles":       []string{string(protocol.NetworkNone), string(protocol.DependencyAccess)},
@@ -668,6 +670,175 @@ func (s *Service) remotePush(ctx context.Context, rec store.Record, refspec, exp
 		return "", err
 	}
 	return strings.TrimSpace(res.Stdout), nil
+}
+
+type githubInput struct {
+	WorkspaceID  string   `json:"workspaceId"`
+	Action       string   `json:"action"`
+	Limit        int      `json:"limit"`
+	State        string   `json:"state"`
+	PRNumber     int      `json:"prNumber"`
+	IssueNumber  int      `json:"issueNumber"`
+	CommentID    int      `json:"commentId"`
+	Title        string   `json:"title"`
+	Body         string   `json:"body"`
+	Head         string   `json:"head"`
+	Base         string   `json:"base"`
+	Draft        bool     `json:"draft"`
+	Labels       []string `json:"labels"`
+	Assignees    []string `json:"assignees"`
+	Name         string   `json:"name"`
+	Color        string   `json:"color"`
+	Description  string   `json:"description"`
+	Label        string   `json:"label"`
+	SHA          string   `json:"sha"`
+	Path         string   `json:"path"`
+	Since        string   `json:"since"`
+	Until        string   `json:"until"`
+	AddLabels    []string `json:"addLabels"`
+	RemoveLabels []string `json:"removeLabels"`
+	StateReason  string   `json:"stateReason"`
+	Comment      string   `json:"comment"`
+}
+
+func (s *Service) githubCall(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
+	var input githubInput
+	if err := json.Unmarshal(req.Input, &input); err != nil || !protocol.ValidOpaqueID(protocol.PrefixWorkspace, input.WorkspaceID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "workspaceId is required", false)
+	}
+	perm, ok := git.RequiredGitHubPermissions(input.Action)
+	if !ok {
+		return protocol.Fail(protocol.ErrorInvalidInput, "unsupported github_action: "+input.Action, false)
+	}
+	if req.Operation == protocol.OpGitHubRead && perm.Write {
+		return protocol.Fail(protocol.ErrorInvalidInput, "github_read accepts read-only actions only; use github_action for "+input.Action, false)
+	}
+	rec, errRes := s.requireOwned(req.OwnerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	if s.cloner == nil {
+		return protocol.Fail(protocol.ErrorUnavailable, "github helper is not configured", true)
+	}
+	parsed, err := git.ValidateRepositoryURL(rec.RepositoryURL, s.cfg.AllowedGitHosts)
+	if err != nil {
+		return failFrom(err)
+	}
+	minted, err := git.MintRepositoryToken(s.cfg.GitHubApp, parsed, s.cfg.HTTP, time.Now())
+	if err != nil {
+		return failFrom(err)
+	}
+	if minted.Token == "" {
+		return protocol.Fail(protocol.ErrorRepositoryOperationNotAuthorized, string(req.Operation)+" requires a configured GitHub App", false)
+	}
+	args, err := githubHelperArgs(input)
+	if err != nil {
+		return failFrom(err)
+	}
+	spec := git.HelperSpec{
+		Name:          "chm-gh-" + rec.ID[3:minLen(rec.ID, 15)],
+		Image:         s.cfg.ExecutorImage,
+		InstanceID:    s.cfg.InstanceID,
+		WorkspaceID:   rec.ID,
+		JobPath:       filepath.Join(s.cfg.JobsRoot, rec.ID),
+		RepositoryURL: rec.RepositoryURL,
+		Action:        input.Action,
+		ActionArgs:    args,
+	}
+	res, err := s.cloner.GH(ctx, spec, minted.Stdin())
+	if err != nil {
+		return failFrom(err)
+	}
+	out := git.RedactToken(strings.TrimSpace(res.Stdout+"\n"+res.Stderr), minted.Token)
+	if res.ExitCode != 0 {
+		return protocol.Fail(protocol.ErrorGitHubActionFailed, "GitHub helper failed", false)
+	}
+	return protocol.Success("GitHub "+input.Action+" complete", map[string]any{"output": out, "action": input.Action})
+}
+
+func githubHelperArgs(in githubInput) ([]string, error) {
+	join := func(items []string) string { return strings.Join(items, ",") }
+	switch in.Action {
+	case "pr_list", "issue_list":
+		limit := in.Limit
+		if limit == 0 {
+			limit = 20
+		}
+		state := in.State
+		if state == "" {
+			state = "open"
+		}
+		return []string{fmt.Sprintf("%d", limit), state}, nil
+	case "pr_view":
+		return []string{fmt.Sprintf("%d", in.PRNumber)}, nil
+	case "issue_view":
+		return []string{fmt.Sprintf("%d", in.IssueNumber)}, nil
+	case "pr_create":
+		if in.Title == "" || in.Head == "" {
+			return nil, fmt.Errorf("%s: title and head are required", protocol.ErrorInvalidInput)
+		}
+		base := in.Base
+		if base == "" {
+			base = "main"
+		}
+		return []string{in.Title, in.Body, in.Head, base, fmt.Sprintf("%t", in.Draft), join(in.Labels)}, nil
+	case "pr_update":
+		return []string{fmt.Sprintf("%d", in.PRNumber), in.Title, in.Body, in.Base, in.State}, nil
+	case "pr_comment":
+		return []string{fmt.Sprintf("%d", in.PRNumber), in.Body}, nil
+	case "issue_create":
+		if in.Title == "" {
+			return nil, fmt.Errorf("%s: title is required", protocol.ErrorInvalidInput)
+		}
+		return []string{in.Title, in.Body, join(in.Labels), join(in.Assignees)}, nil
+	case "issue_comment":
+		return []string{fmt.Sprintf("%d", in.IssueNumber), in.Body}, nil
+	case "issue_comment_update":
+		return []string{fmt.Sprintf("%d", in.CommentID), in.Body}, nil
+	case "label_create":
+		color := in.Color
+		if color == "" {
+			color = "0E8A16"
+		}
+		return []string{in.Name, color, in.Description}, nil
+	case "issue_labels_add":
+		return []string{fmt.Sprintf("%d", in.IssueNumber), join(in.Labels), "true"}, nil
+	case "issue_labels_remove":
+		return []string{fmt.Sprintf("%d", in.IssueNumber), in.Label}, nil
+	case "issue_update":
+		return []string{fmt.Sprintf("%d", in.IssueNumber), in.Title, in.Body, in.State, in.StateReason}, nil
+	case "issue_publish":
+		return []string{fmt.Sprintf("%d", in.IssueNumber), in.Comment, join(in.AddLabels), join(in.RemoveLabels), "true"}, nil
+	case "commit_list":
+		limit := in.Limit
+		if limit == 0 {
+			limit = 30
+		}
+		return []string{fmt.Sprintf("%d", limit), in.SHA, in.Path, in.Since, in.Until}, nil
+	case "compare":
+		if in.Base == "" || in.Head == "" {
+			return nil, fmt.Errorf("%s: base and head are required", protocol.ErrorInvalidInput)
+		}
+		limit := in.Limit
+		if limit == 0 {
+			limit = 100
+		}
+		return []string{in.Base, in.Head, fmt.Sprintf("%d", limit)}, nil
+	case "release_list":
+		limit := in.Limit
+		if limit == 0 {
+			limit = 20
+		}
+		return []string{fmt.Sprintf("%d", limit)}, nil
+	case "tag_list":
+		limit := in.Limit
+		if limit == 0 {
+			limit = 30
+		}
+		return []string{fmt.Sprintf("%d", limit)}, nil
+	default:
+		return nil, fmt.Errorf("%s: unsupported github_action: %s", protocol.ErrorInvalidInput, in.Action)
+	}
 }
 
 func (s *Service) requireOwned(ownerID, workspaceID string) (store.Record, *protocol.ToolResult) {

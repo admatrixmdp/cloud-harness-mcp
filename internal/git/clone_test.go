@@ -76,3 +76,38 @@ func TestTransferImportNetworkNone(t *testing.T) {
 		t.Fatal("token in argv")
 	}
 }
+
+func TestGHPassesTokenOnStdinOnly(t *testing.T) {
+	var seenArgs []string
+	var seenStdin string
+	token := "ghs_this-is-not-a-real-token-value"
+	engine := sandbox.Engine{Run: func(_ context.Context, args []string, stdin string) (sandbox.Result, error) {
+		seenArgs = append([]string{}, args...)
+		seenStdin = stdin
+		return sandbox.Result{ExitCode: 0, Stdout: "listed " + token}, nil
+	}}
+	res, err := (Cloner{Engine: engine}).GH(context.Background(), HelperSpec{
+		Name: "chm-gh", Image: "img", JobPath: "/jobs/ws",
+		RepositoryURL: "https://github.com/bestagentkits/cloud-harness-mcp",
+		Action:        "pr_list",
+	}, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ArgsContainSecret(seenArgs, token) {
+		t.Fatal("token in argv")
+	}
+	if !StdinWasUsed(seenStdin, token) {
+		t.Fatalf("stdin=%q", seenStdin)
+	}
+	if strings.Contains(res.Stdout, token) {
+		t.Fatal("token leaked in output")
+	}
+	if _, err := (Cloner{Engine: engine}).GH(context.Background(), HelperSpec{
+		Name: "chm-gh", Image: "img", JobPath: "/jobs/ws",
+		RepositoryURL: "https://github.com/bestagentkits/cloud-harness-mcp",
+		Action:        "not_a_real_action",
+	}, token); err == nil {
+		t.Fatal("unknown action")
+	}
+}
