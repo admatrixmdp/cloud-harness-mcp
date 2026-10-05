@@ -80,4 +80,8 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if !memListed.OK {
 		t.Fatalf("local memory list: %+v", memListed)
 	}
+	kn := b.Call(context.Background(), protocol.OpKnowledgeList, json.RawMessage(`{}`))
+	if kn.OK || kn.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("knowledge local: %+v", kn)
+	}
 }

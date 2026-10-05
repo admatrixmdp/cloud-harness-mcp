@@ -60,6 +60,8 @@ func (b LocalBackend) Call(ctx context.Context, op protocol.Operation, input jso
 		return protocol.Fail(protocol.ErrorInvalidInput, "secrets_list is unsupported in local stdio mode because retained environment secrets require remote runner storage", false)
 	case protocol.OpArtifactsSnapshot, protocol.OpArtifactsList, protocol.OpArtifactsRead, protocol.OpArtifactsRestore, protocol.OpArtifactsDelete:
 		return protocol.Fail(protocol.ErrorInvalidInput, string(op)+" is unsupported in local stdio mode because retained artifacts require remote runner storage", false)
+	case protocol.OpKnowledgeCreate, protocol.OpKnowledgeRead, protocol.OpKnowledgeUpdate, protocol.OpKnowledgeDelete, protocol.OpKnowledgeList, protocol.OpKnowledgeSearch, protocol.OpKnowledgeLink, protocol.OpKnowledgeUnlink, protocol.OpKnowledgeGraph:
+		return protocol.Fail(protocol.ErrorInvalidInput, string(op)+" is unsupported in local stdio mode because retained knowledge requires remote runner storage", false)
 	case protocol.OpGitFetch, protocol.OpGitPull, protocol.OpGitPush:
 		if op == protocol.OpGitPush && !b.GitPush {
 			return protocol.Fail(protocol.ErrorRepositoryOperationNotAuthorized, "Git push operations are disabled in local mode; pass --git-push to enable", false)

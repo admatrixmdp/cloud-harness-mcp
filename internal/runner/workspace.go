@@ -18,6 +18,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/executor"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/memories"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
@@ -89,6 +90,7 @@ type Service struct {
 	secrets   *secrets.Store
 	artifacts *artifacts.Store
 	memories  *memories.Store
+	knowledge *knowledge.Store
 }
 
 // WithCloner clones through a helper container after executor create.
@@ -114,6 +116,12 @@ func (s *Service) WithArtifacts(store *artifacts.Store) *Service {
 // WithMemories attaches retained SQLite memory notes. Local stdio uses confined markdown instead.
 func (s *Service) WithMemories(store *memories.Store) *Service {
 	s.memories = store
+	return s
+}
+
+// WithKnowledge attaches retained SQLite knowledge items. Local stdio never hosts this.
+func (s *Service) WithKnowledge(store *knowledge.Store) *Service {
+	s.knowledge = store
 	return s
 }
 
@@ -198,6 +206,18 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.memoriesSearch(req)
 	case protocol.OpMemoriesDelete:
 		return s.memoriesDelete(req)
+	case protocol.OpKnowledgeCreate:
+		return s.knowledgeCreate(req)
+	case protocol.OpKnowledgeRead:
+		return s.knowledgeRead(req)
+	case protocol.OpKnowledgeUpdate:
+		return s.knowledgeUpdate(req)
+	case protocol.OpKnowledgeDelete:
+		return s.knowledgeDelete(req)
+	case protocol.OpKnowledgeList:
+		return s.knowledgeList(req)
+	case protocol.OpKnowledgeSearch:
+		return s.knowledgeSearch(req)
 	case protocol.OpWorkspaceCapabilities:
 		return protocol.Success("workspace capabilities", map[string]any{
 			"networkProfiles":       []string{string(protocol.NetworkNone), string(protocol.DependencyAccess)},
@@ -1020,6 +1040,263 @@ func (s *Service) memoriesDelete(req protocol.RunnerRequest) protocol.ToolResult
 		return memoryFail(err)
 	}
 	return protocol.Success("Memory note deleted", map[string]any{"deleted": true})
+}
+
+type knowledgeInput struct {
+	WorkspaceID        string   `json:"workspaceId"`
+	ID                 string   `json:"id"`
+	Kind               string   `json:"kind"`
+	Scope              string   `json:"scope"`
+	ProjectID          string   `json:"projectId"`
+	Title              string   `json:"title"`
+	Content            string   `json:"content"`
+	JournalType        string   `json:"journalType"`
+	OccurredAt         *int64   `json:"occurredAt"`
+	Tags               []string `json:"tags"`
+	Kinds              []string `json:"kinds"`
+	TagMatch           string   `json:"tagMatch"`
+	Query              string   `json:"query"`
+	Cursor             string   `json:"cursor"`
+	Limit              *int     `json:"limit"`
+	RetentionSeconds   *int     `json:"retentionSeconds"`
+	ExpectedGeneration *int     `json:"expectedGeneration"`
+}
+
+func knowledgeFail(err error) protocol.ToolResult {
+	if kn, ok := err.(*knowledge.Error); ok {
+		return protocol.Fail(kn.Code, kn.Message, false)
+	}
+	return protocol.Fail(protocol.ErrorInternal, "knowledge store is unavailable", true)
+}
+
+func (s *Service) requireKnowledge() (*knowledge.Store, *protocol.ToolResult) {
+	if s.knowledge == nil {
+		fail := protocol.Fail(protocol.ErrorUnavailable, "knowledge storage is not configured", true)
+		return nil, &fail
+	}
+	return s.knowledge, nil
+}
+
+func (s *Service) knowledgeContext(req protocol.RunnerRequest, input knowledgeInput) (ownerID string, rec store.Record, errRes *protocol.ToolResult) {
+	ownerID = req.OwnerID
+	if ownerID == "" {
+		ownerID = "owner"
+	}
+	rec, errRes = s.resolveWorkspace(ownerID, input.WorkspaceID)
+	if errRes != nil {
+		return "", store.Record{}, errRes
+	}
+	return ownerID, rec, nil
+}
+
+func (s *Service) knowledgeCreate(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireKnowledge()
+	if fail != nil {
+		return *fail
+	}
+	var input knowledgeInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid knowledge_create input", false)
+		}
+	}
+	ownerID, rec, errRes := s.knowledgeContext(req, input)
+	if errRes != nil {
+		return *errRes
+	}
+	expected := 0
+	if input.ExpectedGeneration != nil {
+		expected = *input.ExpectedGeneration
+	}
+	retention := 0
+	if input.RetentionSeconds != nil {
+		retention = *input.RetentionSeconds
+	}
+	occurred := int64(0)
+	if input.OccurredAt != nil {
+		occurred = *input.OccurredAt
+	}
+	item, err := store.Create(knowledge.CreateParams{
+		PrincipalID: ownerID, Kind: input.Kind, Scope: input.Scope, ProjectID: input.ProjectID,
+		WorkspaceID: rec.ID, Title: input.Title, Content: input.Content, JournalType: input.JournalType,
+		OccurredAt: occurred, Tags: input.Tags, RetentionSeconds: retention, ExpectedGeneration: expected,
+	})
+	if err != nil {
+		return knowledgeFail(err)
+	}
+	return protocol.Success("Knowledge item created", item.PublicJSON())
+}
+
+func (s *Service) knowledgeRead(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireKnowledge()
+	if fail != nil {
+		return *fail
+	}
+	var input knowledgeInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid knowledge_read input", false)
+		}
+	}
+	ownerID, _, errRes := s.knowledgeContext(req, input)
+	if errRes != nil {
+		return *errRes
+	}
+	item, err := store.Read(ownerID, input.ID)
+	if err != nil {
+		return knowledgeFail(err)
+	}
+	return protocol.Success("Knowledge item read", item.PublicJSON())
+}
+
+func (s *Service) knowledgeUpdate(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireKnowledge()
+	if fail != nil {
+		return *fail
+	}
+	var raw map[string]any
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &raw); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid knowledge_update input", false)
+		}
+	}
+	var input knowledgeInput
+	_ = json.Unmarshal(req.Input, &input)
+	ownerID, _, errRes := s.knowledgeContext(req, input)
+	if errRes != nil {
+		return *errRes
+	}
+	expected := 0
+	if input.ExpectedGeneration != nil {
+		expected = *input.ExpectedGeneration
+	}
+	p := knowledge.UpdateParams{PrincipalID: ownerID, ID: input.ID, ExpectedGeneration: expected}
+	if _, ok := raw["title"]; ok {
+		p.Title = &input.Title
+	}
+	if _, ok := raw["content"]; ok {
+		p.Content = &input.Content
+	}
+	if _, ok := raw["journalType"]; ok {
+		p.JournalType = &input.JournalType
+	}
+	if input.OccurredAt != nil {
+		p.OccurredAt = input.OccurredAt
+	}
+	if _, ok := raw["tags"]; ok {
+		p.Tags = &input.Tags
+	}
+	p.RetentionSeconds = input.RetentionSeconds
+	item, err := store.Update(p)
+	if err != nil {
+		return knowledgeFail(err)
+	}
+	return protocol.Success("Knowledge item updated", item.PublicJSON())
+}
+
+func (s *Service) knowledgeDelete(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireKnowledge()
+	if fail != nil {
+		return *fail
+	}
+	var input knowledgeInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid knowledge_delete input", false)
+		}
+	}
+	ownerID, _, errRes := s.knowledgeContext(req, input)
+	if errRes != nil {
+		return *errRes
+	}
+	expected := 0
+	if input.ExpectedGeneration != nil {
+		expected = *input.ExpectedGeneration
+	}
+	if err := store.Delete(ownerID, input.ID, expected); err != nil {
+		return knowledgeFail(err)
+	}
+	return protocol.Success("Knowledge item deleted", map[string]any{"deleted": true})
+}
+
+func (s *Service) knowledgeList(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireKnowledge()
+	if fail != nil {
+		return *fail
+	}
+	var input knowledgeInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid knowledge_list input", false)
+		}
+	}
+	ownerID, rec, errRes := s.knowledgeContext(req, input)
+	if errRes != nil {
+		return *errRes
+	}
+	limit := 50
+	if input.Limit != nil {
+		limit = *input.Limit
+	}
+	rows, next, err := store.List(knowledge.ListParams{
+		PrincipalID: ownerID, Kind: input.Kind, Scope: input.Scope, ProjectID: input.ProjectID,
+		WorkspaceID: rec.ID, JournalType: input.JournalType, Tags: input.Tags, TagMatch: input.TagMatch,
+		Limit: limit, Cursor: input.Cursor,
+	})
+	if err != nil {
+		return knowledgeFail(err)
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.PublicJSON())
+	}
+	got := protocol.Success(fmt.Sprintf("Found %d knowledge items", len(out)), map[string]any{"items": out})
+	if next != "" {
+		got.Cursor = next
+		got.Truncated = true
+		got.Data = map[string]any{"items": out, "cursor": next}
+	}
+	return got
+}
+
+func (s *Service) knowledgeSearch(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireKnowledge()
+	if fail != nil {
+		return *fail
+	}
+	var input knowledgeInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid knowledge_search input", false)
+		}
+	}
+	ownerID, rec, errRes := s.knowledgeContext(req, input)
+	if errRes != nil {
+		return *errRes
+	}
+	limit := 20
+	if input.Limit != nil {
+		limit = *input.Limit
+	}
+	rows, next, err := store.Search(knowledge.ListParams{
+		PrincipalID: ownerID, Kind: input.Kind, Scope: input.Scope, ProjectID: input.ProjectID,
+		WorkspaceID: rec.ID, JournalType: input.JournalType, Tags: input.Tags, TagMatch: input.TagMatch,
+		Query: input.Query, Kinds: input.Kinds, Limit: limit, Cursor: input.Cursor,
+	})
+	if err != nil {
+		return knowledgeFail(err)
+	}
+	results := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		results = append(results, map[string]any{"item": row.PublicJSON(), "relevancePercent": 100, "matchMode": "lexical"})
+	}
+	got := protocol.Success(fmt.Sprintf("Found %d matching knowledge items", len(results)), map[string]any{"results": results})
+	if next != "" {
+		got.Cursor = next
+		got.Truncated = true
+		got.Data = map[string]any{"results": results, "cursor": next}
+	}
+	return got
 }
 
 const globalSecretEnvironment = "global"
