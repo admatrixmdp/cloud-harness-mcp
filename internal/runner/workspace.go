@@ -202,6 +202,8 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.githubCall(ctx, req)
 	case protocol.OpSkillsRun:
 		return s.skillsRun(ctx, req)
+	case protocol.OpSkillSuggest:
+		return s.skillSuggest(req)
 	case protocol.OpFilesList, protocol.OpFilesRead, protocol.OpFilesWrite, protocol.OpFilesWriteBatch, protocol.OpFilesApplyPatch, protocol.OpFilesDelete, protocol.OpFilesMove, protocol.OpFilesMkdir, protocol.OpGrepSearch, protocol.OpSymbolsSearch, protocol.OpSymbolsReferences, protocol.OpExecRun, protocol.OpGitStatus, protocol.OpGitDiff, protocol.OpGitLog, protocol.OpGitBranch, protocol.OpGitCheckout, protocol.OpGitAdd, protocol.OpGitCommit, protocol.OpGitMerge, protocol.OpGitRebase, protocol.OpWorktreesList, protocol.OpWorktreesCreate, protocol.OpWorktreesRemove, protocol.OpSkillsList, protocol.OpSkillsRead, protocol.OpHooksList, protocol.OpHooksRun, protocol.OpDeploymentsList, protocol.OpDeploymentsRun:
 		return s.runWorker(ctx, req)
 	case protocol.OpSecretsList:
@@ -567,6 +569,44 @@ func (s *Service) skillsRun(ctx context.Context, req protocol.RunnerRequest) pro
 		got.Data = data
 	}
 	return got
+}
+
+const typesafeEgressCeiling = 8192
+
+func (s *Service) skillSuggest(req protocol.RunnerRequest) protocol.ToolResult {
+	var input struct {
+		Prompt      string `json:"prompt"`
+		WorkspaceID string `json:"workspaceId"`
+	}
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid skill_suggest input", false)
+		}
+	}
+	if strings.TrimSpace(input.Prompt) == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "prompt is required", false)
+	}
+	if len([]byte(input.Prompt)) > typesafeEgressCeiling {
+		return protocol.Fail(protocol.ErrorInvalidInput, "the prompt exceeds the egress byte bound", false)
+	}
+	reason := "not_configured"
+	if input.WorkspaceID == "" {
+		reason = "empty_roster"
+	} else if rec, errRes := s.resolveWorkspace(req.OwnerID, input.WorkspaceID); errRes != nil {
+		return *errRes
+	} else if rec.Status != store.StatusActive {
+		reason = "empty_roster"
+	} else {
+		reason = "not_configured"
+	}
+	return protocol.Success("No suggestion", map[string]any{
+		"suggested":      nil,
+		"reason":         reason,
+		"cached":         false,
+		"latencyMs":      0,
+		"outboundCalls":  0,
+		"redactionCount": 0,
+	})
 }
 
 func (s *Service) runWorker(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {

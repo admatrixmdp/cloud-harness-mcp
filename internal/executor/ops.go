@@ -82,6 +82,7 @@ type pathInput struct {
 	ExpectedManifestSHA256 string   `json:"expectedManifestSha256"`
 	ExpectedContentSHA256  string   `json:"expectedContentSha256"`
 	Script                 string   `json:"script"`
+	Prompt                 string   `json:"prompt"`
 	Args                   []string `json:"args"`
 	Files                  []struct {
 		Path           string `json:"path"`
@@ -153,6 +154,8 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.skillsRead(in)
 	case protocol.OpSkillsRun:
 		return w.skillsRun(ctx, in)
+	case protocol.OpSkillSuggest:
+		return w.skillSuggest(in)
 	case protocol.OpHooksList:
 		return w.hooksList(in)
 	case protocol.OpHooksRun:

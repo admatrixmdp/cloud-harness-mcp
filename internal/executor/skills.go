@@ -542,3 +542,57 @@ func skillBundleDigest(skillDir string) (string, error) {
 	digest := sha256.Sum256([]byte(strings.Join(parts, "\n")))
 	return hex.EncodeToString(digest[:]), nil
 }
+
+const typesafeEgressCeiling = 8192
+
+func (w Workspace) skillSuggest(in pathInput) protocol.ToolResult {
+	if strings.TrimSpace(in.Prompt) == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "prompt is required", false)
+	}
+	if len([]byte(in.Prompt)) > typesafeEgressCeiling {
+		return protocol.Fail(protocol.ErrorInvalidInput, "the prompt exceeds the egress byte bound", false)
+	}
+	entries, err := w.skillEntries()
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+	}
+	if len(entries) == 0 {
+		return noneSuggestion("empty_roster")
+	}
+	prompt := strings.ToLower(in.Prompt)
+	var hit *skillEntry
+	for i := range entries {
+		name := strings.ToLower(entries[i].Name)
+		if name != "" && strings.Contains(prompt, name) {
+			hit = &entries[i]
+			break
+		}
+	}
+	if hit == nil {
+		return noneSuggestion("no_match")
+	}
+	return protocol.Success("Suggested skill", map[string]any{
+		"suggested": map[string]any{
+			"name":       hit.Name,
+			"gate":       1.0,
+			"fit":        1.0,
+			"confidence": 1.0,
+		},
+		"reason":         "lexical",
+		"cached":         false,
+		"latencyMs":      0,
+		"outboundCalls":  0,
+		"redactionCount": 0,
+	})
+}
+
+func noneSuggestion(reason string) protocol.ToolResult {
+	return protocol.Success("No suggestion", map[string]any{
+		"suggested":      nil,
+		"reason":         reason,
+		"cached":         false,
+		"latencyMs":      0,
+		"outboundCalls":  0,
+		"redactionCount": 0,
+	})
+}

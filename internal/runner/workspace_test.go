@@ -1152,3 +1152,48 @@ func TestWorkspaceFinalizePreflightAndLocalCommit(t *testing.T) {
 		t.Fatalf("dash branch: %+v", dash)
 	}
 }
+
+func TestSkillSuggestIsFailClosedWithoutTypeSafe(t *testing.T) {
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)
+	none := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSkillSuggest,
+		Input: json.RawMessage(`{"prompt":"Please refactor the authentication middleware."}`),
+	})
+	if !none.OK {
+		t.Fatalf("no workspace: %+v", none)
+	}
+	data := none.Data.(map[string]any)
+	if data["suggested"] != nil || data["reason"] != "empty_roster" || data["outboundCalls"] != 0 {
+		t.Fatalf("no workspace data %+v", data)
+	}
+	raw, _ := json.Marshal(none)
+	if strings.Contains(string(raw), "authentication middleware") {
+		t.Fatalf("prompt leaked: %s", raw)
+	}
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"suggest-open-001","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	wsID := open.Data.(map[string]any)["workspaceId"].(string)
+	got := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSkillSuggest,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","prompt":"Please refactor the authentication middleware."}`),
+	})
+	if !got.OK {
+		t.Fatalf("configured workspace: %+v", got)
+	}
+	out := got.Data.(map[string]any)
+	if out["suggested"] != nil || out["reason"] != "not_configured" || out["outboundCalls"] != 0 {
+		t.Fatalf("workspace data %+v", out)
+	}
+	over := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSkillSuggest,
+		Input: json.RawMessage(`{"prompt":"` + strings.Repeat("x", 8193) + `"}`),
+	})
+	if over.OK || over.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("oversize: %+v", over)
+	}
+}

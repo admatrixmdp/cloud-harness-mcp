@@ -629,6 +629,45 @@ func TestSkillsRunRequiresDigestAndRejectsMismatch(t *testing.T) {
 	}
 }
 
+func TestSkillSuggestIsLexicalAndNeverEchosPrompt(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, ".cloud-harness", "skills", "tdd")
+	if err := os.MkdirAll(skillDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# TDD\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := Workspace{Root: root}
+	empty := (Workspace{Root: t.TempDir()}).Execute(context.Background(), protocol.OpSkillSuggest, json.RawMessage(`{"prompt":"please help"}`))
+	if !empty.OK {
+		t.Fatalf("empty: %+v", empty)
+	}
+	if empty.Data.(map[string]any)["reason"] != "empty_roster" || empty.Data.(map[string]any)["outboundCalls"] != 0 {
+		t.Fatalf("empty data %+v", empty.Data)
+	}
+	over := ws.Execute(context.Background(), protocol.OpSkillSuggest, json.RawMessage(`{"prompt":"`+strings.Repeat("x", 8193)+`"}`))
+	if over.OK || over.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("oversize: %+v", over)
+	}
+	secret := "please use tdd on secret-token-xyz"
+	got := ws.Execute(context.Background(), protocol.OpSkillSuggest, json.RawMessage(`{"prompt":"`+secret+`"}`))
+	if !got.OK {
+		t.Fatalf("suggest: %+v", got)
+	}
+	raw, _ := json.Marshal(got)
+	if strings.Contains(string(raw), "secret-token-xyz") {
+		t.Fatalf("prompt leaked: %s", raw)
+	}
+	suggested, _ := got.Data.(map[string]any)["suggested"].(map[string]any)
+	if suggested["name"] != "tdd" {
+		t.Fatalf("suggested %+v", got.Data)
+	}
+	if got.Data.(map[string]any)["outboundCalls"] != 0 {
+		t.Fatalf("egress %+v", got.Data)
+	}
+}
+
 func TestDeploymentsListOmitsCommandAndRunConflicts(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".cloud-harness"), 0o700); err != nil {

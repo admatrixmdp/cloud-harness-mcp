@@ -104,4 +104,11 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if !deploys.OK {
 		t.Fatalf("local deployments list: %+v", deploys)
 	}
+	suggest := b.Call(context.Background(), protocol.OpSkillSuggest, json.RawMessage(`{"prompt":"hello"}`))
+	if !suggest.OK {
+		t.Fatalf("local skill_suggest: %+v", suggest)
+	}
+	if suggest.Data.(map[string]any)["outboundCalls"] != 0 {
+		t.Fatalf("local suggest egress %+v", suggest.Data)
+	}
 }
