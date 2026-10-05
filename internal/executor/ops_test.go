@@ -545,6 +545,48 @@ func TestMemoriesStayConfinedAndRejectDashNames(t *testing.T) {
 	}
 }
 
+func TestHooksRunRequiresDigestAndRejectsMismatch(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".cloud-harness"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := []byte(`{"version":1,"hooks":[{"name":"lint","events":["pre_commit"],"argv":["/bin/echo","hook-ok"],"failurePolicy":"block"}]}`)
+	if err := os.WriteFile(filepath.Join(root, ".cloud-harness", "hooks.json"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := Workspace{Root: root}
+	listed := ws.Execute(context.Background(), protocol.OpHooksList, json.RawMessage(`{}`))
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	sha, _ := listed.Data.(map[string]any)["manifestSha256"].(string)
+	if sha == "" {
+		t.Fatalf("missing digest %+v", listed.Data)
+	}
+	missing := ws.Execute(context.Background(), protocol.OpHooksRun, json.RawMessage(`{"name":"lint"}`))
+	if missing.OK || missing.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("missing digest: %+v", missing)
+	}
+	mismatch := ws.Execute(context.Background(), protocol.OpHooksRun, json.RawMessage(`{"name":"lint","expectedManifestSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+	if mismatch.OK || mismatch.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("mismatch: %+v", mismatch)
+	}
+	ok := ws.Execute(context.Background(), protocol.OpHooksRun, json.RawMessage(`{"name":"lint","expectedManifestSha256":"`+sha+`"}`))
+	if !ok.OK {
+		t.Fatalf("run: %+v", ok)
+	}
+	if !strings.Contains(ok.Data.(map[string]any)["output"].(string), "hook-ok") {
+		t.Fatalf("output %+v", ok.Data)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".cloud-harness", "hooks.json"), []byte(`{"version":1,"hooks":[{"name":"lint","events":["pre_commit"],"argv":["/bin/echo","tampered"]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stale := ws.Execute(context.Background(), protocol.OpHooksRun, json.RawMessage(`{"name":"lint","expectedManifestSha256":"`+sha+`"}`))
+	if stale.OK || stale.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("stale: %+v", stale)
+	}
+}
+
 func asMaps(raw any) []map[string]any {
 	switch v := raw.(type) {
 	case []map[string]any:

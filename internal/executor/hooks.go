@@ -1,11 +1,14 @@
 package executor
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -22,10 +25,14 @@ var hookEvents = map[string]struct{}{
 }
 
 type hookRecord struct {
-	Name          string
-	Events        []string
-	FailurePolicy string
-	Order         int
+	Name           string
+	Events         []string
+	FailurePolicy  string
+	Order          int
+	Argv           []string
+	Cwd            string
+	TimeoutMs      int
+	MaxOutputBytes int
 }
 
 func (w Workspace) hooksList(in pathInput) protocol.ToolResult {
@@ -110,6 +117,89 @@ func (w Workspace) hooksList(in pathInput) protocol.ToolResult {
 	return got
 }
 
+func (w Workspace) hooksRun(ctx context.Context, in pathInput) protocol.ToolResult {
+	if !validHookName(in.Name) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid hook name", false)
+	}
+	expected := in.ExpectedManifestSHA256
+	if expected == "" {
+		expected = in.ExpectedSHA256
+	}
+	if expected == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "expectedManifestSha256 or expectedSha256 is required to run a hook", false)
+	}
+	if len(expected) != 64 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "expectedManifestSha256 must be a 64-character hex digest", false)
+	}
+	digest, hooks, err := w.hookEntries()
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	if digest != expected {
+		return protocol.Fail(protocol.ErrorConflict, fmt.Sprintf("hook manifest SHA-256 mismatch: expected %s, got %s", expected, digest), false)
+	}
+	var hook hookRecord
+	found := false
+	for _, h := range hooks {
+		if h.Name == in.Name {
+			hook = h
+			found = true
+			break
+		}
+	}
+	if !found {
+		return protocol.Fail(protocol.ErrorNotFound, "hook not found", false)
+	}
+	if len(hook.Argv) == 0 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "hook has empty argv", false)
+	}
+	cwd, err := SafePath(w.root(), emptyDot(hook.Cwd), false)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	timeout := time.Duration(hook.TimeoutMs) * time.Millisecond
+	if in.TimeoutMs > 0 {
+		timeout = time.Duration(in.TimeoutMs) * time.Millisecond
+	}
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	maxBytes := hook.MaxOutputBytes
+	if maxBytes <= 0 {
+		maxBytes = 65536
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, hook.Argv[0], hook.Argv[1:]...)
+	cmd.Dir = cwd
+	cmd.Env = confinedEnv()
+	var buf bytes.Buffer
+	limited := &limitedWriter{max: maxBytes, buf: &buf}
+	cmd.Stdout = limited
+	cmd.Stderr = limited
+	err = cmd.Run()
+	exit := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exit = exitErr.ExitCode()
+		} else if runCtx.Err() == context.DeadlineExceeded {
+			return protocol.Fail(protocol.ErrorTimeout, "hook timed out", true)
+		} else {
+			return protocol.Fail(protocol.ErrorExecutionFailed, err.Error(), false)
+		}
+	}
+	data := map[string]any{"output": buf.String(), "exitCode": exit, "signal": nil}
+	if exit != 0 {
+		got := protocol.Fail(protocol.ErrorExecutionFailed, fmt.Sprintf("Hook exited with %d", exit), false)
+		got.Data = data
+		got.Truncated = limited.truncated
+		return got
+	}
+	got := protocol.Success(fmt.Sprintf("Hook exited with %d", exit), data)
+	got.Truncated = limited.truncated
+	return got
+}
+
 func validHookName(name string) bool {
 	if name == "" || len(name) > 120 || strings.HasPrefix(name, "-") {
 		return false
@@ -168,11 +258,13 @@ func (w Workspace) hookEntries() (string, []hookRecord, error) {
 		if !validHookName(name) {
 			continue
 		}
-		if _, ok := cmd.(string); !ok {
+		command, ok := cmd.(string)
+		if !ok || command == "" {
 			continue
 		}
 		out = append(out, hookRecord{
 			Name: name, Events: []string{"manual"}, FailurePolicy: "warn", Order: 100,
+			Argv: []string{"/bin/bash", "-lc", command}, Cwd: ".", TimeoutMs: 60_000, MaxOutputBytes: 65536,
 		})
 	}
 	return digest, out, nil
@@ -211,5 +303,44 @@ func parseHookObject(h map[string]any, _ string) hookRecord {
 	case int:
 		order = n
 	}
-	return hookRecord{Name: name, Events: events, FailurePolicy: policy, Order: order}
+	timeoutMs := 60_000
+	switch n := h["timeoutMs"].(type) {
+	case float64:
+		timeoutMs = int(n)
+	case int:
+		timeoutMs = n
+	}
+	maxBytes := 65536
+	switch n := h["maxOutputBytes"].(type) {
+	case float64:
+		maxBytes = int(n)
+	case int:
+		maxBytes = n
+	}
+	cwd := "."
+	if s, ok := h["cwd"].(string); ok && s != "" {
+		cwd = s
+	}
+	return hookRecord{
+		Name: name, Events: events, FailurePolicy: policy, Order: order,
+		Argv: hookArgv(h), Cwd: cwd, TimeoutMs: timeoutMs, MaxOutputBytes: maxBytes,
+	}
+}
+
+func hookArgv(h map[string]any) []string {
+	if raw, ok := h["argv"].([]any); ok {
+		out := make([]string, 0, len(raw))
+		for _, item := range raw {
+			s, ok := item.(string)
+			if !ok || s == "" {
+				return nil
+			}
+			out = append(out, s)
+		}
+		return out
+	}
+	if cmd, ok := h["command"].(string); ok && cmd != "" {
+		return []string{"/bin/bash", "-lc", cmd}
+	}
+	return nil
 }

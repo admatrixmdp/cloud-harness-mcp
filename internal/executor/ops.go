@@ -40,46 +40,47 @@ func (w Workspace) root() string {
 }
 
 type pathInput struct {
-	Path            string   `json:"path"`
-	Content         string   `json:"content"`
-	ExpectedSHA256  string   `json:"expectedSha256"`
-	Cursor          string   `json:"cursor"`
-	Offset          *int     `json:"offset"`
-	Limit           *int     `json:"limit"`
-	ReadAll         bool     `json:"readAll"`
-	Cwd             string   `json:"cwd"`
-	Command         string   `json:"command"`
-	TimeoutMs       int      `json:"timeoutMs"`
-	MaxOutputBytes  int      `json:"maxOutputBytes"`
-	OldText         string   `json:"oldText"`
-	NewText         string   `json:"newText"`
-	Pattern         string   `json:"pattern"`
-	Glob            string   `json:"glob"`
-	MaxResults      int      `json:"maxResults"`
-	Source          string   `json:"source"`
-	Destination     string   `json:"destination"`
-	Overwrite       bool     `json:"overwrite"`
-	ContentBase64   string   `json:"contentBase64"`
-	Query           string   `json:"query"`
-	Symbol          string   `json:"symbol"`
-	Action          string   `json:"action"`
-	Name            string   `json:"name"`
-	StartPoint      string   `json:"startPoint"`
-	Force           bool     `json:"force"`
-	Ref             string   `json:"ref"`
-	Create          bool     `json:"create"`
-	CreateBranch    bool     `json:"createBranch"`
-	IncludeShadowed *bool    `json:"includeShadowed"`
-	All             bool     `json:"all"`
-	Paths           []string `json:"paths"`
-	Message         string   `json:"message"`
-	AuthorName      string   `json:"authorName"`
-	AuthorEmail     string   `json:"authorEmail"`
-	FastForward     string   `json:"fastForward"`
-	Upstream        string   `json:"upstream"`
-	Mode            string   `json:"mode"`
-	Event           string   `json:"event"`
-	Files           []struct {
+	Path                   string   `json:"path"`
+	Content                string   `json:"content"`
+	ExpectedSHA256         string   `json:"expectedSha256"`
+	Cursor                 string   `json:"cursor"`
+	Offset                 *int     `json:"offset"`
+	Limit                  *int     `json:"limit"`
+	ReadAll                bool     `json:"readAll"`
+	Cwd                    string   `json:"cwd"`
+	Command                string   `json:"command"`
+	TimeoutMs              int      `json:"timeoutMs"`
+	MaxOutputBytes         int      `json:"maxOutputBytes"`
+	OldText                string   `json:"oldText"`
+	NewText                string   `json:"newText"`
+	Pattern                string   `json:"pattern"`
+	Glob                   string   `json:"glob"`
+	MaxResults             int      `json:"maxResults"`
+	Source                 string   `json:"source"`
+	Destination            string   `json:"destination"`
+	Overwrite              bool     `json:"overwrite"`
+	ContentBase64          string   `json:"contentBase64"`
+	Query                  string   `json:"query"`
+	Symbol                 string   `json:"symbol"`
+	Action                 string   `json:"action"`
+	Name                   string   `json:"name"`
+	StartPoint             string   `json:"startPoint"`
+	Force                  bool     `json:"force"`
+	Ref                    string   `json:"ref"`
+	Create                 bool     `json:"create"`
+	CreateBranch           bool     `json:"createBranch"`
+	IncludeShadowed        *bool    `json:"includeShadowed"`
+	All                    bool     `json:"all"`
+	Paths                  []string `json:"paths"`
+	Message                string   `json:"message"`
+	AuthorName             string   `json:"authorName"`
+	AuthorEmail            string   `json:"authorEmail"`
+	FastForward            string   `json:"fastForward"`
+	Upstream               string   `json:"upstream"`
+	Mode                   string   `json:"mode"`
+	Event                  string   `json:"event"`
+	ExpectedManifestSHA256 string   `json:"expectedManifestSha256"`
+	Files                  []struct {
 		Path           string `json:"path"`
 		Content        string `json:"content"`
 		ExpectedSHA256 string `json:"expectedSha256"`
@@ -149,6 +150,8 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.skillsRead(in)
 	case protocol.OpHooksList:
 		return w.hooksList(in)
+	case protocol.OpHooksRun:
+		return w.hooksRun(ctx, in)
 	case protocol.OpMemoriesList:
 		return w.memoriesList(in)
 	case protocol.OpMemoriesRead:

@@ -88,4 +88,8 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if act.OK || act.Error.Code != protocol.ErrorInvalidInput {
 		t.Fatalf("hooks_activate local: %+v", act)
 	}
+	runMissing := b.Call(context.Background(), protocol.OpHooksRun, json.RawMessage(`{"name":"lint"}`))
+	if runMissing.OK || runMissing.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("hooks_run missing digest: %+v", runMissing)
+	}
 }

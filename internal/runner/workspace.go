@@ -190,7 +190,7 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.gitPush(ctx, req)
 	case protocol.OpGitHubAction, protocol.OpGitHubRead:
 		return s.githubCall(ctx, req)
-	case protocol.OpFilesList, protocol.OpFilesRead, protocol.OpFilesWrite, protocol.OpFilesWriteBatch, protocol.OpFilesApplyPatch, protocol.OpFilesDelete, protocol.OpFilesMove, protocol.OpFilesMkdir, protocol.OpGrepSearch, protocol.OpSymbolsSearch, protocol.OpSymbolsReferences, protocol.OpExecRun, protocol.OpGitStatus, protocol.OpGitDiff, protocol.OpGitLog, protocol.OpGitBranch, protocol.OpGitCheckout, protocol.OpGitAdd, protocol.OpGitCommit, protocol.OpGitMerge, protocol.OpGitRebase, protocol.OpWorktreesList, protocol.OpWorktreesCreate, protocol.OpWorktreesRemove, protocol.OpSkillsList, protocol.OpSkillsRead, protocol.OpHooksList:
+	case protocol.OpFilesList, protocol.OpFilesRead, protocol.OpFilesWrite, protocol.OpFilesWriteBatch, protocol.OpFilesApplyPatch, protocol.OpFilesDelete, protocol.OpFilesMove, protocol.OpFilesMkdir, protocol.OpGrepSearch, protocol.OpSymbolsSearch, protocol.OpSymbolsReferences, protocol.OpExecRun, protocol.OpGitStatus, protocol.OpGitDiff, protocol.OpGitLog, protocol.OpGitBranch, protocol.OpGitCheckout, protocol.OpGitAdd, protocol.OpGitCommit, protocol.OpGitMerge, protocol.OpGitRebase, protocol.OpWorktreesList, protocol.OpWorktreesCreate, protocol.OpWorktreesRemove, protocol.OpSkillsList, protocol.OpSkillsRead, protocol.OpHooksList, protocol.OpHooksRun:
 		return s.runWorker(ctx, req)
 	case protocol.OpSecretsList:
 		return s.secretsList(req)
