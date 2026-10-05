@@ -23,8 +23,20 @@ func main() {
 Provider credentials stay on this process. Subagent containers get only the
 lease token and a per-agent internal network.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			h := agent.Handler(agent.NewRegistry(), map[string]agent.Profile{})
-			slog.Info("model-gateway listening", "addr", listen)
+			profiles := map[string]agent.Profile{}
+			if url := os.Getenv("MODEL_UPSTREAM_URL"); url != "" {
+				profiles["default"] = agent.Profile{
+					ID: "default",
+					Upstream: agent.Upstream{
+						URL:              url,
+						Credential:       os.Getenv("MODEL_UPSTREAM_CREDENTIAL"),
+						CredentialHeader: "Authorization",
+						CredentialScheme: "Bearer",
+					},
+				}
+			}
+			h := agent.Handler(agent.NewRegistry(), profiles)
+			slog.Info("model-gateway listening", "addr", listen, "profiles", len(profiles))
 			return http.ListenAndServe(listen, h)
 		},
 	}

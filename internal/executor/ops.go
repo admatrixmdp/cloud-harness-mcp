@@ -55,6 +55,16 @@ type pathInput struct {
 	Pattern        string `json:"pattern"`
 	Glob           string `json:"glob"`
 	MaxResults     int    `json:"maxResults"`
+	Source         string `json:"source"`
+	Destination    string `json:"destination"`
+	Overwrite      bool   `json:"overwrite"`
+	Query          string `json:"query"`
+	Symbol         string `json:"symbol"`
+	Files          []struct {
+		Path           string `json:"path"`
+		Content        string `json:"content"`
+		ExpectedSHA256 string `json:"expectedSha256"`
+	} `json:"files"`
 }
 
 // Execute handles one worker operation. Unknown operations stay INVALID_INPUT.
@@ -78,8 +88,16 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.mkdir(in)
 	case protocol.OpFilesApplyPatch:
 		return w.patch(in)
+	case protocol.OpFilesWriteBatch:
+		return w.writeBatch(in)
+	case protocol.OpFilesMove:
+		return w.move(in)
 	case protocol.OpGrepSearch:
 		return w.grep(ctx, in)
+	case protocol.OpSymbolsSearch:
+		return w.symbolsSearch(in)
+	case protocol.OpSymbolsReferences:
+		return w.symbolsReferences(ctx, in)
 	case protocol.OpExecRun:
 		return w.exec(ctx, in)
 	case protocol.OpGitStatus:
@@ -245,6 +263,175 @@ func (w Workspace) mkdir(in pathInput) protocol.ToolResult {
 		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
 	}
 	return protocol.Success("directory created", map[string]any{"path": in.Path})
+}
+
+func (w Workspace) writeBatch(in pathInput) protocol.ToolResult {
+	if len(in.Files) == 0 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "files array is required and cannot be empty", false)
+	}
+	normalized := make([]string, len(in.Files))
+	for i, item := range in.Files {
+		normalized[i] = strings.ReplaceAll(item.Path, "\\", "/")
+	}
+	for i, left := range normalized {
+		for j, right := range normalized {
+			if i != j && strings.HasPrefix(right, left+"/") {
+				return protocol.Fail(protocol.ErrorConflict, "ancestor conflict: "+left+" is both a file and parent of "+right, false)
+			}
+		}
+	}
+	type prepared struct {
+		path    string
+		target  string
+		content string
+		exists  bool
+	}
+	items := make([]prepared, 0, len(in.Files))
+	for _, item := range in.Files {
+		if item.Path == "" {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid file path", false)
+		}
+		target, err := SafePath(w.root(), item.Path, true)
+		if err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "path "+item.Path+" escapes workspace", false)
+		}
+		current, err := os.ReadFile(target)
+		exists := err == nil
+		if err != nil && !os.IsNotExist(err) {
+			return protocol.Fail(protocol.ErrorInternal, "failed to inspect "+item.Path, false)
+		}
+		if item.ExpectedSHA256 != "" {
+			if !exists {
+				return protocol.Fail(protocol.ErrorConflict, "target "+item.Path+" does not exist for expectedSha256", false)
+			}
+			sum := sha256.Sum256(current)
+			if hex.EncodeToString(sum[:]) != item.ExpectedSHA256 {
+				return protocol.Fail(protocol.ErrorConflict, "file "+item.Path+" changed since it was read", false)
+			}
+		}
+		items = append(items, prepared{path: item.Path, target: target, content: item.Content, exists: exists})
+	}
+	written := make([]map[string]any, 0, len(items))
+	created, updated := 0, 0
+	temps := make([]string, 0, len(items))
+	defer func() {
+		for _, tmp := range temps {
+			_ = os.Remove(tmp)
+		}
+	}()
+	for i, item := range items {
+		if err := os.MkdirAll(filepath.Dir(item.target), 0o755); err != nil {
+			return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+		}
+		tmp := fmt.Sprintf("%s.cloud-harness-batch-%d-%s-%d.tmp", item.target, os.Getpid(), randomHex(8), i)
+		if err := os.WriteFile(tmp, []byte(item.content), 0o600); err != nil {
+			return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+		}
+		temps = append(temps, tmp)
+		if err := os.Rename(tmp, item.target); err != nil {
+			return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+		}
+		temps[len(temps)-1] = ""
+		sum := sha256.Sum256([]byte(item.content))
+		status := "created"
+		if item.exists {
+			status = "updated"
+			updated++
+		} else {
+			created++
+		}
+		written = append(written, map[string]any{
+			"path": item.path, "sha256": hex.EncodeToString(sum[:]), "bytes": len(item.content), "status": status,
+		})
+	}
+	return protocol.Success(fmt.Sprintf("Batch wrote %d files (%d created, %d updated)", len(written), created, updated), map[string]any{
+		"createdCount": created, "updatedCount": updated, "totalFiles": len(written), "files": written,
+	})
+}
+
+func (w Workspace) move(in pathInput) protocol.ToolResult {
+	if in.Source == "" || in.Destination == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "source and destination are required", false)
+	}
+	source, err := SafePath(w.root(), in.Source, false)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	destination, err := SafePath(w.root(), in.Destination, true)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	if source == destination {
+		return protocol.Success("Path already at destination", map[string]any{"source": in.Source, "destination": in.Destination})
+	}
+	if info, err := os.Lstat(destination); err == nil {
+		if !in.Overwrite {
+			return protocol.Fail(protocol.ErrorConflict, "destination already exists", false)
+		}
+		if info.IsDir() {
+			return protocol.Fail(protocol.ErrorConflict, "overwrite does not replace directories", false)
+		}
+		if err := os.Remove(destination); err != nil {
+			return protocol.Fail(protocol.ErrorConflict, err.Error(), false)
+		}
+	} else if !os.IsNotExist(err) {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+	}
+	if err := os.Rename(source, destination); err != nil {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+	}
+	return protocol.Success("Path moved", map[string]any{"source": in.Source, "destination": in.Destination})
+}
+
+func (w Workspace) symbolsSearch(in pathInput) protocol.ToolResult {
+	if in.Query == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "query is required", false)
+	}
+	target, err := SafePath(w.root(), emptyDot(in.Path), false)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	maxResults := in.MaxResults
+	if maxResults <= 0 {
+		maxResults = 100
+	}
+	query := strings.ToLower(in.Query)
+	var symbols []map[string]any
+	_ = filepath.WalkDir(target, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || len(symbols) >= maxResults {
+			return nil
+		}
+		rel, err := filepath.Rel(w.root(), path)
+		if err != nil {
+			return nil
+		}
+		name := d.Name()
+		if !strings.Contains(strings.ToLower(name), query) {
+			return nil
+		}
+		symbols = append(symbols, map[string]any{"name": name, "path": filepath.ToSlash(rel), "kind": "file"})
+		return nil
+	})
+	result := protocol.Success(fmt.Sprintf("Found %d symbol definitions", len(symbols)), map[string]any{"symbols": symbols})
+	result.Truncated = len(symbols) >= maxResults
+	return result
+}
+
+func (w Workspace) symbolsReferences(ctx context.Context, in pathInput) protocol.ToolResult {
+	if in.Symbol == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "symbol is required", false)
+	}
+	got := w.grep(ctx, pathInput{Path: in.Path, Pattern: in.Symbol, Glob: in.Glob, MaxResults: in.MaxResults})
+	if !got.OK {
+		return got
+	}
+	data, _ := got.Data.(map[string]any)
+	result := protocol.Success("Found lexical references", map[string]any{"references": data["matches"]})
+	result.Truncated = got.Truncated
+	return result
 }
 
 func (w Workspace) patch(in pathInput) protocol.ToolResult {

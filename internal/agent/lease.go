@@ -27,8 +27,9 @@ type ProfileLimits struct {
 
 // Profile is the subset of a gateway profile the lease layer needs.
 type Profile struct {
-	ID     string
-	Limits ProfileLimits
+	ID       string
+	Limits   ProfileLimits
+	Upstream Upstream
 }
 
 // IssueInput is the control-plane request that mints a one-time lease token.

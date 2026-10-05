@@ -48,3 +48,49 @@ func TestHealthzAndLeaseGate(t *testing.T) {
 		t.Fatalf("expected UNAVAILABLE until upstream is wired, got %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestHandlerProxiesAfterLease(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sk-not-a-real-key" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"cmpl"}`))
+	}))
+	t.Cleanup(upstream.Close)
+	reg := NewRegistry()
+	profile := Profile{
+		ID:     "gpt-test",
+		Limits: ProfileLimits{MaxInputTokens: 10, MaxOutputTokens: 10, MaxCostMicros: 10},
+		Upstream: Upstream{
+			URL:              upstream.URL,
+			Credential:       "sk-not-a-real-key",
+			CredentialHeader: "Authorization",
+			CredentialScheme: "Bearer",
+			AllowPrivate:     true,
+			Transport:        upstream.Client().Transport,
+		},
+	}
+	h := Handler(reg, map[string]Profile{"gpt-test": profile})
+	agentID := "agent_" + strings.Repeat("c", 24)
+	token, err := reg.Issue(IssueInput{
+		LeaseID: "lease-proxy", AgentID: agentID, ProfileID: "gpt-test",
+		TTL: time.Minute, MaxInputTokens: 10, MaxOutputTokens: 10, MaxCostMicros: 10,
+	}, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"x"}`))
+	req.Header.Set("x-model-profile", "gpt-test")
+	req.Header.Set("x-agent-id", agentID)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"cmpl"`) {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sk-not-a-real-key") {
+		t.Fatal("credential leaked")
+	}
+}

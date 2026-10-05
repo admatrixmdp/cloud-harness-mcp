@@ -46,7 +46,12 @@ func serveLease(w http.ResponseWriter, r *http.Request, reg *Registry, profiles 
 		writeErr(w, http.StatusUnauthorized, "invalid_gateway_lease")
 		return
 	}
-	writeErr(w, http.StatusServiceUnavailable, "upstream_not_wired")
+	profile := profiles[profileID]
+	if !profile.hasUpstream() {
+		writeErr(w, http.StatusServiceUnavailable, "upstream_not_wired")
+		return
+	}
+	proxyUpstream(w, r, profile)
 	_ = path
 }
 

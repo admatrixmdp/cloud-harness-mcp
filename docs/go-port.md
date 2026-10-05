@@ -28,8 +28,8 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | Secrets keyring | `apps/runner/src/secret-keyring.ts` | `internal/secrets` |
 | Workspace + Docker policy | `apps/runner/src/workspace-service.ts`, `docker-engine.ts` | `internal/runner`, `internal/sandbox` |
 | GitHub App + transfer helpers | `apps/runner/src/github-*.ts`, `worker/*-helper.sh` | `internal/git` (RS256 App JWT + clone/transfer helpers; token on docker stdin only, never argv/logs) |
-| Executor worker | `worker/harness-worker.mjs` | `cmd/harness-worker`, `internal/executor` (path confinement, truncation, unique `files_apply_patch`, confined `grep_search`; TS remains image entry until Compose switches) |
-| Model gateway / agents | `apps/model-gateway`, `apps/agent-runtime`, `apps/runner/src/agent-*.ts` | `cmd/model-gateway`, `internal/agent` (opaque hashed leases, per-agent internal network, no host/repo/secret mounts). TS Compose remains runtime of record; Go images live in `docker/go-*.Dockerfile` |
+| Executor worker | `worker/harness-worker.mjs` | `cmd/harness-worker`, `internal/executor` (path confinement, truncation, unique `files_apply_patch`, confined `grep_search`/`files_write_batch`/`files_move`/`symbols_*`; TS remains image entry until Compose switches) |
+| Model gateway / agents | `apps/model-gateway`, `apps/agent-runtime`, `apps/runner/src/agent-*.ts` | `cmd/model-gateway`, `internal/agent` (opaque hashed leases, lease-gated HTTPS upstream, credential never logged or echoed). TS Compose remains runtime of record; Go images live in `docker/go-*.Dockerfile` |
 
 ## MUST-preserve security invariants
 

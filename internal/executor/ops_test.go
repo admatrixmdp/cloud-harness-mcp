@@ -199,3 +199,51 @@ func TestUnsupportedOperation(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+func TestWriteBatchAndMoveStayConfined(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{Root: root}
+	escaped := ws.Execute(context.Background(), protocol.OpFilesWriteBatch, json.RawMessage(`{"files":[{"path":"../x.txt","content":"no"}]}`))
+	if escaped.OK {
+		t.Fatal("batch escape must fail")
+	}
+	conflict := ws.Execute(context.Background(), protocol.OpFilesWriteBatch, json.RawMessage(`{"files":[{"path":"dir","content":"a"},{"path":"dir/nested.txt","content":"b"}]}`))
+	if conflict.OK || conflict.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("ancestor conflict: %+v", conflict)
+	}
+	ok := ws.Execute(context.Background(), protocol.OpFilesWriteBatch, json.RawMessage(`{"files":[{"path":"a.txt","content":"one"},{"path":"b.txt","content":"two"}]}`))
+	if !ok.OK {
+		t.Fatalf("%+v", ok)
+	}
+	moved := ws.Execute(context.Background(), protocol.OpFilesMove, json.RawMessage(`{"source":"a.txt","destination":"nested/c.txt"}`))
+	if !moved.OK {
+		t.Fatalf("%+v", moved)
+	}
+	if _, err := os.Stat(filepath.Join(root, "a.txt")); !os.IsNotExist(err) {
+		t.Fatal("source should be gone")
+	}
+	body, err := os.ReadFile(filepath.Join(root, "nested/c.txt"))
+	if err != nil || string(body) != "one" {
+		t.Fatalf("%q %v", body, err)
+	}
+	out := ws.Execute(context.Background(), protocol.OpFilesMove, json.RawMessage(`{"source":"nested/c.txt","destination":"../escape.txt"}`))
+	if out.OK {
+		t.Fatal("move escape must fail")
+	}
+}
+
+func TestSymbolsStayInsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "FindMe.go"), []byte("package main"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := Workspace{Root: root}
+	got := ws.Execute(context.Background(), protocol.OpSymbolsSearch, json.RawMessage(`{"query":"findme"}`))
+	if !got.OK {
+		t.Fatalf("%+v", got)
+	}
+	escaped := ws.Execute(context.Background(), protocol.OpSymbolsSearch, json.RawMessage(`{"query":"x","path":"../"}`))
+	if escaped.OK {
+		t.Fatal("symbols path escape must fail")
+	}
+}
