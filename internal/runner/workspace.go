@@ -186,6 +186,8 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.contextOf(req)
 	case protocol.OpWorkspaceSetActive:
 		return s.setActive(req)
+	case protocol.OpWorkspaceFinalize:
+		return s.finalize(ctx, req)
 	case protocol.OpGitIdentityStatus:
 		return s.gitIdentityStatus(req)
 	case protocol.OpGitIdentitySet:
@@ -2288,6 +2290,244 @@ func emptyToNil(s string) any {
 		return nil
 	}
 	return s
+}
+
+type finalizeInput struct {
+	WorkspaceID    string   `json:"workspaceId"`
+	Paths          []string `json:"paths"`
+	All            *bool    `json:"all"`
+	CommitMessage  string   `json:"commitMessage"`
+	Branch         string   `json:"branch"`
+	Push           *bool    `json:"push"`
+	AuthorName     string   `json:"authorName"`
+	AuthorEmail    string   `json:"authorEmail"`
+	IdempotencyKey string   `json:"idempotencyKey"`
+	Preflight      *struct {
+		CheckDiff         *bool    `json:"checkDiff"`
+		ForbiddenPatterns []string `json:"forbiddenPatterns"`
+	} `json:"preflight"`
+}
+
+func (s *Service) finalize(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
+	var input finalizeInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid workspace_finalize input", false)
+		}
+	}
+	if strings.TrimSpace(input.CommitMessage) == "" || len(input.CommitMessage) > 10_000 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "commitMessage is required", false)
+	}
+	all := true
+	if input.All != nil {
+		all = *input.All
+	}
+	if !all && len(input.Paths) == 0 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "paths are required when all is false", false)
+	}
+	if all && len(input.Paths) > 0 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "paths must be empty when all is true", false)
+	}
+	if input.Branch != "" && !executorValidGitArg(input.Branch) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "branch cannot start with a dash", false)
+	}
+	rec, errRes := s.resolveWorkspace(req.OwnerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	if fail := s.requireActiveExecutor(rec); fail != nil {
+		return *fail
+	}
+	checkDiff := true
+	if input.Preflight != nil && input.Preflight.CheckDiff != nil {
+		checkDiff = *input.Preflight.CheckDiff
+	}
+	if checkDiff {
+		diff := s.executeInJob(ctx, rec, protocol.OpGitDiff, json.RawMessage(`{}`))
+		if diff.Truncated {
+			fail := protocol.Fail(protocol.ErrorLimitExceeded, "diff exceeds verification limit", false)
+			fail.Data = map[string]any{"step": "preflight", "error": "diff output exceeds preflight capacity"}
+			fail.Message = "Preflight check failed: diff output too large to verify cleanly"
+			return fail
+		}
+		output := resultOutput(diff)
+		if s.workingTreeHasConflictMarkers(rec) {
+			fail := protocol.Fail(protocol.ErrorConflict, "Merge conflict markers detected", false)
+			fail.Data = map[string]any{"step": "preflight", "errors": []string{"Merge conflict markers found in working tree"}}
+			fail.Message = "Preflight check failed: unresolved merge conflict markers detected"
+			return fail
+		}
+		if input.Preflight != nil {
+			for _, pat := range input.Preflight.ForbiddenPatterns {
+				if pat != "" && strings.Contains(output, pat) {
+					fail := protocol.Fail(protocol.ErrorInvalidInput, fmt.Sprintf("Forbidden pattern %q detected", pat), false)
+					fail.Data = map[string]any{"step": "preflight", "errors": []string{fmt.Sprintf("Forbidden pattern %q found in diff", pat)}}
+					fail.Message = fmt.Sprintf("Preflight check failed: forbidden pattern %q detected", pat)
+					return fail
+				}
+			}
+		}
+	}
+	status := s.executeInJob(ctx, rec, protocol.OpGitStatus, json.RawMessage(`{}`))
+	changed := false
+	for _, line := range strings.Split(resultOutput(status), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "##") {
+			changed = true
+			break
+		}
+	}
+	branch := input.Branch
+	if branch == "" {
+		branch = rec.Ref
+	}
+	if branch == "" {
+		branch = "main"
+	}
+	pushWanted := true
+	if input.Push != nil {
+		pushWanted = *input.Push
+	}
+	if !changed {
+		sha := headCommit(s.executeInJob(ctx, rec, protocol.OpGitLog, json.RawMessage(`{}`)))
+		pushed := false
+		if pushWanted {
+			out, err := s.remotePush(ctx, rec, "HEAD:refs/heads/"+branch, "")
+			if err != nil {
+				fail := failFrom(err)
+				fail.Message = "Working tree clean but push failed: " + fail.Message
+				fail.Data = map[string]any{"step": "push", "commitSha": sha, "branch": branch, "pushed": false, "pushError": fail.Message, "resumeAction": "Call git_push or workspace_finalize to retry push"}
+				if fail.Error != nil {
+					fail.Error.ResumeAction = "Call git_push or workspace_finalize to retry push"
+				}
+				_ = out
+				return fail
+			}
+			pushed = true
+		}
+		return protocol.Success(fmt.Sprintf("Workspace already clean and finalized at %s", shortSHA(sha)), map[string]any{
+			"commitSha": sha, "branch": branch, "pushed": pushed, "alreadyFinalized": true, "finalStatus": status.Data,
+		})
+	}
+	addInput, _ := json.Marshal(map[string]any{"all": all, "paths": input.Paths})
+	staged := s.executeInJob(ctx, rec, protocol.OpGitAdd, addInput)
+	if !staged.OK {
+		fail := protocol.Fail(protocol.ErrorConflict, staged.Message, true)
+		fail.Data = map[string]any{"step": "stage", "error": staged.Message}
+		fail.Message = "Failed to stage changes"
+		return fail
+	}
+	commitInput := s.withGitIdentity(req.OwnerID, mustJSON(map[string]any{
+		"message": input.CommitMessage, "authorName": input.AuthorName, "authorEmail": input.AuthorEmail, "all": false,
+	}))
+	committed := s.executeInJob(ctx, rec, protocol.OpGitCommit, commitInput)
+	if !committed.OK {
+		fail := protocol.Fail(protocol.ErrorConflict, committed.Message, true)
+		fail.Data = map[string]any{"step": "commit", "error": committed.Message}
+		fail.Message = "Commit failed: " + committed.Message
+		return fail
+	}
+	sha := headCommit(s.executeInJob(ctx, rec, protocol.OpGitLog, json.RawMessage(`{}`)))
+	pushed := false
+	var pushData any
+	if pushWanted {
+		out, err := s.remotePush(ctx, rec, "HEAD:refs/heads/"+branch, "")
+		if err != nil {
+			fail := failFrom(err)
+			fail.Message = fmt.Sprintf("Commit created (%s) but push failed: %s", shortSHA(sha), fail.Message)
+			fail.Data = map[string]any{"step": "push", "commitSha": sha, "branch": branch, "pushed": false, "pushError": fail.Message, "resumeAction": "Call git_push or workspace_finalize to retry push"}
+			if fail.Error != nil {
+				fail.Error.ResumeAction = "Call git_push or workspace_finalize to retry push"
+			}
+			_ = out
+			return fail
+		}
+		pushed = true
+		pushData = out
+	}
+	finalStatus := s.executeInJob(ctx, rec, protocol.OpGitStatus, json.RawMessage(`{}`))
+	msg := fmt.Sprintf("Workspace finalized (commit %s)", shortSHA(sha))
+	if pushed {
+		msg = "Workspace finalized and pushed to " + branch
+	}
+	return protocol.Success(msg, map[string]any{
+		"commitSha": sha, "branch": branch, "pushed": pushed, "pushResult": pushData, "finalStatus": finalStatus.Data,
+	})
+}
+
+func markersIn(output string) bool {
+	return strings.Contains(output, "<<<<<<< ") || strings.Contains(output, "=======\n") || strings.Contains(output, ">>>>>>> ")
+}
+
+func (s *Service) workingTreeHasConflictMarkers(rec store.Record) bool {
+	root := filepath.Join(s.cfg.JobsRoot, rec.ID, "repo")
+	found := false
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || found {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 1_048_576 {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		if markersIn(string(raw)) {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+func resultOutput(got protocol.ToolResult) string {
+	data, _ := got.Data.(map[string]any)
+	out, _ := data["output"].(string)
+	return out
+}
+
+func headCommit(got protocol.ToolResult) string {
+	out := resultOutput(got)
+	if out == "" {
+		return ""
+	}
+	line := strings.SplitN(out, "\n", 2)[0]
+	if tab := strings.IndexByte(line, '\t'); tab >= 0 {
+		return strings.Fields(line[:tab])[0]
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+func executorValidGitArg(value string) bool {
+	return value != "" && !strings.HasPrefix(value, "-") && !strings.Contains(value, "\x00") && len(value) <= 255
+}
+
+func mustJSON(v any) json.RawMessage {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return raw
 }
 
 func failFrom(err error) protocol.ToolResult {

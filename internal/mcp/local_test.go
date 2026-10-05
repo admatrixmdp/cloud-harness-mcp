@@ -20,6 +20,10 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if got.OK || got.Error.Code != protocol.ErrorInvalidInput {
 		t.Fatalf("open: %+v", got)
 	}
+	finalize := b.Call(context.Background(), protocol.OpWorkspaceFinalize, json.RawMessage(`{"commitMessage":"x"}`))
+	if finalize.OK || finalize.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("finalize local: %+v", finalize)
+	}
 	got = b.Call(context.Background(), protocol.OpGitPush, json.RawMessage(`{}`))
 	if got.OK || got.Error.Code != protocol.ErrorRepositoryOperationNotAuthorized {
 		t.Fatalf("push without flag: %+v", got)

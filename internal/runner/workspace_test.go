@@ -1063,3 +1063,92 @@ func TestSkillsRunRequiresPrivilegeGrant(t *testing.T) {
 		t.Fatalf("bad token: %+v", bad)
 	}
 }
+
+func initGitRepo(t *testing.T, root string) {
+	t.Helper()
+	cmds := [][]string{
+		{"git", "init", "-b", "main"},
+		{"git", "config", "user.name", "Test"},
+		{"git", "config", "user.email", "test@example.com"},
+	}
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", args, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "add", "README.md")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("add: %s", out)
+	}
+	cmd = exec.Command("git", "commit", "-m", "init")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("commit: %s", out)
+	}
+}
+
+func TestWorkspaceFinalizePreflightAndLocalCommit(t *testing.T) {
+	jobs := t.TempDir()
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, JobsRoot: jobs}, nil, nil)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"finalize-open-001","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	wsID := open.Data.(map[string]any)["workspaceId"].(string)
+	root := filepath.Join(jobs, wsID, "repo")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepo(t, root)
+	if err := os.WriteFile(filepath.Join(root, "conflict.txt"), []byte("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> other\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	add := exec.Command("git", "add", "conflict.txt")
+	add.Dir = root
+	if out, err := add.CombinedOutput(); err != nil {
+		t.Fatalf("stage conflict: %s", out)
+	}
+	conflict := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceFinalize,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","commitMessage":"feat: with conflict","push":false}`),
+	})
+	if conflict.OK || conflict.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("conflict: %+v", conflict)
+	}
+	if conflict.Data.(map[string]any)["step"] != "preflight" {
+		t.Fatalf("step %+v", conflict.Data)
+	}
+	if err := os.WriteFile(filepath.Join(root, "conflict.txt"), []byte("clean\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ok := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceFinalize,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","commitMessage":"feat: finalize locally","push":false}`),
+	})
+	if !ok.OK {
+		t.Fatalf("finalize: %+v", ok)
+	}
+	if ok.Data.(map[string]any)["pushed"] != false {
+		t.Fatalf("pushed %+v", ok.Data)
+	}
+	sha, _ := ok.Data.(map[string]any)["commitSha"].(string)
+	if sha == "" {
+		t.Fatalf("missing commitSha %+v", ok.Data)
+	}
+	dash := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceFinalize,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","commitMessage":"x","branch":"--help","push":false}`),
+	})
+	if dash.OK || dash.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("dash branch: %+v", dash)
+	}
+}
