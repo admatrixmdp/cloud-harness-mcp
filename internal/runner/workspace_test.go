@@ -3,8 +3,10 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
@@ -157,5 +159,42 @@ func TestWorkspaceCloseRemovesOnlyManagedContainer(t *testing.T) {
 	}
 	if closed.Data.(map[string]any)["status"] != "CLOSED" {
 		t.Fatalf("status %+v", closed.Data)
+	}
+}
+
+func TestWorkspaceOpenClonesWithStdinTokenOnly(t *testing.T) {
+	var seenArgs []string
+	var seenStdin string
+	cloner := &git.Cloner{Engine: sandbox.Engine{
+		Run: func(_ context.Context, args []string, stdin string) (sandbox.Result, error) {
+			seenArgs = append([]string{}, args...)
+			seenStdin = stdin
+			return sandbox.Result{ExitCode: 0, Stdout: "cloned"}, nil
+		},
+	}}
+	svc := NewService(Config{
+		NetworkProfile: protocol.NetworkNone,
+		JobsRoot:       t.TempDir(),
+		ExecutorImage:  "cloud-harness-executor:local",
+	}, nil, nil).WithCloner(cloner)
+	got := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-clone-001","networkProfile":"network-none"}`),
+	})
+	if !got.OK {
+		t.Fatalf("%+v", got)
+	}
+	if !strings.Contains(strings.Join(seenArgs, " "), "clone-helper.sh") {
+		t.Fatalf("missing helper: %v", seenArgs)
+	}
+	if git.ArgsContainSecret(seenArgs, seenStdin) && seenStdin != "" {
+		t.Fatal("token in argv")
+	}
+	if strings.Contains(got.Message, "ghs_") {
+		t.Fatal("token leaked in MCP result")
+	}
+	data, _ := got.Data.(map[string]any)
+	if _, ok := data["token"]; ok {
+		t.Fatal("token field on public envelope")
 	}
 }

@@ -5,6 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -41,6 +44,10 @@ type Config struct {
 	WallTTL         time.Duration
 	InstanceID      string
 	Attestor        sandbox.Attestor
+	JobsRoot        string
+	ExecutorImage   string
+	GitHubApp       git.AppConfig
+	HTTP            *http.Client
 }
 
 func (c Config) withDefaults() Config {
@@ -59,6 +66,9 @@ func (c Config) withDefaults() Config {
 	if len(c.AllowedGitHosts) == 0 {
 		c.AllowedGitHosts = []string{"github.com"}
 	}
+	if c.ExecutorImage == "" {
+		c.ExecutorImage = "cloud-harness-executor:local"
+	}
 	return c
 }
 
@@ -67,6 +77,14 @@ type Service struct {
 	cfg    Config
 	store  store.Store
 	engine Engine
+	cloner *git.Cloner
+}
+
+// WithCloner clones through a helper container after executor create.
+// The minted token rides helper stdin only and never appears in argv or MCP results.
+func (s *Service) WithCloner(c *git.Cloner) *Service {
+	s.cloner = c
+	return s
 }
 
 // NewService constructs a workspace service. engine may be nil (noop).
@@ -129,7 +147,8 @@ func (s *Service) open(ctx context.Context, req protocol.RunnerRequest) protocol
 	if input.IdempotencyKey == "" || !protocol.ValidIdempotencyKey(input.IdempotencyKey) {
 		return protocol.Fail(protocol.ErrorInvalidInput, "idempotencyKey is required", false)
 	}
-	if _, err := git.ValidateRepositoryURL(input.RepositoryURL, s.cfg.AllowedGitHosts); err != nil {
+	parsed, err := git.ValidateRepositoryURL(input.RepositoryURL, s.cfg.AllowedGitHosts)
+	if err != nil {
 		return failFrom(err)
 	}
 	profile := s.cfg.NetworkProfile
@@ -172,9 +191,46 @@ func (s *Service) open(ctx context.Context, req protocol.RunnerRequest) protocol
 		return protocol.Fail(protocol.ErrorUnavailable, "executor creation failed", true)
 	}
 	rec.ContainerName = name
+	if err := s.cloneIntoJob(ctx, rec, parsed); err != nil {
+		_ = s.engine.Remove(ctx, name)
+		rec.Status = store.StatusFailed
+		_ = s.store.Put(rec)
+		return failFrom(err)
+	}
 	rec.Status = store.StatusActive
 	_ = s.store.Put(rec)
 	return protocol.Success("workspace opened", publicRecord(rec))
+}
+
+func (s *Service) cloneIntoJob(ctx context.Context, rec store.Record, parsed *url.URL) error {
+	if s.cloner == nil {
+		return nil
+	}
+	if s.cfg.JobsRoot == "" {
+		return nil
+	}
+	minted, err := git.MintRepositoryToken(s.cfg.GitHubApp, parsed, s.cfg.HTTP, time.Now())
+	if err != nil {
+		return err
+	}
+	spec := git.HelperSpec{
+		Name:          "chm-clone-" + rec.ID[3:minLen(rec.ID, 15)],
+		Image:         s.cfg.ExecutorImage,
+		InstanceID:    s.cfg.InstanceID,
+		WorkspaceID:   rec.ID,
+		JobPath:       filepath.Join(s.cfg.JobsRoot, rec.ID),
+		RepositoryURL: rec.RepositoryURL,
+		Ref:           rec.Ref,
+	}
+	_, err = s.cloner.Run(ctx, git.CloneRequest{Spec: spec, Token: minted.Stdin()})
+	return err
+}
+
+func minLen(s string, n int) int {
+	if len(s) < n {
+		return len(s)
+	}
+	return n
 }
 
 func (s *Service) list(req protocol.RunnerRequest) protocol.ToolResult {

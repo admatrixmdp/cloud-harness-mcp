@@ -23,6 +23,7 @@ const (
 	PrefixSkillImportJob        = "skjob"
 	PrefixIntegrationCredential = "icr"
 	PrefixEnvironment           = "env"
+	PrefixSecret                = "sec"
 )
 
 const opaqueAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
