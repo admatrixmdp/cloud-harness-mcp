@@ -28,7 +28,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | Secrets keyring | `apps/runner/src/secret-keyring.ts` | `internal/secrets` |
 | Workspace + Docker policy | `apps/runner/src/workspace-service.ts`, `docker-engine.ts` | `internal/runner`, `internal/sandbox` |
 | GitHub App + transfer helpers | `apps/runner/src/github-*.ts`, `worker/*-helper.sh` | `internal/git` |
-| Executor worker | `worker/harness-worker.mjs` | later: `cmd/harness-worker` |
+| Executor worker | `worker/harness-worker.mjs` | `cmd/harness-worker`, `internal/executor` (path confinement + truncation; TS remains image entry until Compose switches) |
 | Model gateway / agents | `apps/model-gateway`, `apps/agent-runtime`, `apps/runner/src/agent-*.ts` | `cmd/model-gateway` |
 
 ## MUST-preserve security invariants

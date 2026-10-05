@@ -1,0 +1,146 @@
+package executor
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
+)
+
+func TestSafePathRejectsEscape(t *testing.T) {
+	root := t.TempDir()
+	if _, err := SafePath(root, "../outside", false); err == nil {
+		t.Fatal(".. must be rejected")
+	}
+	if _, err := SafePath(root, "/etc/passwd", false); err == nil {
+		t.Fatal("absolute path must be rejected")
+	}
+	if _, err := SafePath(root, "foo\x00bar", true); err == nil {
+		t.Fatal("null byte must be rejected")
+	}
+	if err := os.WriteFile(filepath.Join(root, "ok.txt"), []byte("hi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SafePath(root, "ok.txt", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(got) != "ok.txt" {
+		t.Fatalf("got %s", got)
+	}
+}
+
+func TestSafePathSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SafePath(root, "link/secret", false); err == nil {
+		t.Fatal("symlink escape must be rejected")
+	}
+}
+
+func TestFilesReadWriteRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{Root: root}
+	written := ws.Execute(context.Background(), protocol.OpFilesWrite, json.RawMessage(`{"path":"src/a.txt","content":"hello"}`))
+	if !written.OK {
+		t.Fatalf("%+v", written)
+	}
+	read := ws.Execute(context.Background(), protocol.OpFilesRead, json.RawMessage(`{"path":"src/a.txt"}`))
+	if !read.OK {
+		t.Fatalf("%+v", read)
+	}
+	data, _ := read.Data.(map[string]any)
+	if data["content"] != "hello" {
+		t.Fatalf("%v", data)
+	}
+	listed := ws.Execute(context.Background(), protocol.OpFilesList, json.RawMessage(`{"path":"src"}`))
+	if !listed.OK {
+		t.Fatalf("%+v", listed)
+	}
+}
+
+func TestFilesReadTruncates(t *testing.T) {
+	root := t.TempDir()
+	body := bytes.Repeat([]byte("a"), 100)
+	if err := os.WriteFile(filepath.Join(root, "big.txt"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := Workspace{Root: root}
+	got := ws.Execute(context.Background(), protocol.OpFilesRead, json.RawMessage(`{"path":"big.txt","limit":16}`))
+	if !got.OK || !got.Truncated {
+		t.Fatalf("%+v", got)
+	}
+	data, _ := got.Data.(map[string]any)
+	if data["content"] != strings.Repeat("a", 16) {
+		t.Fatalf("content %v", data["content"])
+	}
+	if got.Cursor == "" {
+		t.Fatal("expected cursor")
+	}
+}
+
+func TestTruncateHelper(t *testing.T) {
+	out, truncated := Truncate([]byte("abcdef"), 3)
+	if !truncated || string(out) != "abc" {
+		t.Fatalf("%q %v", out, truncated)
+	}
+	out, truncated = Truncate([]byte("ab"), 3)
+	if truncated || string(out) != "ab" {
+		t.Fatalf("%q %v", out, truncated)
+	}
+}
+
+func TestExecRunConfinedAndTruncated(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{Root: root}
+	escaped := ws.Execute(context.Background(), protocol.OpExecRun, json.RawMessage(`{"cwd":"../","command":"pwd"}`))
+	if escaped.OK {
+		t.Fatal("cwd escape must fail")
+	}
+	got := ws.Execute(context.Background(), protocol.OpExecRun, json.RawMessage(`{"command":"printf '%s' xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","maxOutputBytes":8}`))
+	if !got.OK {
+		t.Fatalf("%+v", got)
+	}
+	if !got.Truncated {
+		t.Fatalf("expected truncation: %+v", got)
+	}
+}
+
+func TestHandleStdinJSON(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HARNESS_WORKSPACE_ROOT", root)
+	if err := os.WriteFile(filepath.Join(root, "n.txt"), []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := bytes.NewReader([]byte(`{"operation":"files_read","input":{"path":"n.txt"}}`))
+	var out bytes.Buffer
+	if err := HandleStdin(in, &out); err != nil {
+		t.Fatal(err)
+	}
+	var result protocol.ToolResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK {
+		t.Fatalf("%+v", result)
+	}
+}
+
+func TestUnsupportedOperation(t *testing.T) {
+	ws := Workspace{Root: t.TempDir()}
+	got := ws.Execute(context.Background(), protocol.OpAgentSpawn, nil)
+	if got.OK || got.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("%+v", got)
+	}
+}
