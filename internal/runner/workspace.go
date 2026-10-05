@@ -3,16 +3,19 @@ package runner
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/executor"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
@@ -78,11 +81,12 @@ func (c Config) withDefaults() Config {
 
 // Service executes public runner operations.
 type Service struct {
-	cfg     Config
-	store   store.Store
-	engine  Engine
-	cloner  *git.Cloner
-	secrets *secrets.Store
+	cfg       Config
+	store     store.Store
+	engine    Engine
+	cloner    *git.Cloner
+	secrets   *secrets.Store
+	artifacts *artifacts.Store
 }
 
 // WithCloner clones through a helper container after executor create.
@@ -96,6 +100,12 @@ func (s *Service) WithCloner(c *git.Cloner) *Service {
 // decrypts or returns plaintext.
 func (s *Service) WithSecrets(sec *secrets.Store) *Service {
 	s.secrets = sec
+	return s
+}
+
+// WithArtifacts attaches retained snapshot storage. Local stdio never hosts this.
+func (s *Service) WithArtifacts(store *artifacts.Store) *Service {
+	s.artifacts = store
 	return s
 }
 
@@ -160,6 +170,16 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.runWorker(ctx, req)
 	case protocol.OpSecretsList:
 		return s.secretsList(req)
+	case protocol.OpArtifactsList:
+		return s.artifactsList(req)
+	case protocol.OpArtifactsRead:
+		return s.artifactsRead(req)
+	case protocol.OpArtifactsDelete:
+		return s.artifactsDelete(req)
+	case protocol.OpArtifactsSnapshot:
+		return s.artifactsSnapshot(req)
+	case protocol.OpArtifactsRestore:
+		return s.artifactsRestore(ctx, req)
 	case protocol.OpWorkspaceCapabilities:
 		return protocol.Success("workspace capabilities", map[string]any{
 			"networkProfiles":       []string{string(protocol.NetworkNone), string(protocol.DependencyAccess)},
@@ -542,6 +562,232 @@ func (s *Service) recoverExport(ctx context.Context, rec store.Record, targetBra
 		}
 	}
 	return protocol.Success("Recovered work exported to "+targetBranch, data)
+}
+
+func artifactFail(err error) protocol.ToolResult {
+	if art, ok := err.(*artifacts.Error); ok {
+		return protocol.Fail(art.Code, art.Message, false)
+	}
+	return protocol.Fail(protocol.ErrorInternal, "artifact store is unavailable", true)
+}
+
+func (s *Service) requireArtifacts() (*artifacts.Store, *protocol.ToolResult) {
+	if s.artifacts == nil {
+		fail := protocol.Fail(protocol.ErrorUnavailable, "artifact storage is not configured", true)
+		return nil, &fail
+	}
+	return s.artifacts, nil
+}
+
+func (s *Service) artifactsList(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireArtifacts()
+	if fail != nil {
+		return *fail
+	}
+	var input struct {
+		Cursor string `json:"cursor"`
+		Limit  int    `json:"limit"`
+	}
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid artifacts_list input", false)
+		}
+	}
+	limit := input.Limit
+	if limit == 0 {
+		limit = 50
+	}
+	ownerID := req.OwnerID
+	if ownerID == "" {
+		ownerID = "owner"
+	}
+	page, err := store.List(ownerID, limit, input.Cursor, time.Time{})
+	if err != nil {
+		return artifactFail(err)
+	}
+	items := make([]map[string]any, 0, len(page.Artifacts))
+	for _, item := range page.Artifacts {
+		items = append(items, item.PublicJSON())
+	}
+	data := map[string]any{"artifacts": items}
+	got := protocol.Success("Artifacts listed", data)
+	if page.Cursor != "" {
+		got.Cursor = page.Cursor
+		data["cursor"] = page.Cursor
+		got.Data = data
+	}
+	return got
+}
+
+func (s *Service) artifactsRead(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireArtifacts()
+	if fail != nil {
+		return *fail
+	}
+	var input struct {
+		ArtifactID string `json:"artifactId"`
+		Offset     int    `json:"offset"`
+		Limit      int    `json:"limit"`
+	}
+	if err := json.Unmarshal(req.Input, &input); err != nil || !protocol.ValidOpaqueID(protocol.PrefixArtifact, input.ArtifactID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid artifact identifier", false)
+	}
+	ownerID := req.OwnerID
+	if ownerID == "" {
+		ownerID = "owner"
+	}
+	chunk, err := store.Read(ownerID, input.ArtifactID, input.Offset, input.Limit, time.Time{})
+	if err != nil {
+		return artifactFail(err)
+	}
+	data := map[string]any{
+		"artifactId":    chunk.ArtifactID,
+		"logicalName":   chunk.LogicalName,
+		"offset":        chunk.Offset,
+		"bytesReturned": chunk.BytesReturned,
+		"totalBytes":    chunk.TotalBytes,
+		"sha256":        chunk.SHA256,
+		"eof":           chunk.EOF,
+		"content":       chunk.Content,
+	}
+	got := protocol.Success("Artifact chunk read", data)
+	if !chunk.EOF {
+		got.Truncated = true
+		got.Cursor = strconv.Itoa(chunk.Offset + chunk.BytesReturned)
+	}
+	return got
+}
+
+func (s *Service) artifactsDelete(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireArtifacts()
+	if fail != nil {
+		return *fail
+	}
+	var input struct {
+		ArtifactID         string `json:"artifactId"`
+		ExpectedGeneration int    `json:"expectedGeneration"`
+	}
+	if err := json.Unmarshal(req.Input, &input); err != nil || !protocol.ValidOpaqueID(protocol.PrefixArtifact, input.ArtifactID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid artifact identifier", false)
+	}
+	ownerID := req.OwnerID
+	if ownerID == "" {
+		ownerID = "owner"
+	}
+	deleted, err := store.Delete(ownerID, input.ArtifactID, input.ExpectedGeneration)
+	if err != nil {
+		return artifactFail(err)
+	}
+	return protocol.Success("Artifact deleted", deleted.PublicJSON())
+}
+
+func (s *Service) artifactsSnapshot(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireArtifacts()
+	if fail != nil {
+		return *fail
+	}
+	var input struct {
+		WorkspaceID      string `json:"workspaceId"`
+		Path             string `json:"path"`
+		LogicalName      string `json:"logicalName"`
+		RetentionSeconds int    `json:"retentionSeconds"`
+	}
+	if err := json.Unmarshal(req.Input, &input); err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid artifacts_snapshot input", false)
+	}
+	rec, errRes := s.resolveWorkspace(req.OwnerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	if fail := s.requireActiveExecutor(rec); fail != nil {
+		return *fail
+	}
+	root := filepath.Join(s.cfg.JobsRoot, rec.ID, "repo")
+	target, err := executor.SafePath(root, input.Path, false)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorNotFound, "workspace file not found", false)
+	}
+	var retentionMs int64
+	if input.RetentionSeconds > 0 {
+		retentionMs = int64(input.RetentionSeconds) * 1000
+	}
+	created, err := store.Create(rec.OwnerID, input.LogicalName, content, rec.ID, "", rec.EnvironmentID, retentionMs, time.Time{})
+	if err != nil {
+		return artifactFail(err)
+	}
+	return protocol.Success("Artifact snapshot created", created.PublicJSON())
+}
+
+func (s *Service) artifactsRestore(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireArtifacts()
+	if fail != nil {
+		return *fail
+	}
+	var input struct {
+		WorkspaceID    string `json:"workspaceId"`
+		ArtifactID     string `json:"artifactId"`
+		Path           string `json:"path"`
+		Overwrite      bool   `json:"overwrite"`
+		ExpectedSHA256 string `json:"expectedSha256"`
+	}
+	if err := json.Unmarshal(req.Input, &input); err != nil || !protocol.ValidOpaqueID(protocol.PrefixArtifact, input.ArtifactID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid artifact identifier", false)
+	}
+	rec, errRes := s.resolveWorkspace(req.OwnerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	if fail := s.requireActiveExecutor(rec); fail != nil {
+		return *fail
+	}
+	payload, err := store.ReadPayload(rec.OwnerID, input.ArtifactID, time.Time{})
+	if err != nil {
+		return artifactFail(err)
+	}
+	if input.ExpectedSHA256 != "" && payload.Metadata.SHA256 != input.ExpectedSHA256 {
+		return protocol.Fail(protocol.ErrorConflict, "artifact hash mismatch", false)
+	}
+	workerInput, err := json.Marshal(map[string]any{
+		"path":           input.Path,
+		"contentBase64":  base64.StdEncoding.EncodeToString(payload.Content),
+		"overwrite":      input.Overwrite,
+		"expectedSha256": input.ExpectedSHA256,
+	})
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInternal, "could not encode restore input", false)
+	}
+	got := s.executeInJob(ctx, rec, protocol.OpArtifactsRestore, workerInput)
+	if !got.OK {
+		return got
+	}
+	path := input.Path
+	size := payload.Metadata.SizeBytes
+	sha := payload.Metadata.SHA256
+	if extra, ok := got.Data.(map[string]any); ok {
+		if p, ok := extra["path"].(string); ok && p != "" {
+			path = p
+		}
+		if n, ok := extra["sizeBytes"].(int); ok {
+			size = n
+		}
+		if n, ok := extra["sizeBytes"].(float64); ok {
+			size = int(n)
+		}
+		if h, ok := extra["sha256"].(string); ok && h != "" {
+			sha = h
+		}
+	}
+	return protocol.Success("Artifact restored to workspace", map[string]any{
+		"artifactId":  payload.Metadata.ArtifactID,
+		"workspaceId": rec.ID,
+		"path":        path,
+		"sizeBytes":   size,
+		"sha256":      sha,
+	})
 }
 
 const globalSecretEnvironment = "global"

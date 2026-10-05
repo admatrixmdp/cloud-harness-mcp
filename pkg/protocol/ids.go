@@ -24,6 +24,7 @@ const (
 	PrefixIntegrationCredential = "icr"
 	PrefixEnvironment           = "env"
 	PrefixSecret                = "sec"
+	PrefixArtifact              = "art"
 )
 
 const opaqueAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"

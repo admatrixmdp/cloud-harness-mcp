@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -58,6 +59,7 @@ type pathInput struct {
 	Source         string   `json:"source"`
 	Destination    string   `json:"destination"`
 	Overwrite      bool     `json:"overwrite"`
+	ContentBase64  string   `json:"contentBase64"`
 	Query          string   `json:"query"`
 	Symbol         string   `json:"symbol"`
 	Action         string   `json:"action"`
@@ -134,6 +136,8 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.gitRebase(ctx, in)
 	case protocol.OpWorkspaceRecover:
 		return w.recover(ctx, in)
+	case protocol.OpArtifactsRestore:
+		return w.artifactsRestore(in)
 	default:
 		return protocol.Fail(protocol.ErrorInvalidInput, "unsupported worker operation "+string(op), false)
 	}
@@ -239,6 +243,55 @@ func (w Workspace) read(in pathInput) protocol.ToolResult {
 		result.Cursor = fmt.Sprintf("%d:%s", end, tag)
 	}
 	return result
+}
+
+func (w Workspace) artifactsRestore(in pathInput) protocol.ToolResult {
+	if in.Path == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid destination path", false)
+	}
+	if in.ContentBase64 == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "contentBase64 is required", false)
+	}
+	target, err := SafePath(w.root(), in.Path, true)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, "path "+in.Path+" escapes workspace", false)
+	}
+	info, err := os.Lstat(target)
+	exists := err == nil
+	if err != nil && !os.IsNotExist(err) {
+		return protocol.Fail(protocol.ErrorInternal, "failed to inspect "+in.Path, false)
+	}
+	if exists && info.IsDir() {
+		return protocol.Fail(protocol.ErrorInvalidInput, "destination path is a directory", false)
+	}
+	if exists && !in.Overwrite {
+		return protocol.Fail(protocol.ErrorConflict, "destination file already exists", false)
+	}
+	content, err := base64.StdEncoding.DecodeString(in.ContentBase64)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, "contentBase64 is required", false)
+	}
+	sum := sha256.Sum256(content)
+	digest := hex.EncodeToString(sum[:])
+	if in.ExpectedSHA256 != "" && digest != in.ExpectedSHA256 {
+		return protocol.Fail(protocol.ErrorConflict, "artifact hash mismatch", false)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+	}
+	tmp := filepath.Join(filepath.Dir(target), fmt.Sprintf(".cloud-harness-%d-%s.tmp", os.Getpid(), randomHex(8)))
+	if err := os.WriteFile(tmp, content, 0o600); err != nil {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		_ = os.Remove(tmp)
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+	}
+	return protocol.Success("Artifact restored to workspace", map[string]any{
+		"path":      in.Path,
+		"sizeBytes": len(content),
+		"sha256":    digest,
+	})
 }
 
 func (w Workspace) write(in pathInput) protocol.ToolResult {

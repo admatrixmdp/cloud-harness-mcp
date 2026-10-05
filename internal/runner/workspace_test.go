@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
@@ -672,5 +673,106 @@ func secretMaps(raw any) []map[string]any {
 		return out
 	default:
 		return nil
+	}
+}
+
+func TestArtifactsSnapshotListReadRestoreDelete(t *testing.T) {
+	jobs := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "artifacts.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	art, err := artifacts.Open(db, artifacts.Options{Root: filepath.Join(t.TempDir(), "objects-root")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, JobsRoot: jobs}, nil, nil).WithArtifacts(art)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-art-1","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	id := open.Data.(map[string]any)["workspaceId"].(string)
+	repo := filepath.Join(jobs, id, "repo")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("data for snapshot and restore test 456")
+	if err := os.WriteFile(filepath.Join(repo, "analysis.json"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpArtifactsSnapshot,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","path":"analysis.json","logicalName":"analysis.json"}`),
+	})
+	if !snap.OK {
+		t.Fatalf("snapshot: %+v", snap)
+	}
+	data := snap.Data.(map[string]any)
+	artID := data["artifactId"].(string)
+	if data["logicalName"] != "analysis.json" {
+		t.Fatalf("%+v", data)
+	}
+	listed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpArtifactsList, Input: json.RawMessage(`{}`),
+	})
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	read := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpArtifactsRead,
+		Input: json.RawMessage(`{"artifactId":"` + artID + `"}`),
+	})
+	if !read.OK {
+		t.Fatalf("read: %+v", read)
+	}
+	foreign := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "other", Operation: protocol.OpArtifactsRead,
+		Input: json.RawMessage(`{"artifactId":"` + artID + `"}`),
+	})
+	if foreign.OK || foreign.Error.Code != protocol.ErrorNotFound {
+		t.Fatalf("cross-principal: %+v", foreign)
+	}
+	mismatch := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpArtifactsRestore,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","artifactId":"` + artID + `","path":"out.txt","expectedSha256":"` + strings.Repeat("a", 64) + `"}`),
+	})
+	if mismatch.OK || mismatch.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("hash mismatch: %+v", mismatch)
+	}
+	restored := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpArtifactsRestore,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","artifactId":"` + artID + `","path":"context/analysis.json","overwrite":true}`),
+	})
+	if !restored.OK {
+		t.Fatalf("restore: %+v", restored)
+	}
+	got, err := os.ReadFile(filepath.Join(repo, "context", "analysis.json"))
+	if err != nil || string(got) != string(body) {
+		t.Fatalf("restored file %q %v", got, err)
+	}
+	escape := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpArtifactsSnapshot,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","path":"../secret.txt","logicalName":"secret.txt"}`),
+	})
+	if escape.OK || escape.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("snapshot escape: %+v", escape)
+	}
+	del := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpArtifactsDelete,
+		Input: json.RawMessage(`{"artifactId":"` + artID + `"}`),
+	})
+	if !del.OK {
+		t.Fatalf("delete: %+v", del)
+	}
+	missing := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpArtifactsRead,
+		Input: json.RawMessage(`{"artifactId":"` + artID + `"}`),
+	})
+	if missing.OK || missing.Error.Code != protocol.ErrorNotFound {
+		t.Fatalf("read after delete: %+v", missing)
 	}
 }

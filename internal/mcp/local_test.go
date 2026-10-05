@@ -56,4 +56,8 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if secrets.OK || secrets.Error.Code != protocol.ErrorInvalidInput {
 		t.Fatalf("secrets local: %+v", secrets)
 	}
+	arts := b.Call(context.Background(), protocol.OpArtifactsList, json.RawMessage(`{}`))
+	if arts.OK || arts.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("artifacts local: %+v", arts)
+	}
 }
