@@ -1,6 +1,9 @@
 package protocol
 
-import "regexp"
+import (
+	"crypto/rand"
+	"regexp"
+)
 
 // Opaque identifier prefixes from packages/contracts/src/identifiers.ts.
 const (
@@ -22,6 +25,8 @@ const (
 	PrefixEnvironment           = "env"
 )
 
+const opaqueAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+
 var (
 	opaqueID       = regexp.MustCompile(`^[A-Za-z0-9_-]{20,80}$`)
 	idempotencyKey = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,128}$`)
@@ -38,6 +43,18 @@ func ValidOpaqueID(prefix, value string) bool {
 		return false
 	}
 	return opaqueID.MatchString(value[len(want):])
+}
+
+// NewOpaqueID returns prefix_ + 24 random URL-safe characters.
+func NewOpaqueID(prefix string) string {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		panic("protocol: crypto/rand unavailable")
+	}
+	for i := range buf {
+		buf[i] = opaqueAlphabet[int(buf[i])%len(opaqueAlphabet)]
+	}
+	return prefix + "_" + string(buf)
 }
 
 // ValidIdempotencyKey reports whether key matches IdempotencyKeySchema.

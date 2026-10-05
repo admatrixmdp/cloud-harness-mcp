@@ -11,20 +11,27 @@ import (
 // Options configure the runner HTTP RPC.
 type Options struct {
 	ServiceToken string
+	Service      *Service
 }
 
 // Handler is the runner mux. This process is the Docker authority.
 func Handler(opts Options) http.Handler {
+	svc := opts.Service
+	if svc == nil {
+		svc = NewService(Config{}, nil, nil)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	mux.Handle("/v1/operations", withServiceToken(opts.ServiceToken, http.HandlerFunc(handleOperation)))
+	mux.Handle("/v1/operations", withServiceToken(opts.ServiceToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleOperation(w, r, svc)
+	})))
 	return mux
 }
 
-func handleOperation(w http.ResponseWriter, r *http.Request) {
+func handleOperation(w http.ResponseWriter, r *http.Request, svc *Service) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -38,11 +45,34 @@ func handleOperation(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, http.StatusBadRequest, protocol.Fail(protocol.ErrorInvalidInput, "unknown operation", false))
 		return
 	}
-	writeResult(w, http.StatusServiceUnavailable, protocol.Fail(
-		protocol.ErrorUnavailable,
-		"Go-port runner has not implemented workspace execution yet",
-		true,
-	))
+	result := svc.Execute(r.Context(), req)
+	status := http.StatusOK
+	if !result.OK {
+		status = statusFor(result)
+	}
+	writeResult(w, status, result)
+}
+
+func statusFor(result protocol.ToolResult) int {
+	if result.Error == nil {
+		return http.StatusBadRequest
+	}
+	switch result.Error.Code {
+	case protocol.ErrorAuthenticationFailed:
+		return http.StatusUnauthorized
+	case protocol.ErrorForbidden:
+		return http.StatusForbidden
+	case protocol.ErrorNotFound:
+		return http.StatusNotFound
+	case protocol.ErrorConflict, protocol.ErrorStaleGeneration, protocol.ErrorStaleHead:
+		return http.StatusConflict
+	case protocol.ErrorUnavailable, protocol.ErrorDependencyEgressUnavailable:
+		return http.StatusServiceUnavailable
+	case protocol.ErrorTimeout:
+		return http.StatusGatewayTimeout
+	default:
+		return http.StatusBadRequest
+	}
 }
 
 func withServiceToken(token string, next http.Handler) http.Handler {

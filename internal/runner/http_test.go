@@ -11,7 +11,7 @@ import (
 )
 
 func TestHealthz(t *testing.T) {
-	srv := httptest.NewServer(Handler(Options{}))
+	srv := httptest.NewServer(Handler(Options{Service: NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)}))
 	t.Cleanup(srv.Close)
 	res, err := http.Get(srv.URL + "/healthz")
 	if err != nil {
@@ -24,7 +24,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestUnknownOperation(t *testing.T) {
-	srv := httptest.NewServer(Handler(Options{}))
+	srv := httptest.NewServer(Handler(Options{Service: NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)}))
 	t.Cleanup(srv.Close)
 	body := []byte(`{"version":2,"operation":"not_a_tool","input":{}}`)
 	res, err := http.Post(srv.URL+"/v1/operations", "application/json", bytes.NewReader(body))
@@ -41,10 +41,31 @@ func TestUnknownOperation(t *testing.T) {
 	}
 }
 
-func TestKnownOperationUnavailable(t *testing.T) {
-	srv := httptest.NewServer(Handler(Options{}))
+func TestWorkspaceOpenRPC(t *testing.T) {
+	srv := httptest.NewServer(Handler(Options{Service: NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)}))
 	t.Cleanup(srv.Close)
-	body := []byte(`{"version":2,"operation":"workspace_open","input":{}}`)
+	body := []byte(`{"version":2,"operation":"workspace_open","input":{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-repo-http-1","networkProfile":"network-none"}}`)
+	res, err := http.Post(srv.URL+"/v1/operations", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+	var got protocol.ToolResult
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.OK {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestUnimplementedOperationUnavailable(t *testing.T) {
+	srv := httptest.NewServer(Handler(Options{Service: NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)}))
+	t.Cleanup(srv.Close)
+	body := []byte(`{"version":2,"operation":"files_read","input":{}}`)
 	res, err := http.Post(srv.URL+"/v1/operations", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -53,17 +74,10 @@ func TestKnownOperationUnavailable(t *testing.T) {
 	if res.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status %d", res.StatusCode)
 	}
-	var got protocol.ToolResult
-	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Error == nil || got.Error.Code != protocol.ErrorUnavailable {
-		t.Fatalf("got %+v", got)
-	}
 }
 
 func TestServiceToken(t *testing.T) {
-	srv := httptest.NewServer(Handler(Options{ServiceToken: "runner-token"}))
+	srv := httptest.NewServer(Handler(Options{ServiceToken: "runner-token", Service: NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)}))
 	t.Cleanup(srv.Close)
 	res, err := http.Post(srv.URL+"/v1/operations", "application/json", bytes.NewReader([]byte(`{"version":2,"operation":"workspace_open","input":{}}`)))
 	if err != nil {

@@ -68,6 +68,10 @@ func TestOpaqueAndAPIKeyIDs(t *testing.T) {
 	if !ValidIdempotencyKey("open-repo-001") {
 		t.Fatal("idempotency key")
 	}
+	id := NewOpaqueID(PrefixWorkspace)
+	if !ValidOpaqueID(PrefixWorkspace, id) {
+		t.Fatalf("generated id %q is invalid", id)
+	}
 }
 
 func TestSecretPolicy(t *testing.T) {
