@@ -24,7 +24,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | API-key Worker | `apps/api-key-gateway` | Keep Wrangler TS (Cloudflare Worker). Go hashes/verifies `chm_key_` secrets in `internal/auth` + `internal/store` and never logs plaintext |
 | Public contracts | `packages/contracts/src/` | `pkg/protocol` |
 | Runner HTTP RPC | `apps/runner/src/app.ts`, `internal-runner-operations.ts` | `cmd/runner`, `internal/runner` |
-| SQLite metadata / state | `apps/runner/src/metadata-store.ts`, `state-store.ts` | `internal/store` (`Memory` + `SQLite` via `database/sql` + `modernc.org/sqlite`; CHECK rejects raw `bridge`) |
+| SQLite metadata / state | `apps/runner/src/metadata-store.ts`, `state-store.ts` | `internal/store` (`Memory` + `SQLite` via `database/sql` + `modernc.org/sqlite`; CHECK rejects raw `bridge`; `environment_id` migrates onto existing DBs) |
 | Secrets keyring | `apps/runner/src/secret-keyring.ts`, `secret-metadata-store.ts` | `internal/secrets` (AES-256-GCM + SQLite envelopes; `secrets_list` returns names/descriptions only; plaintext never stored, listed, or logged) |
 | Workspace + Docker policy | `apps/runner/src/workspace-service.ts`, `docker-engine.ts` | `internal/runner`, `internal/sandbox` (`workspace_open` clones via helper container when a cloner is wired; minted token on stdin only; `workspace_lease_renew` caps at hard expiry; `workspace_recover` resume/status/patch/export; `workspace_context` / `workspace_set_active`) |
 | GitHub App + transfer helpers | `apps/runner/src/github-*.ts`, `worker/*-helper.sh` | `internal/git` (RS256 App JWT + clone/transfer/gh helpers; `git_fetch`/`git_push`/`github_action`/`github_read` mint token onto helper stdin only; import stays `network-none`) |
