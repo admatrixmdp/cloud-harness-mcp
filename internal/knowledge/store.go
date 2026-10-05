@@ -19,9 +19,18 @@ import (
 
 var (
 	itemIDRe    = regexp.MustCompile(`^kn_[A-Za-z0-9_-]{10,80}$`)
+	linkIDRe    = regexp.MustCompile(`^knl_[A-Za-z0-9_-]{10,80}$`)
 	projectIDRe = regexp.MustCompile(`^prj_[A-Za-z0-9_-]{20,80}$`)
 	tagRe       = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,50}$`)
 )
+
+var relations = map[string]struct{}{
+	"relates-to":  {},
+	"references":  {},
+	"supports":    {},
+	"contradicts": {},
+	"supersedes":  {},
+}
 
 var journalTypes = map[string]struct{}{
 	"engineering-log":    {},
@@ -155,6 +164,19 @@ CREATE TABLE IF NOT EXISTS knowledge_tags (
   tag TEXT NOT NULL,
   PRIMARY KEY(principal_id, item_id, tag)
 );
+CREATE TABLE IF NOT EXISTS knowledge_links (
+  id TEXT PRIMARY KEY,
+  principal_id TEXT NOT NULL,
+  source_id TEXT NOT NULL REFERENCES knowledge_items(id) ON DELETE CASCADE,
+  target_id TEXT NOT NULL REFERENCES knowledge_items(id) ON DELETE CASCADE,
+  relation TEXT NOT NULL CHECK (relation IN ('relates-to','references','supports','contradicts','supersedes')),
+  origin TEXT NOT NULL CHECK (origin IN ('manual','wikilink')),
+  generation INTEGER NOT NULL CHECK (generation > 0),
+  created_at INTEGER NOT NULL,
+  UNIQUE(principal_id, source_id, target_id, relation)
+);
+CREATE INDEX IF NOT EXISTS knowledge_links_source_idx ON knowledge_links(principal_id, source_id);
+CREATE INDEX IF NOT EXISTS knowledge_links_target_idx ON knowledge_links(principal_id, target_id);
 `); err != nil {
 		return nil, err
 	}
@@ -628,6 +650,325 @@ func (s *Store) query(p ListParams, limit int) ([]Item, string, error) {
 		next = strconv.Itoa(end)
 	}
 	return out, next, nil
+}
+
+// Link is a directed knowledge edge.
+type Link struct {
+	ID          string
+	PrincipalID string
+	SourceID    string
+	TargetID    string
+	Relation    string
+	Origin      string
+	Generation  int
+	CreatedAt   int64
+}
+
+func (l Link) PublicJSON() map[string]any {
+	return map[string]any{
+		"id":          l.ID,
+		"principalId": l.PrincipalID,
+		"sourceId":    l.SourceID,
+		"targetId":    l.TargetID,
+		"relation":    l.Relation,
+		"origin":      l.Origin,
+		"generation":  l.Generation,
+		"createdAt":   l.CreatedAt,
+	}
+}
+
+type GraphParams struct {
+	PrincipalID string
+	RootID      string
+	Depth       int
+	MaxNodes    int
+	Kinds       []string
+	ProjectID   string
+}
+
+type GraphNode struct {
+	ID          string
+	Kind        string
+	Scope       string
+	Title       string
+	JournalType string
+	Tags        []string
+	UpdatedAt   int64
+}
+
+func (n GraphNode) PublicJSON() map[string]any {
+	out := map[string]any{
+		"id":        n.ID,
+		"kind":      n.Kind,
+		"scope":     n.Scope,
+		"title":     n.Title,
+		"tags":      n.Tags,
+		"updatedAt": n.UpdatedAt,
+	}
+	if n.JournalType != "" {
+		out["journalType"] = n.JournalType
+	} else {
+		out["journalType"] = nil
+	}
+	return out
+}
+
+type GraphEdge struct {
+	ID       string
+	SourceID string
+	TargetID string
+	Relation string
+	Origin   string
+}
+
+func (e GraphEdge) PublicJSON() map[string]any {
+	return map[string]any{
+		"id": e.ID, "sourceId": e.SourceID, "targetId": e.TargetID,
+		"relation": e.Relation, "origin": e.Origin,
+	}
+}
+
+func newLinkID() string {
+	buf := make([]byte, 12)
+	if _, err := rand.Read(buf); err != nil {
+		panic("knowledge: crypto/rand unavailable")
+	}
+	return "knl_" + hex.EncodeToString(buf)
+}
+
+func (s *Store) CreateLink(principalID, sourceID, targetID, relation, origin string) (Link, error) {
+	if sourceID == targetID {
+		return Link{}, fail(protocol.ErrorInvalidInput, "cannot link a knowledge item to itself")
+	}
+	if !itemIDRe.MatchString(sourceID) || !itemIDRe.MatchString(targetID) {
+		return Link{}, fail(protocol.ErrorInvalidInput, "invalid knowledge item identifier")
+	}
+	if relation == "" {
+		relation = "relates-to"
+	}
+	if _, ok := relations[relation]; !ok {
+		return Link{}, fail(protocol.ErrorInvalidInput, "invalid knowledge relation")
+	}
+	if origin == "" {
+		origin = "manual"
+	}
+	if origin != "manual" && origin != "wikilink" {
+		return Link{}, fail(protocol.ErrorInvalidInput, "invalid knowledge link origin")
+	}
+	if _, err := s.Read(principalID, sourceID); err != nil {
+		return Link{}, fail(protocol.ErrorNotFound, "source or target knowledge item not found or inaccessible")
+	}
+	if _, err := s.Read(principalID, targetID); err != nil {
+		return Link{}, fail(protocol.ErrorNotFound, "source or target knowledge item not found or inaccessible")
+	}
+	now := time.Now().UnixMilli()
+	id := newLinkID()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Link{}, fail(protocol.ErrorInternal, err.Error())
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`INSERT INTO knowledge_links (id, principal_id, source_id, target_id, relation, origin, generation, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?) ON CONFLICT(principal_id, source_id, target_id, relation) DO UPDATE SET origin = excluded.origin, generation = knowledge_links.generation + 1`,
+		id, principalID, sourceID, targetID, relation, origin, now); err != nil {
+		return Link{}, fail(protocol.ErrorInternal, err.Error())
+	}
+	var link Link
+	if err := tx.QueryRow(`SELECT id, principal_id, source_id, target_id, relation, origin, generation, created_at FROM knowledge_links WHERE principal_id = ? AND source_id = ? AND target_id = ? AND relation = ?`, principalID, sourceID, targetID, relation).
+		Scan(&link.ID, &link.PrincipalID, &link.SourceID, &link.TargetID, &link.Relation, &link.Origin, &link.Generation, &link.CreatedAt); err != nil {
+		return Link{}, fail(protocol.ErrorInternal, err.Error())
+	}
+	if err := tx.Commit(); err != nil {
+		return Link{}, fail(protocol.ErrorInternal, err.Error())
+	}
+	return link, nil
+}
+
+func (s *Store) DeleteLink(principalID, linkID, sourceID, targetID, relation string) (bool, error) {
+	if linkID == "" && (sourceID == "" || targetID == "") {
+		return false, fail(protocol.ErrorInvalidInput, "linkId or (sourceId and targetId) is required")
+	}
+	if linkID != "" {
+		if !linkIDRe.MatchString(linkID) {
+			return false, fail(protocol.ErrorInvalidInput, "invalid knowledge link identifier")
+		}
+		res, err := s.db.Exec(`DELETE FROM knowledge_links WHERE id = ? AND principal_id = ?`, linkID, principalID)
+		if err != nil {
+			return false, fail(protocol.ErrorInternal, err.Error())
+		}
+		n, _ := res.RowsAffected()
+		return n > 0, nil
+	}
+	q := `DELETE FROM knowledge_links WHERE principal_id = ? AND source_id = ? AND target_id = ?`
+	args := []any{principalID, sourceID, targetID}
+	if relation != "" {
+		if _, ok := relations[relation]; !ok {
+			return false, fail(protocol.ErrorInvalidInput, "invalid knowledge relation")
+		}
+		q += ` AND relation = ?`
+		args = append(args, relation)
+	}
+	res, err := s.db.Exec(q, args...)
+	if err != nil {
+		return false, fail(protocol.ErrorInternal, err.Error())
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+func (s *Store) Graph(p GraphParams) (nodes []GraphNode, edges []GraphEdge, truncated bool, err error) {
+	if p.Depth <= 0 {
+		p.Depth = 1
+	}
+	if p.Depth > 3 {
+		return nil, nil, false, fail(protocol.ErrorInvalidInput, "depth must be between 1 and 3")
+	}
+	if p.MaxNodes <= 0 {
+		p.MaxNodes = 50
+	}
+	if p.MaxNodes > 200 {
+		return nil, nil, false, fail(protocol.ErrorInvalidInput, "maxNodes must be between 1 and 200")
+	}
+	now := time.Now().UnixMilli()
+	nodeMap := map[string]GraphNode{}
+	edgeMap := map[string]GraphEdge{}
+	kindOK := map[string]struct{}{}
+	for _, k := range p.Kinds {
+		kindOK[k] = struct{}{}
+	}
+	getNode := func(id string) (GraphNode, bool) {
+		if n, ok := nodeMap[id]; ok {
+			return n, true
+		}
+		var kind, scope, title string
+		var project, journal sql.NullString
+		var updated int64
+		err := s.db.QueryRow(`SELECT kind, scope, project_id, title, journal_type, updated_at FROM knowledge_items WHERE id = ? AND principal_id = ? AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`, id, p.PrincipalID, now).
+			Scan(&kind, &scope, &project, &title, &journal, &updated)
+		if err != nil {
+			return GraphNode{}, false
+		}
+		if len(kindOK) > 0 {
+			if _, ok := kindOK[kind]; !ok {
+				return GraphNode{}, false
+			}
+		}
+		if p.ProjectID != "" && project.String != p.ProjectID {
+			return GraphNode{}, false
+		}
+		tags, err := s.tagsFor(id)
+		if err != nil {
+			tags = []string{}
+		}
+		n := GraphNode{ID: id, Kind: kind, Scope: scope, Title: title, JournalType: journal.String, Tags: tags, UpdatedAt: updated}
+		nodeMap[id] = n
+		return n, true
+	}
+	var frontier []string
+	if p.RootID != "" {
+		if !itemIDRe.MatchString(p.RootID) {
+			return nil, nil, false, fail(protocol.ErrorInvalidInput, "invalid knowledge item identifier")
+		}
+		if _, ok := getNode(p.RootID); !ok {
+			return []GraphNode{}, []GraphEdge{}, false, nil
+		}
+		frontier = []string{p.RootID}
+		for d := 0; d < p.Depth; d++ {
+			var next []string
+			for _, current := range frontier {
+				if len(nodeMap) >= p.MaxNodes {
+					truncated = true
+					break
+				}
+				rows, err := s.db.Query(`SELECT id, source_id, target_id, relation, origin FROM knowledge_links WHERE principal_id = ? AND (source_id = ? OR target_id = ?)`, p.PrincipalID, current, current)
+				if err != nil {
+					return nil, nil, false, fail(protocol.ErrorInternal, err.Error())
+				}
+				for rows.Next() {
+					var e GraphEdge
+					if err := rows.Scan(&e.ID, &e.SourceID, &e.TargetID, &e.Relation, &e.Origin); err != nil {
+						_ = rows.Close()
+						return nil, nil, false, fail(protocol.ErrorInternal, err.Error())
+					}
+					neighbor := e.TargetID
+					if neighbor == current {
+						neighbor = e.SourceID
+					}
+					if _, already := nodeMap[neighbor]; already {
+						edgeMap[e.SourceID+"->"+e.TargetID+":"+e.Relation] = e
+						continue
+					}
+					if _, ok := getNode(neighbor); !ok {
+						continue
+					}
+					edgeMap[e.SourceID+"->"+e.TargetID+":"+e.Relation] = e
+					next = append(next, neighbor)
+				}
+				err = rows.Err()
+				_ = rows.Close()
+				if err != nil {
+					return nil, nil, false, fail(protocol.ErrorInternal, err.Error())
+				}
+			}
+			if truncated {
+				break
+			}
+			frontier = next
+		}
+	} else {
+		q := `SELECT id FROM knowledge_items WHERE principal_id = ? AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC LIMIT ?`
+		rows, err := s.db.Query(q, p.PrincipalID, now, p.MaxNodes+1)
+		if err != nil {
+			return nil, nil, false, fail(protocol.ErrorInternal, err.Error())
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return nil, nil, false, fail(protocol.ErrorInternal, err.Error())
+			}
+			ids = append(ids, id)
+		}
+		_ = rows.Close()
+		if len(ids) > p.MaxNodes {
+			truncated = true
+			ids = ids[:p.MaxNodes]
+		}
+		for _, id := range ids {
+			getNode(id)
+		}
+		linkRows, err := s.db.Query(`SELECT id, source_id, target_id, relation, origin FROM knowledge_links WHERE principal_id = ?`, p.PrincipalID)
+		if err != nil {
+			return nil, nil, false, fail(protocol.ErrorInternal, err.Error())
+		}
+		defer linkRows.Close()
+		for linkRows.Next() {
+			var e GraphEdge
+			if err := linkRows.Scan(&e.ID, &e.SourceID, &e.TargetID, &e.Relation, &e.Origin); err != nil {
+				return nil, nil, false, fail(protocol.ErrorInternal, err.Error())
+			}
+			if _, ok := nodeMap[e.SourceID]; !ok {
+				continue
+			}
+			if _, ok := nodeMap[e.TargetID]; !ok {
+				continue
+			}
+			edgeMap[e.SourceID+"->"+e.TargetID+":"+e.Relation] = e
+		}
+	}
+	for _, n := range nodeMap {
+		nodes = append(nodes, n)
+	}
+	for _, e := range edgeMap {
+		edges = append(edges, e)
+	}
+	if nodes == nil {
+		nodes = []GraphNode{}
+	}
+	if edges == nil {
+		edges = []GraphEdge{}
+	}
+	return nodes, edges, truncated, nil
 }
 
 func (s *Store) tagsFor(id string) ([]string, error) {

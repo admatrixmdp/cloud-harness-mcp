@@ -907,6 +907,45 @@ func TestKnowledgeCreateListReadDeleteOnRunner(t *testing.T) {
 	if !search.OK {
 		t.Fatalf("search: %+v", search)
 	}
+	second := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpKnowledgeCreate,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","title":"Beta","content":"linked"}`),
+	})
+	if !second.OK {
+		t.Fatalf("second: %+v", second)
+	}
+	id2 := second.Data.(map[string]any)["id"].(string)
+	self := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpKnowledgeLink,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","sourceId":"` + id + `","targetId":"` + id + `"}`),
+	})
+	if self.OK || self.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("self-link: %+v", self)
+	}
+	linked := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpKnowledgeLink,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","sourceId":"` + id + `","targetId":"` + id2 + `","relation":"supports"}`),
+	})
+	if !linked.OK {
+		t.Fatalf("link: %+v", linked)
+	}
+	graph := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpKnowledgeGraph,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","rootId":"` + id + `","depth":1}`),
+	})
+	if !graph.OK {
+		t.Fatalf("graph: %+v", graph)
+	}
+	if graph.Data.(map[string]any)["truncated"] != false {
+		t.Fatalf("truncated %+v", graph.Data)
+	}
+	unlinked := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpKnowledgeUnlink,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","sourceId":"` + id + `","targetId":"` + id2 + `"}`),
+	})
+	if !unlinked.OK {
+		t.Fatalf("unlink: %+v", unlinked)
+	}
 	del := svc.Execute(context.Background(), protocol.RunnerRequest{
 		Version: 2, OwnerID: "owner", Operation: protocol.OpKnowledgeDelete,
 		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","id":"` + id + `","expectedGeneration":1}`),

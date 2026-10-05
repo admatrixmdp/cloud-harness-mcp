@@ -82,3 +82,49 @@ func TestJournalRequiresType(t *testing.T) {
 		t.Fatalf("%+v", item)
 	}
 }
+
+func TestLinkUnlinkAndBoundedGraph(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "kn.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := store.Create(CreateParams{PrincipalID: "owner", Scope: "owner", Title: "A", Content: "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := store.Create(CreateParams{PrincipalID: "owner", Scope: "owner", Title: "B", Content: "beta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.CreateLink("owner", a.ID, a.ID, "relates-to", "manual")
+	if err == nil {
+		t.Fatal("self-link must fail")
+	}
+	link, err := store.CreateLink("owner", a.ID, b.ID, "supports", "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !linkIDRe.MatchString(link.ID) || link.Relation != "supports" {
+		t.Fatalf("%+v", link)
+	}
+	nodes, edges, truncated, err := store.Graph(GraphParams{PrincipalID: "owner", RootID: a.ID, Depth: 1, MaxNodes: 50})
+	if err != nil || truncated {
+		t.Fatalf("graph %v truncated=%v", err, truncated)
+	}
+	if len(nodes) != 2 || len(edges) != 1 {
+		t.Fatalf("nodes=%d edges=%d", len(nodes), len(edges))
+	}
+	ok, err := store.DeleteLink("owner", link.ID, "", "", "")
+	if err != nil || !ok {
+		t.Fatalf("unlink %v %v", ok, err)
+	}
+	nodes, edges, _, err = store.Graph(GraphParams{PrincipalID: "owner", RootID: a.ID, Depth: 1, MaxNodes: 50})
+	if err != nil || len(nodes) != 1 || len(edges) != 0 {
+		t.Fatalf("after unlink nodes=%d edges=%d err=%v", len(nodes), len(edges), err)
+	}
+}

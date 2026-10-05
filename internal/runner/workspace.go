@@ -218,6 +218,12 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.knowledgeList(req)
 	case protocol.OpKnowledgeSearch:
 		return s.knowledgeSearch(req)
+	case protocol.OpKnowledgeLink:
+		return s.knowledgeLink(req)
+	case protocol.OpKnowledgeUnlink:
+		return s.knowledgeUnlink(req)
+	case protocol.OpKnowledgeGraph:
+		return s.knowledgeGraph(req)
 	case protocol.OpWorkspaceCapabilities:
 		return protocol.Success("workspace capabilities", map[string]any{
 			"networkProfiles":       []string{string(protocol.NetworkNone), string(protocol.DependencyAccess)},
@@ -1060,6 +1066,13 @@ type knowledgeInput struct {
 	Limit              *int     `json:"limit"`
 	RetentionSeconds   *int     `json:"retentionSeconds"`
 	ExpectedGeneration *int     `json:"expectedGeneration"`
+	SourceID           string   `json:"sourceId"`
+	TargetID           string   `json:"targetId"`
+	LinkID             string   `json:"linkId"`
+	Relation           string   `json:"relation"`
+	RootID             string   `json:"rootId"`
+	Depth              *int     `json:"depth"`
+	MaxNodes           *int     `json:"maxNodes"`
 }
 
 func knowledgeFail(err error) protocol.ToolResult {
@@ -1296,6 +1309,95 @@ func (s *Service) knowledgeSearch(req protocol.RunnerRequest) protocol.ToolResul
 		got.Truncated = true
 		got.Data = map[string]any{"results": results, "cursor": next}
 	}
+	return got
+}
+
+func (s *Service) knowledgeLink(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireKnowledge()
+	if fail != nil {
+		return *fail
+	}
+	var input knowledgeInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid knowledge_link input", false)
+		}
+	}
+	ownerID, _, errRes := s.knowledgeContext(req, input)
+	if errRes != nil {
+		return *errRes
+	}
+	link, err := store.CreateLink(ownerID, input.SourceID, input.TargetID, input.Relation, "manual")
+	if err != nil {
+		return knowledgeFail(err)
+	}
+	return protocol.Success("Knowledge link created", link.PublicJSON())
+}
+
+func (s *Service) knowledgeUnlink(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireKnowledge()
+	if fail != nil {
+		return *fail
+	}
+	var input knowledgeInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid knowledge_unlink input", false)
+		}
+	}
+	ownerID, _, errRes := s.knowledgeContext(req, input)
+	if errRes != nil {
+		return *errRes
+	}
+	unlinked, err := store.DeleteLink(ownerID, input.LinkID, input.SourceID, input.TargetID, input.Relation)
+	if err != nil {
+		return knowledgeFail(err)
+	}
+	return protocol.Success("Knowledge link removed", map[string]any{"unlinked": unlinked})
+}
+
+func (s *Service) knowledgeGraph(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireKnowledge()
+	if fail != nil {
+		return *fail
+	}
+	var input knowledgeInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid knowledge_graph input", false)
+		}
+	}
+	ownerID, _, errRes := s.knowledgeContext(req, input)
+	if errRes != nil {
+		return *errRes
+	}
+	depth := 1
+	if input.Depth != nil {
+		depth = *input.Depth
+	}
+	maxNodes := 50
+	if input.MaxNodes != nil {
+		maxNodes = *input.MaxNodes
+	}
+	nodes, edges, truncated, err := store.Graph(knowledge.GraphParams{
+		PrincipalID: ownerID, RootID: input.RootID, Depth: depth, MaxNodes: maxNodes,
+		Kinds: input.Kinds, ProjectID: input.ProjectID,
+	})
+	if err != nil {
+		return knowledgeFail(err)
+	}
+	outNodes := make([]map[string]any, 0, len(nodes))
+	for _, n := range nodes {
+		outNodes = append(outNodes, n.PublicJSON())
+	}
+	outEdges := make([]map[string]any, 0, len(edges))
+	for _, e := range edges {
+		outEdges = append(outEdges, e.PublicJSON())
+	}
+	got := protocol.Success(fmt.Sprintf("Graph returned with %d nodes and %d edges", len(outNodes), len(outEdges)), map[string]any{
+		"nodes": outNodes, "edges": outEdges, "truncated": truncated,
+	})
+	got.Truncated = truncated
 	return got
 }
 
