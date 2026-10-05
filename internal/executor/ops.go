@@ -88,6 +88,8 @@ type pathInput struct {
 	ShellID                string   `json:"shellId"`
 	Input                  string   `json:"input"`
 	WaitMs                 int      `json:"waitMs"`
+	TaskID                 string   `json:"taskId"`
+	DependsOn              []string `json:"dependsOn"`
 	Args                   []string `json:"args"`
 	Files                  []struct {
 		Path           string `json:"path"`
@@ -175,6 +177,16 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.shellIO(in)
 	case protocol.OpShellClose:
 		return w.shellClose(in)
+	case protocol.OpTasksList:
+		return w.tasksList(in)
+	case protocol.OpTasksRun:
+		return w.tasksRun(in)
+	case protocol.OpTasksStatus:
+		return w.tasksStatus(in)
+	case protocol.OpTasksCancel:
+		return w.tasksCancel(in)
+	case protocol.OpTasksGraph:
+		return w.tasksGraph()
 	case protocol.OpHooksList:
 		return w.hooksList(in)
 	case protocol.OpHooksRun:

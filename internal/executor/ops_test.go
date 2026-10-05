@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
@@ -802,6 +803,97 @@ func TestShellOpenIOCloseAndIdempotency(t *testing.T) {
 	}
 	if closed.Data.(map[string]any)["status"] != "cancelled" {
 		t.Fatalf("status %+v", closed.Data)
+	}
+}
+
+func waitTask(t *testing.T, ws Workspace, id string) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		st := ws.Execute(context.Background(), protocol.OpTasksStatus, json.RawMessage(`{"taskId":"`+id+`"}`))
+		if !st.OK {
+			t.Fatalf("status: %+v", st)
+		}
+		data := st.Data.(map[string]any)
+		switch data["status"] {
+		case "queued", "running":
+			time.Sleep(20 * time.Millisecond)
+			continue
+		default:
+			return data
+		}
+	}
+	t.Fatal("task did not settle")
+	return nil
+}
+
+func TestTasksRunStatusCancelGraphAndIdempotency(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{Root: root}
+	missing := ws.Execute(context.Background(), protocol.OpTasksRun, json.RawMessage(`{"command":"echo x"}`))
+	if missing.OK || missing.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("missing key: %+v", missing)
+	}
+	run := ws.Execute(context.Background(), protocol.OpTasksRun, json.RawMessage(`{"command":"echo task-ok","cwd":".","idempotencyKey":"task-key-01","timeoutMs":5000}`))
+	if !run.OK {
+		t.Fatalf("run: %+v", run)
+	}
+	id, _ := run.Data.(map[string]any)["id"].(string)
+	if !protocol.ValidOpaqueID(protocol.PrefixTask, id) {
+		t.Fatalf("id %q", id)
+	}
+	replay := ws.Execute(context.Background(), protocol.OpTasksRun, json.RawMessage(`{"command":"echo task-ok","cwd":".","idempotencyKey":"task-key-01","timeoutMs":5000}`))
+	if !replay.OK || replay.Data.(map[string]any)["id"] != id {
+		t.Fatalf("replay: %+v", replay)
+	}
+	conflict := ws.Execute(context.Background(), protocol.OpTasksRun, json.RawMessage(`{"command":"echo other","cwd":".","idempotencyKey":"task-key-01","timeoutMs":5000}`))
+	if conflict.OK || conflict.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("conflict: %+v", conflict)
+	}
+	data := waitTask(t, ws, id)
+	if data["status"] != "succeeded" || !strings.Contains(data["output"].(string), "task-ok") {
+		t.Fatalf("settled %+v", data)
+	}
+	dep := ws.Execute(context.Background(), protocol.OpTasksRun, json.RawMessage(`{"command":"echo dependent-ok","cwd":".","idempotencyKey":"task-key-02","timeoutMs":5000,"dependsOn":["`+id+`"]}`))
+	if !dep.OK {
+		t.Fatalf("dep: %+v", dep)
+	}
+	depID := dep.Data.(map[string]any)["id"].(string)
+	depData := waitTask(t, ws, depID)
+	if depData["status"] != "succeeded" || !strings.Contains(depData["output"].(string), "dependent-ok") {
+		t.Fatalf("dep settled %+v", depData)
+	}
+	graph := ws.Execute(context.Background(), protocol.OpTasksGraph, json.RawMessage(`{}`))
+	if !graph.OK {
+		t.Fatalf("graph: %+v", graph)
+	}
+	edges := asMaps(graph.Data.(map[string]any)["edges"])
+	found := false
+	for _, e := range edges {
+		if e["from"] == id && e["to"] == depID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing edge %+v", graph.Data)
+	}
+	listed := ws.Execute(context.Background(), protocol.OpTasksList, json.RawMessage(`{}`))
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	for _, row := range asMaps(listed.Data.(map[string]any)["tasks"]) {
+		if _, ok := row["output"]; ok {
+			t.Fatalf("list leaked output %+v", row)
+		}
+	}
+	cancellable := ws.Execute(context.Background(), protocol.OpTasksRun, json.RawMessage(`{"command":"sleep 3; echo leaked","cwd":".","idempotencyKey":"task-key-03","timeoutMs":10000}`))
+	if !cancellable.OK {
+		t.Fatalf("cancellable: %+v", cancellable)
+	}
+	cid := cancellable.Data.(map[string]any)["id"].(string)
+	cancelled := ws.Execute(context.Background(), protocol.OpTasksCancel, json.RawMessage(`{"taskId":"`+cid+`"}`))
+	if !cancelled.OK || cancelled.Data.(map[string]any)["status"] != "cancelled" {
+		t.Fatalf("cancel: %+v", cancelled)
 	}
 }
 

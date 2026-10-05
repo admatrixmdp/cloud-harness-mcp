@@ -124,4 +124,8 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if !closed.OK {
 		t.Fatalf("local shell close: %+v", closed)
 	}
+	taskListed := b.Call(context.Background(), protocol.OpTasksList, json.RawMessage(`{}`))
+	if !taskListed.OK {
+		t.Fatalf("local tasks list: %+v", taskListed)
+	}
 }
