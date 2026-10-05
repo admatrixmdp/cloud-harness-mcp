@@ -65,7 +65,7 @@ func TestWorkspaceOpenRPC(t *testing.T) {
 func TestUnimplementedOperationUnavailable(t *testing.T) {
 	srv := httptest.NewServer(Handler(Options{Service: NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)}))
 	t.Cleanup(srv.Close)
-	body := []byte(`{"version":2,"operation":"files_read","input":{}}`)
+	body := []byte(`{"version":2,"operation":"agent_spawn","input":{}}`)
 	res, err := http.Post(srv.URL+"/v1/operations", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)

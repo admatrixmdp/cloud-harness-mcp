@@ -146,6 +146,8 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.gitPush(ctx, req)
 	case protocol.OpGitHubAction, protocol.OpGitHubRead:
 		return s.githubCall(ctx, req)
+	case protocol.OpFilesList, protocol.OpFilesRead, protocol.OpFilesWrite, protocol.OpFilesWriteBatch, protocol.OpFilesApplyPatch, protocol.OpFilesDelete, protocol.OpFilesMove, protocol.OpFilesMkdir, protocol.OpGrepSearch, protocol.OpSymbolsSearch, protocol.OpSymbolsReferences, protocol.OpExecRun, protocol.OpGitStatus, protocol.OpGitDiff, protocol.OpGitLog, protocol.OpGitBranch, protocol.OpGitCheckout, protocol.OpGitAdd, protocol.OpGitCommit, protocol.OpGitMerge, protocol.OpGitRebase:
+		return s.runWorker(ctx, req)
 	case protocol.OpWorkspaceCapabilities:
 		return protocol.Success("workspace capabilities", map[string]any{
 			"networkProfiles":       []string{string(protocol.NetworkNone), string(protocol.DependencyAccess)},
@@ -408,8 +410,82 @@ func (s *Service) recoverWorker(ctx context.Context, rec store.Record, mode, mes
 	if err != nil {
 		return protocol.Fail(protocol.ErrorInternal, "could not encode recovery worker input", false)
 	}
+	return s.executeInJob(ctx, rec, protocol.OpWorkspaceRecover, payload)
+}
+
+func (s *Service) runWorker(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
+	var loc struct {
+		WorkspaceID string `json:"workspaceId"`
+	}
+	if len(req.Input) > 0 {
+		_ = json.Unmarshal(req.Input, &loc)
+	}
+	rec, errRes := s.resolveWorkspace(req.OwnerID, loc.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	if fail := s.requireActiveExecutor(rec); fail != nil {
+		return *fail
+	}
+	input := req.Input
+	if req.Operation == protocol.OpGitCommit {
+		input = s.withGitIdentity(rec.OwnerID, input)
+	}
+	return s.executeInJob(ctx, rec, req.Operation, input)
+}
+
+func (s *Service) requireActiveExecutor(rec store.Record) *protocol.ToolResult {
+	switch rec.Status {
+	case store.StatusClosed, store.StatusFailed:
+		fail := protocol.Fail(protocol.ErrorExpired, "workspace is "+strings.ToLower(string(rec.Status))+" and cannot run executor operations", false)
+		return &fail
+	case store.StatusExpiredRecoverable:
+		fail := protocol.Fail(protocol.ErrorExpired, "workspace is expired and in recoverable grace state; use workspace_recover or workspace_lease_renew", false)
+		return &fail
+	case store.StatusNetworkQuarantined:
+		fail := protocol.Fail(protocol.ErrorDependencyEgressUnavailable, "workspace is quarantined due to network security policy drift; use workspace_recover after policy reconciliation or workspace_close", false)
+		return &fail
+	case store.StatusCreating, store.StatusReaping:
+		fail := protocol.Fail(protocol.ErrorConflict, "workspace is "+strings.ToLower(string(rec.Status)), true)
+		return &fail
+	}
+	if s.cfg.JobsRoot == "" {
+		fail := protocol.Fail(protocol.ErrorUnavailable, "workspace executor is not configured", true)
+		return &fail
+	}
+	return nil
+}
+
+func (s *Service) executeInJob(ctx context.Context, rec store.Record, op protocol.Operation, input json.RawMessage) protocol.ToolResult {
 	root := filepath.Join(s.cfg.JobsRoot, rec.ID, "repo")
-	return (executor.Workspace{Root: root}).Execute(ctx, protocol.OpWorkspaceRecover, payload)
+	return (executor.Workspace{Root: root}).Execute(ctx, op, input)
+}
+
+func (s *Service) withGitIdentity(ownerID string, input json.RawMessage) json.RawMessage {
+	fields := map[string]any{}
+	if len(input) > 0 {
+		_ = json.Unmarshal(input, &fields)
+	}
+	if _, ok := fields["authorName"].(string); ok {
+		if _, ok := fields["authorEmail"].(string); ok {
+			return input
+		}
+	}
+	name, email, ok := s.store.GitIdentity(ownerID)
+	if !ok {
+		name, email = "Cloud Harness Agent", "agent@cloud-harness.local"
+	}
+	if _, exists := fields["authorName"]; !exists {
+		fields["authorName"] = name
+	}
+	if _, exists := fields["authorEmail"]; !exists {
+		fields["authorEmail"] = email
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return input
+	}
+	return raw
 }
 
 func (s *Service) recoverExport(ctx context.Context, rec store.Record, targetBranch string) protocol.ToolResult {

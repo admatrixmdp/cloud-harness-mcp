@@ -482,3 +482,97 @@ func TestGitHubReadRejectsWriteAndMissingApp(t *testing.T) {
 		t.Fatal("clone helper should still run on open")
 	}
 }
+
+func TestRunWorkerConfinesPathsAndInjectsGitIdentity(t *testing.T) {
+	jobs := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("leak"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, JobsRoot: jobs}, nil, nil)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-worker-1","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	id := open.Data.(map[string]any)["workspaceId"].(string)
+	repo := filepath.Join(jobs, id, "repo")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("inside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpFilesList,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","path":"."}`),
+	})
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	escaped := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpFilesRead,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","path":"../secret.txt"}`),
+	})
+	if escaped.OK || escaped.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("path escape: %+v", escaped)
+	}
+	expired := store.NewMemory()
+	expiredSvc := NewService(Config{NetworkProfile: protocol.NetworkNone, JobsRoot: jobs}, expired, nil)
+	expiredOpen := expiredSvc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-worker-expired","networkProfile":"network-none"}`),
+	})
+	if !expiredOpen.OK {
+		t.Fatalf("expired open: %+v", expiredOpen)
+	}
+	expiredID := expiredOpen.Data.(map[string]any)["workspaceId"].(string)
+	if _, ok := expired.UpdateStatus(expiredID, store.StatusExpiredRecoverable); !ok {
+		t.Fatal("expire")
+	}
+	blocked := expiredSvc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpFilesList,
+		Input: json.RawMessage(`{"workspaceId":"` + expiredID + `","path":"."}`),
+	})
+	if blocked.OK || blocked.Error.Code != protocol.ErrorExpired {
+		t.Fatalf("expired worker: %+v", blocked)
+	}
+	set := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpGitIdentitySet,
+		Input: json.RawMessage(`{"name":"Alice Developer","email":"alice@example.com"}`),
+	})
+	if !set.OK {
+		t.Fatalf("identity: %+v", set)
+	}
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		cmd.Env = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s (%v)", args, out, err)
+		}
+	}
+	runGit("init")
+	runGit("add", "note.txt")
+	committed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpGitCommit,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","message":"test: note"}`),
+	})
+	if !committed.OK {
+		t.Fatalf("commit: %+v", committed)
+	}
+	data := committed.Data.(map[string]any)
+	if data["authorName"] != "Alice Developer" || data["authorEmail"] != "alice@example.com" {
+		t.Fatalf("identity not injected: %+v", data)
+	}
+	dash := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpGitCheckout,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","ref":"--help"}`),
+	})
+	if dash.OK || dash.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("dash checkout: %+v", dash)
+	}
+}
