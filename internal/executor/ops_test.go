@@ -713,6 +713,56 @@ func TestDeploymentsListOmitsCommandAndRunConflicts(t *testing.T) {
 	}
 }
 
+func TestSessionsOpenIOCloseAndIdempotency(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{Root: root}
+	dash := ws.Execute(context.Background(), protocol.OpSessionsOpen, json.RawMessage(`{"name":"--help","idempotencyKey":"session-key-01"}`))
+	if dash.OK || dash.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("dash: %+v", dash)
+	}
+	open := ws.Execute(context.Background(), protocol.OpSessionsOpen, json.RawMessage(`{"name":"review","cwd":".","idempotencyKey":"session-key-01"}`))
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	id, _ := open.Data.(map[string]any)["id"].(string)
+	if !protocol.ValidOpaqueID(protocol.PrefixSession, id) {
+		t.Fatalf("id %q", id)
+	}
+	replay := ws.Execute(context.Background(), protocol.OpSessionsOpen, json.RawMessage(`{"name":"review","cwd":".","idempotencyKey":"session-key-01"}`))
+	if !replay.OK || replay.Data.(map[string]any)["id"] != id {
+		t.Fatalf("replay: %+v", replay)
+	}
+	conflict := ws.Execute(context.Background(), protocol.OpSessionsOpen, json.RawMessage(`{"name":"review","cwd":".","idempotencyKey":"session-key-02"}`))
+	if conflict.OK || conflict.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("conflict: %+v", conflict)
+	}
+	io := ws.Execute(context.Background(), protocol.OpSessionsIO, json.RawMessage(`{"sessionId":"`+id+`","input":"echo session-ok\n","waitMs":300}`))
+	if !io.OK {
+		t.Fatalf("io: %+v", io)
+	}
+	if !strings.Contains(io.Data.(map[string]any)["output"].(string), "session-ok") {
+		t.Fatalf("output %+v", io.Data)
+	}
+	listed := ws.Execute(context.Background(), protocol.OpSessionsList, json.RawMessage(`{}`))
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	rows := asMaps(listed.Data.(map[string]any)["sessions"])
+	if len(rows) != 1 || rows[0]["id"] != id {
+		t.Fatalf("list rows %+v", listed.Data)
+	}
+	if _, ok := rows[0]["output"]; ok {
+		t.Fatalf("list leaked output %+v", rows[0])
+	}
+	closed := ws.Execute(context.Background(), protocol.OpSessionsClose, json.RawMessage(`{"sessionId":"`+id+`"}`))
+	if !closed.OK {
+		t.Fatalf("close: %+v", closed)
+	}
+	if closed.Data.(map[string]any)["status"] != "cancelled" {
+		t.Fatalf("status %+v", closed.Data)
+	}
+}
+
 func asMaps(raw any) []map[string]any {
 	switch v := raw.(type) {
 	case []map[string]any:

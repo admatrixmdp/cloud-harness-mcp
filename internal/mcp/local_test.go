@@ -111,4 +111,8 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if suggest.Data.(map[string]any)["outboundCalls"] != 0 {
 		t.Fatalf("local suggest egress %+v", suggest.Data)
 	}
+	sessions := b.Call(context.Background(), protocol.OpSessionsList, json.RawMessage(`{}`))
+	if !sessions.OK {
+		t.Fatalf("local sessions list: %+v", sessions)
+	}
 }
