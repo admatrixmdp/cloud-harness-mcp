@@ -9,7 +9,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | Mode | TypeScript | Go |
 | --- | --- | --- |
 | Streamable HTTP `/mcp` | `apps/api/src/mcp-server.ts`, `apps/api/src/app.ts` | `cmd/cloud-harness-mcp`, `internal/mcp`, `internal/api` |
-| MCP gateway `/mcp-gateway` | `apps/api/src/mcp-gateway/` | `internal/gateway` (constant tools: search, inspect, execute, permissions, status) |
+| MCP gateway `/mcp-gateway` | `apps/api/src/mcp-gateway/` | `internal/gateway` (constant tools: search, inspect, execute, permissions, status; execute is SSRF-gated, no redirects, credentials only on the configured origin+path) |
 | Local stdio | `apps/api/src/cli-options.ts`, `apps/api/src/local/` | `cmd/cloud-harness-mcp --transport stdio --workspace` (`internal/mcp.ServeStdio` + confined `LocalBackend`; `workspace_open` remains unsupported) |
 
 ## Control plane
@@ -21,7 +21,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | Request security | `apps/api/src/request-security.ts` | `internal/api` (Host/Origin allowlist, `no-store`/`nosniff`/`X-Accel-Buffering`, pre-auth 429) |
 | Dashboard BFF | `apps/api/src/dashboard-*.ts` | `internal/api` (later) |
 | Ingress proxy | `deploy/ingress-proxy.mjs` | `cmd/ingress-proxy` |
-| API-key Worker | `apps/api-key-gateway` | Keep Wrangler TS unless a later task ports it; Go verifies keys in `internal/auth` + runner store |
+| API-key Worker | `apps/api-key-gateway` | Keep Wrangler TS (Cloudflare Worker). Go hashes/verifies `chm_key_` secrets in `internal/auth` + `internal/store` and never logs plaintext |
 | Public contracts | `packages/contracts/src/` | `pkg/protocol` |
 | Runner HTTP RPC | `apps/runner/src/app.ts`, `internal-runner-operations.ts` | `cmd/runner`, `internal/runner` |
 | SQLite metadata / state | `apps/runner/src/metadata-store.ts`, `state-store.ts` | `internal/store` (`Memory` + `SQLite` via `database/sql` + `modernc.org/sqlite`; CHECK rejects raw `bridge`) |

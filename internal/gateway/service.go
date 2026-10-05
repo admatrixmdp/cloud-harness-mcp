@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"strings"
 
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
@@ -22,7 +23,8 @@ func (t DownstreamTool) Qualified() string {
 
 // Registry is an in-process catalog used until the runner store is wired.
 type Registry struct {
-	tools []DownstreamTool
+	tools  []DownstreamTool
+	Client *DownstreamClient
 }
 
 // NewRegistry constructs a catalog. Downstream tools stay off tools/list.
@@ -86,8 +88,9 @@ func (r *Registry) Inspect(qualified string) protocol.ToolResult {
 	})
 }
 
-// Execute runs a permitted downstream tool. This slice does not open outbound
-// sockets; denied tools fail closed and secrets are never echoed.
+// Execute runs a permitted downstream tool. Denied tools fail closed and
+// secrets are never echoed. Allowed tools post tools/call to the pinned
+// endpoint when a DownstreamClient is configured.
 func (r *Registry) Execute(qualified string, arguments map[string]any) protocol.ToolResult {
 	tool, ok := r.lookup(qualified)
 	if !ok {
@@ -96,7 +99,10 @@ func (r *Registry) Execute(qualified string, arguments map[string]any) protocol.
 	if effective(tool.Permission) != protocol.GatewayAllow {
 		return protocol.Fail(protocol.ErrorForbidden, "tool is denied by gateway policy", false)
 	}
-	return protocol.Fail(protocol.ErrorUnavailable, "downstream MCP execute is not wired in this Go-port slice", true)
+	if r.Client == nil {
+		return protocol.Fail(protocol.ErrorUnavailable, "downstream MCP execute is not wired in this Go-port slice", true)
+	}
+	return r.Client.Call(context.Background(), tool.Name, arguments)
 }
 
 // Permissions returns the effective decision.
