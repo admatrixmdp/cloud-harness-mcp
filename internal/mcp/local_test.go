@@ -96,4 +96,8 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if skillRun.OK || skillRun.Error.Code != protocol.ErrorInvalidInput {
 		t.Fatalf("skills_run missing digest: %+v", skillRun)
 	}
+	deploys := b.Call(context.Background(), protocol.OpDeploymentsList, json.RawMessage(`{}`))
+	if !deploys.OK {
+		t.Fatalf("local deployments list: %+v", deploys)
+	}
 }

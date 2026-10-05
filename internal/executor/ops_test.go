@@ -629,6 +629,51 @@ func TestSkillsRunRequiresDigestAndRejectsMismatch(t *testing.T) {
 	}
 }
 
+func TestDeploymentsListOmitsCommandAndRunConflicts(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".cloud-harness"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".cloud-harness", "deployments.json"), []byte(`{"preview":"echo deploy-ok","broken":{"command":"exit 7","cwd":"."}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := Workspace{Root: root}
+	listed := ws.Execute(context.Background(), protocol.OpDeploymentsList, json.RawMessage(`{}`))
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	rows := asMaps(listed.Data.(map[string]any)["deployments"])
+	if len(rows) != 2 {
+		t.Fatalf("rows %+v", listed.Data)
+	}
+	for _, row := range rows {
+		if _, ok := row["command"]; ok {
+			t.Fatalf("command leaked %+v", row)
+		}
+		if row["cwd"] != "." {
+			t.Fatalf("cwd %+v", row)
+		}
+	}
+	ok := ws.Execute(context.Background(), protocol.OpDeploymentsRun, json.RawMessage(`{"name":"preview"}`))
+	if !ok.OK {
+		t.Fatalf("preview: %+v", ok)
+	}
+	if !strings.Contains(ok.Data.(map[string]any)["output"].(string), "deploy-ok") {
+		t.Fatalf("output %+v", ok.Data)
+	}
+	failed := ws.Execute(context.Background(), protocol.OpDeploymentsRun, json.RawMessage(`{"name":"broken"}`))
+	if failed.OK || failed.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("broken: %+v", failed)
+	}
+	if failed.Data.(map[string]any)["exitCode"] != 7 {
+		t.Fatalf("exit %+v", failed.Data)
+	}
+	dash := ws.Execute(context.Background(), protocol.OpDeploymentsRun, json.RawMessage(`{"name":"--help"}`))
+	if dash.OK || dash.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("dash: %+v", dash)
+	}
+}
+
 func asMaps(raw any) []map[string]any {
 	switch v := raw.(type) {
 	case []map[string]any:

@@ -157,6 +157,10 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.hooksList(in)
 	case protocol.OpHooksRun:
 		return w.hooksRun(ctx, in)
+	case protocol.OpDeploymentsList:
+		return w.deploymentsList()
+	case protocol.OpDeploymentsRun:
+		return w.deploymentsRun(ctx, in)
 	case protocol.OpMemoriesList:
 		return w.memoriesList(in)
 	case protocol.OpMemoriesRead:
