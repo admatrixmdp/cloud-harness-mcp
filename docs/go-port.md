@@ -24,11 +24,11 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | API-key Worker | `apps/api-key-gateway` | Keep Wrangler TS unless a later task ports it; Go verifies keys in `internal/auth` + runner store |
 | Public contracts | `packages/contracts/src/` | `pkg/protocol` |
 | Runner HTTP RPC | `apps/runner/src/app.ts`, `internal-runner-operations.ts` | `cmd/runner`, `internal/runner` |
-| SQLite metadata / state | `apps/runner/src/metadata-store.ts`, `state-store.ts` | `internal/store` |
+| SQLite metadata / state | `apps/runner/src/metadata-store.ts`, `state-store.ts` | `internal/store` (`Memory` + `SQLite` via `database/sql` + `modernc.org/sqlite`; CHECK rejects raw `bridge`) |
 | Secrets keyring | `apps/runner/src/secret-keyring.ts` | `internal/secrets` |
 | Workspace + Docker policy | `apps/runner/src/workspace-service.ts`, `docker-engine.ts` | `internal/runner`, `internal/sandbox` |
 | GitHub App + transfer helpers | `apps/runner/src/github-*.ts`, `worker/*-helper.sh` | `internal/git` |
-| Executor worker | `worker/harness-worker.mjs` | `cmd/harness-worker`, `internal/executor` (path confinement + truncation; TS remains image entry until Compose switches) |
+| Executor worker | `worker/harness-worker.mjs` | `cmd/harness-worker`, `internal/executor` (path confinement, truncation, unique `files_apply_patch`, confined `grep_search`; TS remains image entry until Compose switches) |
 | Model gateway / agents | `apps/model-gateway`, `apps/agent-runtime`, `apps/runner/src/agent-*.ts` | `cmd/model-gateway` |
 
 ## MUST-preserve security invariants

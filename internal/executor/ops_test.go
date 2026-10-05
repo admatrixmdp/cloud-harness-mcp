@@ -137,6 +137,61 @@ func TestHandleStdinJSON(t *testing.T) {
 	}
 }
 
+func TestApplyPatchUniqueAndConflict(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("one two one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := Workspace{Root: root}
+	dup := ws.Execute(context.Background(), protocol.OpFilesApplyPatch, json.RawMessage(`{"path":"a.txt","oldText":"one","newText":"ONE"}`))
+	if dup.OK || dup.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("duplicate oldText: %+v", dup)
+	}
+	if err := os.WriteFile(filepath.Join(root, "b.txt"), []byte("alpha beta"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ok := ws.Execute(context.Background(), protocol.OpFilesApplyPatch, json.RawMessage(`{"path":"b.txt","oldText":"beta","newText":"gamma"}`))
+	if !ok.OK {
+		t.Fatalf("%+v", ok)
+	}
+	body, _ := os.ReadFile(filepath.Join(root, "b.txt"))
+	if string(body) != "alpha gamma" {
+		t.Fatalf("%q", body)
+	}
+}
+
+func TestGrepStaysInsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "hit.txt"), []byte("find-me-here"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("find-me-here"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "out")); err != nil {
+		t.Fatal(err)
+	}
+	ws := Workspace{Root: root}
+	escaped := ws.Execute(context.Background(), protocol.OpGrepSearch, json.RawMessage(`{"path":"../","pattern":"find-me-here"}`))
+	if escaped.OK {
+		t.Fatal("path escape must fail")
+	}
+	got := ws.Execute(context.Background(), protocol.OpGrepSearch, json.RawMessage(`{"pattern":"find-me-here"}`))
+	if !got.OK {
+		t.Fatalf("%+v", got)
+	}
+	data, _ := got.Data.(map[string]any)
+	matches, _ := data["matches"].([]string)
+	joined := strings.Join(matches, "\n")
+	if strings.Contains(joined, "secret.txt") {
+		t.Fatalf("leaked outside match: %s", joined)
+	}
+	if !strings.Contains(joined, "hit.txt") {
+		t.Fatalf("missing in-workspace match: %s", joined)
+	}
+}
+
 func TestUnsupportedOperation(t *testing.T) {
 	ws := Workspace{Root: t.TempDir()}
 	got := ws.Execute(context.Background(), protocol.OpAgentSpawn, nil)

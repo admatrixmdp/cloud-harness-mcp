@@ -65,19 +65,19 @@ func (c Config) withDefaults() Config {
 // Service executes public runner operations.
 type Service struct {
 	cfg    Config
-	store  *store.Memory
+	store  store.Store
 	engine Engine
 }
 
 // NewService constructs a workspace service. engine may be nil (noop).
-func NewService(cfg Config, mem *store.Memory, engine Engine) *Service {
-	if mem == nil {
-		mem = store.NewMemory()
+func NewService(cfg Config, st store.Store, engine Engine) *Service {
+	if st == nil {
+		st = store.NewMemory()
 	}
 	if engine == nil {
 		engine = noopEngine{}
 	}
-	return &Service{cfg: cfg.withDefaults(), store: mem, engine: engine}
+	return &Service{cfg: cfg.withDefaults(), store: st, engine: engine}
 }
 
 type openInput struct {
@@ -168,12 +168,12 @@ func (s *Service) open(ctx context.Context, req protocol.RunnerRequest) protocol
 	name, err := s.engine.Create(ctx, rec)
 	if err != nil {
 		rec.Status = store.StatusFailed
-		s.store.Put(rec)
+		_ = s.store.Put(rec)
 		return protocol.Fail(protocol.ErrorUnavailable, "executor creation failed", true)
 	}
 	rec.ContainerName = name
 	rec.Status = store.StatusActive
-	s.store.Put(rec)
+	_ = s.store.Put(rec)
 	return protocol.Success("workspace opened", publicRecord(rec))
 }
 

@@ -50,6 +50,11 @@ type pathInput struct {
 	Command        string `json:"command"`
 	TimeoutMs      int    `json:"timeoutMs"`
 	MaxOutputBytes int    `json:"maxOutputBytes"`
+	OldText        string `json:"oldText"`
+	NewText        string `json:"newText"`
+	Pattern        string `json:"pattern"`
+	Glob           string `json:"glob"`
+	MaxResults     int    `json:"maxResults"`
 }
 
 // Execute handles one worker operation. Unknown operations stay INVALID_INPUT.
@@ -71,6 +76,10 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.delete(in)
 	case protocol.OpFilesMkdir:
 		return w.mkdir(in)
+	case protocol.OpFilesApplyPatch:
+		return w.patch(in)
+	case protocol.OpGrepSearch:
+		return w.grep(ctx, in)
 	case protocol.OpExecRun:
 		return w.exec(ctx, in)
 	case protocol.OpGitStatus:
@@ -236,6 +245,69 @@ func (w Workspace) mkdir(in pathInput) protocol.ToolResult {
 		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
 	}
 	return protocol.Success("directory created", map[string]any{"path": in.Path})
+}
+
+func (w Workspace) patch(in pathInput) protocol.ToolResult {
+	if in.OldText == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "oldText is required", false)
+	}
+	target, err := SafePath(w.root(), in.Path, false)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	current, err := os.ReadFile(target)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	if in.ExpectedSHA256 != "" {
+		sum := sha256.Sum256(current)
+		if hex.EncodeToString(sum[:]) != in.ExpectedSHA256 {
+			return protocol.Fail(protocol.ErrorConflict, "file changed since it was read", false)
+		}
+	}
+	text := string(current)
+	first := strings.Index(text, in.OldText)
+	if first < 0 {
+		return protocol.Fail(protocol.ErrorConflict, "oldText was not found", false)
+	}
+	second := strings.Index(text[first+max(1, len(in.OldText)):], in.OldText)
+	if second >= 0 {
+		return protocol.Fail(protocol.ErrorConflict, "oldText is not unique", false)
+	}
+	next := text[:first] + in.NewText + text[first+len(in.OldText):]
+	tmp := fmt.Sprintf("%s.cloud-harness-patch-%d-%s.tmp", target, os.Getpid(), randomHex(8))
+	if err := os.WriteFile(tmp, []byte(next), 0o600); err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		_ = os.Remove(tmp)
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	sum := sha256.Sum256([]byte(next))
+	return protocol.Success("Patch applied", map[string]any{"path": in.Path, "sha256": hex.EncodeToString(sum[:])})
+}
+
+func (w Workspace) grep(ctx context.Context, in pathInput) protocol.ToolResult {
+	if in.Pattern == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "pattern is required", false)
+	}
+	target, err := SafePath(w.root(), emptyDot(in.Path), false)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	maxResults := in.MaxResults
+	if maxResults <= 0 {
+		maxResults = 100
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	matches, truncated, err := confinedGrep(ctx, w.root(), target, in.Pattern, in.Glob, maxResults, 262144)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	result := protocol.Success("Search complete", map[string]any{"matches": matches})
+	result.Truncated = truncated
+	return result
 }
 
 func (w Workspace) exec(ctx context.Context, in pathInput) protocol.ToolResult {

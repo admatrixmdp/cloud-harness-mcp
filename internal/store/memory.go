@@ -38,6 +38,15 @@ type Record struct {
 	HardExpiresAt  time.Time
 }
 
+// Store is the workspace metadata surface used by the runner.
+type Store interface {
+	Put(rec Record) error
+	Get(id string) (Record, bool)
+	ByIdempotency(ownerID, key string) (Record, bool)
+	List(ownerID string) []Record
+	UpdateStatus(id string, status Status) (Record, bool)
+}
+
 // Memory is a process-local store used until SQLite is wired.
 type Memory struct {
 	mu     sync.Mutex
@@ -51,7 +60,7 @@ func NewMemory() *Memory {
 }
 
 // Put inserts or replaces a record.
-func (m *Memory) Put(rec Record) {
+func (m *Memory) Put(rec Record) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cp := rec
@@ -59,6 +68,7 @@ func (m *Memory) Put(rec Record) {
 	if rec.IdempotencyKey != "" {
 		m.byIdem[rec.OwnerID+"\x00"+rec.IdempotencyKey] = &cp
 	}
+	return nil
 }
 
 // Get returns a copy of the record.
