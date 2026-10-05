@@ -13,8 +13,14 @@ func TestValidateRepositoryURL(t *testing.T) {
 	if _, err := ValidateRepositoryURL("git@github.com:org/repo.git", allowed); err == nil {
 		t.Fatal("ssh URL must fail")
 	}
+	if _, err := ValidateRepositoryURL("file:///etc/passwd", allowed); err == nil {
+		t.Fatal("file URL must fail")
+	}
 	if _, err := ValidateRepositoryURL("https://evil.example/org/repo", allowed); err == nil {
 		t.Fatal("non-allowlisted host must fail")
+	}
+	if _, err := ValidateRepositoryURL("https://127.0.0.1/repo.git", []string{"127.0.0.1"}); err == nil {
+		t.Fatal("loopback host must fail even when allowlisted")
 	}
 }
 

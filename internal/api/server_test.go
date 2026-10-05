@@ -9,6 +9,21 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/auth"
 )
 
+func TestHandlerAppliesRequestSecurityWhenHostsConfigured(t *testing.T) {
+	srv := httptest.NewServer(Handler(Options{Security: SecurityConfig{PublicHosts: []string{"harness.zuey.me"}}}))
+	t.Cleanup(srv.Close)
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/healthz", nil)
+	req.Host = "evil.example"
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+}
+
 func TestHealthz(t *testing.T) {
 	srv := httptest.NewServer(Handler(Options{}))
 	t.Cleanup(srv.Close)

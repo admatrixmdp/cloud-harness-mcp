@@ -18,7 +18,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | --- | --- | --- |
 | CLI flags | `apps/api/src/cli-options.ts` | `internal/config`, `cmd/cloud-harness-mcp` |
 | Owner bearer / Access JWT | `apps/api/src/auth.ts`, `access-jwt-verifier.ts` | `internal/auth` (RS256 Access JWT + JWKS; Access mode ignores opaque client bearer) |
-| Request security | `apps/api/src/request-security.ts` | `internal/api` (later) |
+| Request security | `apps/api/src/request-security.ts` | `internal/api` (Host/Origin allowlist, `no-store`/`nosniff`/`X-Accel-Buffering`, pre-auth 429) |
 | Dashboard BFF | `apps/api/src/dashboard-*.ts` | `internal/api` (later) |
 | Ingress proxy | `deploy/ingress-proxy.mjs` | `cmd/ingress-proxy` |
 | API-key Worker | `apps/api-key-gateway` | Keep Wrangler TS unless a later task ports it; Go verifies keys in `internal/auth` + runner store |
@@ -57,3 +57,10 @@ Source of truth: `docs/security-model.md`, `AGENTS.md`.
 | slog / structured logs | slog; never log secrets |
 
 Do not `require` `github.com/nextlevelbuilder/goclaw`.
+
+## Test parity
+
+Unit tests live next to the Go packages (`go test ./...`). TypeScript tests
+remain until Compose switches. Docker-dependent checks use the `docker` build
+tag (`go test -tags docker ./internal/sandbox`) and must not weaken host-side
+policy assertions when the daemon is unavailable.

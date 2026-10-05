@@ -24,6 +24,9 @@ func ValidateRepositoryURL(raw string, allowedHosts []string) (*url.URL, error) 
 	if !hostAllowed(host, allowedHosts) {
 		return nil, fmt.Errorf("%s: repository host is not allowlisted", protocol.ErrorForbidden)
 	}
+	if HostLiteralForbidden(host) {
+		return nil, fmt.Errorf("%s: repository host resolves to a forbidden network", protocol.ErrorForbidden)
+	}
 	return parsed, nil
 }
 
@@ -43,4 +46,13 @@ func AddressForbidden(addr string) bool {
 		return true
 	}
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+}
+
+// HostLiteralForbidden reports whether hostname is a forbidden IP literal.
+// DNS lookup stays out of this function so unit tests do not need network.
+func HostLiteralForbidden(host string) bool {
+	if net.ParseIP(host) == nil {
+		return false
+	}
+	return AddressForbidden(host)
 }

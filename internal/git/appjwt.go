@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -102,6 +103,22 @@ func ParseMintResponse(raw []byte) (MintedToken, error) {
 	}
 	exp, _ := time.Parse(time.RFC3339, payload.ExpiresAt)
 	return MintedToken{Token: payload.Token, ExpiresAt: exp}, nil
+}
+
+// MintRepositoryToken returns a zero token when the optional GitHub App is
+// not configured. Ambiguous owner/repo paths fail before any HTTP call.
+func MintRepositoryToken(cfg AppConfig, repositoryURL *url.URL, client *http.Client, now time.Time) (MintedToken, error) {
+	if cfg.AppID == "" || cfg.InstallationID == "" || len(cfg.PrivateKey) == 0 {
+		return MintedToken{}, nil
+	}
+	if repositoryURL == nil {
+		return MintedToken{}, fmt.Errorf("%s: repositoryUrl is required", protocol.ErrorInvalidInput)
+	}
+	repo, err := ParseGitHubRepository(repositoryURL)
+	if err != nil {
+		return MintedToken{}, err
+	}
+	return MintInstallationToken(cfg, repo.Name, client, now)
 }
 
 // MintInstallationToken posts the signed JWT. Tests inject HTTP.

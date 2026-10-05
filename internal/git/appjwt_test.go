@@ -100,6 +100,39 @@ func TestAppJWTClaimsAndMintStdinIsolation(t *testing.T) {
 	}
 }
 
+func TestMintRepositoryTokenUnconfiguredIsNoop(t *testing.T) {
+	u, err := ValidateRepositoryURL("https://github.com/owner/repo.git", []string{"github.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := MintRepositoryToken(AppConfig{}, u, nil, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Token != "" {
+		t.Fatal("unconfigured GitHub App must not mint")
+	}
+}
+
+func TestMintRepositoryTokenRejectsAmbiguousPathBeforeHTTP(t *testing.T) {
+	u, err := ValidateRepositoryURL("https://github.com/owner/repo/extra.git", []string{"github.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return nil, nil
+	})}
+	_, err = MintRepositoryToken(AppConfig{AppID: "1", InstallationID: "2", PrivateKey: testPEM(t)}, u, client, time.Unix(1_700_000_000, 0))
+	if err == nil {
+		t.Fatal("ambiguous path must fail")
+	}
+	if called {
+		t.Fatal("HTTP must not run before path validation")
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

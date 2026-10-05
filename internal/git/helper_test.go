@@ -130,3 +130,13 @@ func TestParseAndRedact(t *testing.T) {
 		t.Fatal("pr_create permissions")
 	}
 }
+
+func TestParseGitHubRepositoryRejectsExtraPath(t *testing.T) {
+	u, err := ValidateRepositoryURL("https://github.com/owner/repo/extra.git", []string{"github.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseGitHubRepository(u); err == nil {
+		t.Fatal("ambiguous GitHub path must fail before minting")
+	}
+}

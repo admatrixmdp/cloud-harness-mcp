@@ -18,6 +18,7 @@ type Options struct {
 	Mode           auth.Mode
 	AccessVerifier *auth.AccessVerifier
 	Runner         *mcp.RunnerClient
+	Security       SecurityConfig
 }
 
 // Handler is the API mux. It must not expose a Docker socket.
@@ -39,7 +40,11 @@ func Handler(opts Options) http.Handler {
 	})
 	mux.Handle("/mcp", authenticate(opts, mcp.HandlerWith(mcp.HandlerOptions{Runner: opts.Runner})))
 	mux.Handle("/mcp-gateway", authenticate(opts, mcp.GatewayHandler()))
-	return securityHeaders(mux)
+	inner := securityHeaders(mux)
+	if len(opts.Security.PublicHosts) > 0 {
+		return RequestSecurity(opts.Security, inner)
+	}
+	return inner
 }
 
 func authenticate(opts Options, next http.Handler) http.Handler {
