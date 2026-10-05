@@ -132,4 +132,8 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if missingOp.OK || missingOp.Error.Code != protocol.ErrorNotFound {
 		t.Fatalf("local missing operation: %+v", missingOp)
 	}
+	agent := b.Call(context.Background(), protocol.OpAgentSpawn, json.RawMessage(`{"prompt":"x","idempotencyKey":"local-agent-01","profileId":"coding-fast","proxyOperations":["files_list"]}`))
+	if agent.OK || agent.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("local agent spawn: %+v", agent)
+	}
 }

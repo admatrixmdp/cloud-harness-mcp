@@ -95,6 +95,7 @@ type Service struct {
 	knowledge *knowledge.Store
 	hooks     *hooks.Store
 	grants    *grants.Store
+	agents    *agentHub
 }
 
 // WithCloner clones through a helper container after executor create.
@@ -149,7 +150,7 @@ func NewService(cfg Config, st store.Store, engine Engine) *Service {
 	if engine == nil {
 		engine = noopEngine{}
 	}
-	return &Service{cfg: cfg.withDefaults(), store: st, engine: engine}
+	return &Service{cfg: cfg.withDefaults(), store: st, engine: engine, agents: newAgentHub()}
 }
 
 type openInput struct {
@@ -204,6 +205,8 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.skillsRun(ctx, req)
 	case protocol.OpSkillSuggest:
 		return s.skillSuggest(req)
+	case protocol.OpAgentSpawn, protocol.OpAgentStatus, protocol.OpAgentLogs, protocol.OpAgentMessage, protocol.OpAgentCancel, protocol.OpAgentList:
+		return s.agentDispatch(req)
 	case protocol.OpFilesList, protocol.OpFilesRead, protocol.OpFilesWrite, protocol.OpFilesWriteBatch, protocol.OpFilesApplyPatch, protocol.OpFilesDelete, protocol.OpFilesMove, protocol.OpFilesMkdir, protocol.OpGrepSearch, protocol.OpSymbolsSearch, protocol.OpSymbolsReferences, protocol.OpExecRun, protocol.OpGitStatus, protocol.OpGitDiff, protocol.OpGitLog, protocol.OpGitBranch, protocol.OpGitCheckout, protocol.OpGitAdd, protocol.OpGitCommit, protocol.OpGitMerge, protocol.OpGitRebase, protocol.OpWorktreesList, protocol.OpWorktreesCreate, protocol.OpWorktreesRemove, protocol.OpSkillsList, protocol.OpSkillsRead, protocol.OpHooksList, protocol.OpHooksRun, protocol.OpDeploymentsList, protocol.OpDeploymentsRun, protocol.OpSessionsList, protocol.OpSessionsOpen, protocol.OpSessionsIO, protocol.OpSessionsClose, protocol.OpShellOpen, protocol.OpShellIO, protocol.OpShellClose, protocol.OpTasksList, protocol.OpTasksRun, protocol.OpTasksStatus, protocol.OpTasksCancel, protocol.OpTasksGraph, protocol.OpOperationStatus, protocol.OpOperationCancel, protocol.OpOperationWait:
 		return s.runWorker(ctx, req)
 	case protocol.OpSecretsList:

@@ -46,6 +46,10 @@ func (e *recordingEngine) Remove(_ context.Context, name string) error {
 	return nil
 }
 
+type okAttestor struct{}
+
+func (okAttestor) Verify(context.Context) (bool, string, error) { return true, "", nil }
+
 func TestWorkspaceOpenListClose(t *testing.T) {
 	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, Attestor: nil}, nil, nil)
 	open := svc.Execute(context.Background(), protocol.RunnerRequest{
@@ -1195,5 +1199,143 @@ func TestSkillSuggestIsFailClosedWithoutTypeSafe(t *testing.T) {
 	})
 	if over.OK || over.Error.Code != protocol.ErrorInvalidInput {
 		t.Fatalf("oversize: %+v", over)
+	}
+}
+
+func TestAgentSpawnStatusListCancelFailClosed(t *testing.T) {
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"agent-open-001","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	wsID := open.Data.(map[string]any)["workspaceId"].(string)
+	missing := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentSpawn,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","prompt":"hi"}`),
+	})
+	if missing.OK || missing.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("missing key: %+v", missing)
+	}
+	spawn := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentSpawn,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","prompt":"Please refactor auth.","idempotencyKey":"agent-spawn-01","profileId":"coding-fast","proxyOperations":["files_list","files_read"]}`),
+	})
+	if !spawn.OK {
+		t.Fatalf("spawn: %+v", spawn)
+	}
+	data := spawn.Data.(map[string]any)
+	id, _ := data["agentId"].(string)
+	if !protocol.ValidOpaqueID(protocol.PrefixAgent, id) {
+		t.Fatalf("id %q", id)
+	}
+	if data["status"] != "FAILED" || data["replayed"] != false {
+		t.Fatalf("spawn data %+v", data)
+	}
+	raw, _ := json.Marshal(spawn)
+	if strings.Contains(string(raw), "Please refactor auth") {
+		t.Fatalf("prompt leaked: %s", raw)
+	}
+	replay := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentSpawn,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","prompt":"Please refactor auth.","idempotencyKey":"agent-spawn-01","profileId":"coding-fast","proxyOperations":["files_list","files_read"]}`),
+	})
+	if !replay.OK || replay.Data.(map[string]any)["agentId"] != id || replay.Data.(map[string]any)["replayed"] != true {
+		t.Fatalf("replay: %+v", replay)
+	}
+	conflict := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentSpawn,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","prompt":"other prompt","idempotencyKey":"agent-spawn-01","profileId":"coding-fast","proxyOperations":["files_list","files_read"]}`),
+	})
+	if conflict.OK || conflict.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("conflict: %+v", conflict)
+	}
+	st := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentStatus,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","agentId":"` + id + `"}`),
+	})
+	if !st.OK || st.Data.(map[string]any)["status"] != "FAILED" {
+		t.Fatalf("status: %+v", st)
+	}
+	byKey := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentStatus,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","idempotencyKey":"agent-spawn-01"}`),
+	})
+	if !byKey.OK || byKey.Data.(map[string]any)["agentId"] != id {
+		t.Fatalf("status by key: %+v", byKey)
+	}
+	both := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentStatus,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","agentId":"` + id + `","idempotencyKey":"agent-spawn-01"}`),
+	})
+	if both.OK || both.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("both lookup: %+v", both)
+	}
+	listed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentList,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `"}`),
+	})
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	agents := listed.Data.(map[string]any)["agents"]
+	if len(asAnyMaps(agents)) != 1 {
+		t.Fatalf("list %+v", listed.Data)
+	}
+	msg := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentMessage,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","agentId":"` + id + `","idempotencyKey":"agent-msg-01","mode":"steer","message":"keep going"}`),
+	})
+	if !msg.OK || msg.Data.(map[string]any)["state"] != "REJECTED" {
+		t.Fatalf("message: %+v", msg)
+	}
+	msgReplay := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentMessage,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","agentId":"` + id + `","idempotencyKey":"agent-msg-01","mode":"steer","message":"keep going"}`),
+	})
+	if !msgReplay.OK || msgReplay.Data.(map[string]any)["replayed"] != true {
+		t.Fatalf("message replay: %+v", msgReplay)
+	}
+	cancelled := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentCancel,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","agentId":"` + id + `"}`),
+	})
+	if !cancelled.OK {
+		t.Fatalf("cancel: %+v", cancelled)
+	}
+	dep := NewService(Config{NetworkProfile: protocol.DependencyAccess, Attestor: okAttestor{}}, nil, nil)
+	depOpen := dep.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"agent-open-dep","networkProfile":"dependency-access"}`),
+	})
+	if !depOpen.OK {
+		t.Fatalf("dep open: %+v", depOpen)
+	}
+	depID := depOpen.Data.(map[string]any)["workspaceId"].(string)
+	denied := dep.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentSpawn,
+		Input: json.RawMessage(`{"workspaceId":"` + depID + `","prompt":"hi there agent","idempotencyKey":"agent-spawn-dep","profileId":"coding-fast","proxyOperations":["files_list"]}`),
+	})
+	if denied.OK || denied.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("network-none required: %+v", denied)
+	}
+}
+
+func asAnyMaps(raw any) []map[string]any {
+	switch v := raw.(type) {
+	case []map[string]any:
+		return v
+	case []any:
+		out := make([]map[string]any, 0, len(v))
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }

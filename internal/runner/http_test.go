@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -63,9 +64,18 @@ func TestWorkspaceOpenRPC(t *testing.T) {
 }
 
 func TestUnimplementedOperationUnavailable(t *testing.T) {
-	srv := httptest.NewServer(Handler(Options{Service: NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)}))
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-unimpl-1","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	id := open.Data.(map[string]any)["workspaceId"].(string)
+	srv := httptest.NewServer(Handler(Options{Service: svc}))
 	t.Cleanup(srv.Close)
-	body := []byte(`{"version":2,"operation":"agent_spawn","input":{}}`)
+	body := []byte(`{"version":2,"operation":"files_list","input":{"workspaceId":"` + id + `","path":"."}}`)
 	res, err := http.Post(srv.URL+"/v1/operations", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)

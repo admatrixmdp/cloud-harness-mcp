@@ -41,7 +41,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | Interactive shells | `apps/runner/src/operation-manager.ts` `openShell`/`shellIo` | `internal/executor` in-process `/bin/bash` (`sh_` ids, idempotent open, no name; Docker `exec` isolation stays unwired) |
 | Background tasks | `apps/runner/src/operation-manager.ts` `runTask` | `internal/executor` in-process `/bin/bash -lc` (confined cwd, idempotent fingerprint, unique `dependsOn`, list omits output; durable SQLite and Docker `exec` stay unwired) |
 | Long-running operations | `apps/runner/src/operation-manager.ts` generic tracker | `internal/executor` maps `operation_status`/`cancel`/`wait` onto in-process tasks (`task_` ids) plus a reserved generic `op_` hub; Docker worker pid files stay unwired |
-| Model gateway / agents | `apps/model-gateway`, `apps/agent-runtime`, `apps/runner/src/agent-*.ts` | `cmd/model-gateway`, `internal/agent` (opaque hashed leases, lease-gated HTTPS upstream, credential never logged or echoed). TS Compose remains runtime of record; Go images live in `docker/go-*.Dockerfile` |
+| Model gateway / agents | `apps/model-gateway`, `apps/agent-runtime`, `apps/runner/src/agent-*.ts` | `cmd/model-gateway`, `internal/agent` (opaque hashed leases, lease-gated HTTPS upstream, credential never logged or echoed). Runner `agent_*` is an in-memory tracker: `network-none` required, spawn is fingerprint-idempotent, prompt is hashed not stored, Docker/runtime launch stays unwired so spawn settles `FAILED`. Local stdio rejects agents. TS Compose remains runtime of record; Go images live in `docker/go-*.Dockerfile` |
 
 ## MUST-preserve security invariants
 

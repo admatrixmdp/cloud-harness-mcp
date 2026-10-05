@@ -64,6 +64,8 @@ func (b LocalBackend) Call(ctx context.Context, op protocol.Operation, input jso
 		return protocol.Fail(protocol.ErrorInvalidInput, string(op)+" is unsupported in local stdio mode because retained knowledge requires remote runner storage", false)
 	case protocol.OpHooksActivate, protocol.OpHooksDeactivate:
 		return protocol.Fail(protocol.ErrorInvalidInput, string(op)+" is unsupported in local stdio mode because retained hook activations require remote runner storage", false)
+	case protocol.OpAgentSpawn, protocol.OpAgentStatus, protocol.OpAgentLogs, protocol.OpAgentMessage, protocol.OpAgentCancel, protocol.OpAgentList:
+		return protocol.Fail(protocol.ErrorInvalidInput, string(op)+" is unsupported in local stdio mode because coding agents require the remote runner and model gateway", false)
 	case protocol.OpGitFetch, protocol.OpGitPull, protocol.OpGitPush:
 		if op == protocol.OpGitPush && !b.GitPush {
 			return protocol.Fail(protocol.ErrorRepositoryOperationNotAuthorized, "Git push operations are disabled in local mode; pass --git-push to enable", false)
