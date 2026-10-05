@@ -3,6 +3,9 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -348,6 +351,62 @@ func TestWorkspaceRecoverResumeAndSetActive(t *testing.T) {
 	})
 	if again.OK || again.Error.Code != protocol.ErrorExpired {
 		t.Fatalf("closed recover: %+v", again)
+	}
+}
+
+func TestWorkspaceRecoverStatusPatchAndExportGates(t *testing.T) {
+	jobs := t.TempDir()
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, JobsRoot: jobs}, nil, nil).WithCloner(&git.Cloner{Engine: sandbox.Engine{
+		Run: func(context.Context, []string, string) (sandbox.Result, error) {
+			return sandbox.Result{ExitCode: 0}, nil
+		},
+	}})
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-recover-modes-1","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	id := open.Data.(map[string]any)["workspaceId"].(string)
+	repo := filepath.Join(jobs, id, "repo")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		cmd.Env = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s (%v)", args, out, err)
+		}
+	}
+	runGit("init")
+	runGit("-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "--allow-empty", "-m", "seed")
+	status := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceRecover,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","mode":"status"}`),
+	})
+	if !status.OK {
+		t.Fatalf("status: %+v", status)
+	}
+	if _, ok := status.Data.(map[string]any)["workspace"]; !ok {
+		t.Fatalf("missing workspace envelope: %+v", status.Data)
+	}
+	dash := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceRecover,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","mode":"export","targetBranch":"--upload-pack"}`),
+	})
+	if dash.OK || dash.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("dash export: %+v", dash)
+	}
+	exp := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceRecover,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","mode":"export","targetBranch":"recovered"}`),
+	})
+	if exp.OK || exp.Error.Code != protocol.ErrorRepositoryOperationNotAuthorized {
+		t.Fatalf("export without app: %+v", exp)
 	}
 }
 

@@ -34,10 +34,20 @@ func (b LocalBackend) Call(ctx context.Context, op protocol.Operation, input jso
 				mode = parsed.Mode
 			}
 		}
-		if mode != "resume" {
-			return protocol.Fail(protocol.ErrorUnavailable, "local workspace_recover mode "+mode+" is not wired in this Go-port slice", true)
+		if mode == "resume" {
+			return protocol.Success("Local workspace is already active", map[string]any{"status": "ACTIVE"})
 		}
-		return protocol.Success("Local workspace is already active", map[string]any{"status": "ACTIVE"})
+		got := (executor.Workspace{Root: b.Root}).Execute(ctx, protocol.OpWorkspaceRecover, input)
+		if !got.OK {
+			return got
+		}
+		data := map[string]any{"workspaceRoot": b.Root}
+		if extra, ok := got.Data.(map[string]any); ok {
+			for k, v := range extra {
+				data[k] = v
+			}
+		}
+		return protocol.Success(got.Message, data)
 	case protocol.OpWorkspaceContext:
 		return protocol.Success("workspace context", map[string]any{
 			"status":           "ACTIVE",

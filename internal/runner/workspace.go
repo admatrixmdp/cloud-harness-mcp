@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/executor"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
@@ -339,12 +340,12 @@ func (s *Service) renew(req protocol.RunnerRequest) protocol.ToolResult {
 }
 
 type recoverInput struct {
-	WorkspaceID string `json:"workspaceId"`
-	Mode        string `json:"mode"`
+	WorkspaceID  string `json:"workspaceId"`
+	Mode         string `json:"mode"`
+	TargetBranch string `json:"targetBranch"`
 }
 
 func (s *Service) recover(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
-	_ = ctx
 	var input recoverInput
 	if err := json.Unmarshal(req.Input, &input); err != nil || !protocol.ValidOpaqueID(protocol.PrefixWorkspace, input.WorkspaceID) {
 		return protocol.Fail(protocol.ErrorInvalidInput, "workspaceId is required", false)
@@ -368,8 +369,21 @@ func (s *Service) recover(ctx context.Context, req protocol.RunnerRequest) proto
 	if rec.Status == store.StatusCreating || rec.Status == store.StatusReaping {
 		return protocol.Fail(protocol.ErrorConflict, "workspace is "+strings.ToLower(string(rec.Status)), true)
 	}
-	if mode != "resume" {
-		return protocol.Fail(protocol.ErrorUnavailable, "workspace_recover mode "+mode+" is not wired in this Go-port slice", true)
+	switch mode {
+	case "status", "patch":
+		got := s.recoverWorker(ctx, rec, mode, "")
+		if !got.OK {
+			return got
+		}
+		data := map[string]any{"workspace": publicRecord(rec)}
+		if extra, ok := got.Data.(map[string]any); ok {
+			for k, v := range extra {
+				data[k] = v
+			}
+		}
+		return protocol.Success(got.Message, data)
+	case "export":
+		return s.recoverExport(ctx, rec, input.TargetBranch)
 	}
 	now := time.Now()
 	if !rec.HardExpiresAt.After(now) {
@@ -384,6 +398,61 @@ func (s *Service) recover(ctx context.Context, req protocol.RunnerRequest) proto
 		return protocol.Fail(protocol.ErrorConflict, "workspace lifecycle changed during recovery", true)
 	}
 	return protocol.Success("Workspace recovered to active state", publicRecord(updated))
+}
+
+func (s *Service) recoverWorker(ctx context.Context, rec store.Record, mode, message string) protocol.ToolResult {
+	if s.cfg.JobsRoot == "" {
+		return protocol.Fail(protocol.ErrorUnavailable, "workspace recovery worker is not configured", true)
+	}
+	payload, err := json.Marshal(map[string]any{"mode": mode, "message": message})
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInternal, "could not encode recovery worker input", false)
+	}
+	root := filepath.Join(s.cfg.JobsRoot, rec.ID, "repo")
+	return (executor.Workspace{Root: root}).Execute(ctx, protocol.OpWorkspaceRecover, payload)
+}
+
+func (s *Service) recoverExport(ctx context.Context, rec store.Record, targetBranch string) protocol.ToolResult {
+	if targetBranch == "" {
+		targetBranch = rec.Ref
+	}
+	if targetBranch == "" {
+		targetBranch = "main"
+	}
+	if !git.ValidFetchRef(targetBranch) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "targetBranch cannot start with a dash", false)
+	}
+	snapshot := s.recoverWorker(ctx, rec, "snapshot_commit", "chore(recovery): export snapshot for "+targetBranch)
+	if !snapshot.OK {
+		if snapshot.Error.Code == protocol.ErrorUnavailable || snapshot.Error.Code == protocol.ErrorInvalidInput {
+			return snapshot
+		}
+		return protocol.Fail(protocol.ErrorInternal, "Recovery snapshot failed: "+snapshot.Message, true)
+	}
+	refspec, err := git.NormalizePushRefspec("HEAD:refs/heads/"+targetBranch, targetBranch)
+	if err != nil {
+		return failFrom(err)
+	}
+	out, err := s.remotePush(ctx, rec, refspec, "")
+	if err != nil {
+		return failFrom(err)
+	}
+	data := map[string]any{
+		"workspace": publicRecord(rec),
+		"branch":    targetBranch,
+		"pushResult": map[string]any{
+			"output": out,
+		},
+	}
+	if extra, ok := snapshot.Data.(map[string]any); ok {
+		if sha, ok := extra["headCommitSha"].(string); ok {
+			data["commitSha"] = sha
+		}
+		if committed, ok := extra["committedChanges"].(bool); ok {
+			data["committedChanges"] = committed
+		}
+	}
+	return protocol.Success("Recovered work exported to "+targetBranch, data)
 }
 
 func (s *Service) contextOf(req protocol.RunnerRequest) protocol.ToolResult {

@@ -282,4 +282,25 @@ func TestGitLocalBranchAddCommitRejectsDashArgs(t *testing.T) {
 	if rebase.OK || rebase.Error.Code != protocol.ErrorInvalidInput {
 		t.Fatalf("dash rebase: %+v", rebase)
 	}
+	if err := os.WriteFile(filepath.Join(root, "dirty.txt"), []byte("dirty"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status := ws.Execute(context.Background(), protocol.OpWorkspaceRecover, json.RawMessage(`{"mode":"status"}`))
+	if !status.OK {
+		t.Fatalf("recover status: %+v", status)
+	}
+	if status.Data.(map[string]any)["hasUncommitted"] != true {
+		t.Fatalf("expected uncommitted: %+v", status.Data)
+	}
+	patch := ws.Execute(context.Background(), protocol.OpWorkspaceRecover, json.RawMessage(`{"mode":"patch"}`))
+	if !patch.OK {
+		t.Fatalf("recover patch: %+v", patch)
+	}
+	if _, ok := patch.Data.(map[string]any)["workingTreePatch"]; !ok {
+		t.Fatalf("missing patch: %+v", patch.Data)
+	}
+	bad := ws.Execute(context.Background(), protocol.OpWorkspaceRecover, json.RawMessage(`{"mode":"export"}`))
+	if bad.OK || bad.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("worker export: %+v", bad)
+	}
 }

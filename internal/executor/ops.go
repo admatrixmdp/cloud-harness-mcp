@@ -73,6 +73,7 @@ type pathInput struct {
 	AuthorEmail    string   `json:"authorEmail"`
 	FastForward    string   `json:"fastForward"`
 	Upstream       string   `json:"upstream"`
+	Mode           string   `json:"mode"`
 	Files          []struct {
 		Path           string `json:"path"`
 		Content        string `json:"content"`
@@ -131,6 +132,8 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.gitMerge(ctx, in)
 	case protocol.OpGitRebase:
 		return w.gitRebase(ctx, in)
+	case protocol.OpWorkspaceRecover:
+		return w.recover(ctx, in)
 	default:
 		return protocol.Fail(protocol.ErrorInvalidInput, "unsupported worker operation "+string(op), false)
 	}
@@ -752,6 +755,150 @@ func (w Workspace) gitRebase(ctx context.Context, in pathInput) protocol.ToolRes
 	return protocol.Fail(protocol.ErrorConflict, stringFrom(got, "output"), false)
 }
 
+func (w Workspace) recover(ctx context.Context, in pathInput) protocol.ToolResult {
+	mode := in.Mode
+	if mode == "" {
+		mode = "status"
+	}
+	switch mode {
+	case "status":
+		return w.recoverStatus(ctx)
+	case "patch":
+		return w.recoverPatch(ctx)
+	case "snapshot_commit":
+		return w.recoverSnapshot(ctx, in)
+	default:
+		return protocol.Fail(protocol.ErrorInvalidInput, "unsupported recovery mode "+mode, false)
+	}
+}
+
+func (w Workspace) recoverStatus(ctx context.Context) protocol.ToolResult {
+	status := w.gitCmd(ctx, "status", "status", "--short", "--branch", "--untracked-files=all")
+	logRes := w.gitCmd(ctx, "log", "log", "-10", "--date=iso-strict", "--pretty=format:%H%x09%aI%x09%an%x09%s")
+	unpushed := w.gitCmd(ctx, "unpushed", "log", "@{u}..HEAD", "--oneline")
+	statusOut := optionalGitOut(status)
+	logOut := optionalGitOut(logRes)
+	unpushedOut := optionalGitOut(unpushed)
+	if exitOf(unpushed) != 0 {
+		unpushedOut = logOut
+	}
+	hasUncommitted := false
+	for _, line := range strings.Split(statusOut, "\n") {
+		if line != "" && !strings.HasPrefix(line, "##") {
+			hasUncommitted = true
+			break
+		}
+	}
+	return protocol.Success("Workspace recovery status", map[string]any{
+		"status":         statusOut,
+		"recentLog":      logOut,
+		"unpushed":       unpushedOut,
+		"hasUncommitted": hasUncommitted,
+	})
+}
+
+func (w Workspace) recoverPatch(ctx context.Context) protocol.ToolResult {
+	tmp, err := os.CreateTemp("", "cloud-harness-temp-index-")
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInternal, "could not create temporary git index", false)
+	}
+	tmpName := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(tmpName)
+	indexPath := filepath.Join(w.root(), ".git", "index")
+	if raw, err := os.ReadFile(indexPath); err == nil {
+		_ = os.WriteFile(tmpName, raw, 0o600)
+	}
+	env := []string{"GIT_INDEX_FILE=" + tmpName}
+	_ = w.gitCmdEnv(ctx, env, "intent add", "add", "-N", "--all")
+	head := w.gitCmdEnv(ctx, env, "head diff", "diff", "HEAD", "--no-ext-diff", "--no-textconv")
+	staged := w.gitCmd(ctx, "staged", "diff", "--cached", "--no-ext-diff", "--no-textconv")
+	unpushed := w.gitCmd(ctx, "unpushed", "diff", "@{u}..HEAD", "--no-ext-diff", "--no-textconv")
+	headOut := optionalGitOut(head)
+	stagedOut := optionalGitOut(staged)
+	unpushedOut := optionalGitOut(unpushed)
+	working := headOut
+	if working == "" {
+		working = stagedOut
+	}
+	combined := strings.TrimSpace(strings.Join(filterEmpty(unpushedOut, headOut), "\n"))
+	return protocol.Success("Workspace recovery patch", map[string]any{
+		"workingTreePatch": working,
+		"stagedPatch":      stagedOut,
+		"unpushedPatch":    unpushedOut,
+		"combinedPatch":    combined,
+	})
+}
+
+func (w Workspace) recoverSnapshot(ctx context.Context, in pathInput) protocol.ToolResult {
+	status := w.gitCmd(ctx, "status", "status", "--short", "--untracked-files=all")
+	if !status.OK {
+		return status
+	}
+	if exitOf(status) != 0 {
+		return protocol.Fail(protocol.ErrorInternal, optionalGitOut(status), true)
+	}
+	hasChanges := false
+	for _, line := range strings.Split(optionalGitOut(status), "\n") {
+		if line != "" && !strings.HasPrefix(line, "##") {
+			hasChanges = true
+			break
+		}
+	}
+	if hasChanges {
+		added := w.gitCmd(ctx, "add", "add", "--all")
+		if !added.OK || exitOf(added) != 0 {
+			return protocol.Fail(protocol.ErrorInternal, stringFrom(added, "output"), true)
+		}
+		name := in.AuthorName
+		if name == "" {
+			name = "Cloud Harness Recovery"
+		}
+		email := in.AuthorEmail
+		if email == "" {
+			email = "recovery@cloud-harness.local"
+		}
+		if strings.ContainsAny(name, "\n\x00") || strings.ContainsAny(email, "\n\x00") {
+			return protocol.Fail(protocol.ErrorInvalidInput, "author fields must not contain newlines", false)
+		}
+		message := in.Message
+		if message == "" {
+			message = "chore(recovery): snapshot uncommitted work for export"
+		}
+		committed := w.gitCmd(ctx, "commit", "-c", "user.name="+name, "-c", "user.email="+email, "commit", "--no-gpg-sign", "-m", message)
+		if !committed.OK || exitOf(committed) != 0 {
+			return protocol.Fail(protocol.ErrorInternal, stringFrom(committed, "output"), true)
+		}
+	}
+	head := w.gitCmd(ctx, "head", "rev-parse", "HEAD")
+	if !head.OK || exitOf(head) != 0 {
+		return protocol.Fail(protocol.ErrorInternal, stringFrom(head, "output"), true)
+	}
+	return protocol.Success("Recovery snapshot committed", map[string]any{
+		"headCommitSha":    strings.TrimSpace(stringFrom(head, "output")),
+		"committedChanges": hasChanges,
+	})
+}
+
+func optionalGitOut(got protocol.ToolResult) string {
+	if !got.OK {
+		return ""
+	}
+	data, _ := got.Data.(map[string]any)
+	s, _ := data["output"].(string)
+	return s
+}
+
+func filterEmpty(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 func exitOf(got protocol.ToolResult) int {
 	data, _ := got.Data.(map[string]any)
 	switch v := data["exitCode"].(type) {
@@ -774,10 +921,14 @@ func stringFrom(got protocol.ToolResult, key string) string {
 }
 
 func (w Workspace) gitCmd(ctx context.Context, message string, args ...string) protocol.ToolResult {
+	return w.gitCmdEnv(ctx, nil, message, args...)
+}
+
+func (w Workspace) gitCmdEnv(ctx context.Context, extraEnv []string, message string, args ...string) protocol.ToolResult {
 	full := append([]string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.pager=cat"}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = w.root()
-	cmd.Env = confinedEnv()
+	cmd.Env = append(confinedEnv(), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	clipped, truncated := Truncate(out, MaxInternalOutput)
 	exit := 0

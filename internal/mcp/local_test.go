@@ -36,6 +36,10 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if !recovered.OK {
 		t.Fatalf("recover: %+v", recovered)
 	}
+	statusMode := b.Call(context.Background(), protocol.OpWorkspaceRecover, json.RawMessage(`{"mode":"status"}`))
+	if !statusMode.OK {
+		t.Fatalf("local recover status should be wired: %+v", statusMode)
+	}
 	ctx := b.Call(context.Background(), protocol.OpWorkspaceContext, json.RawMessage(`{}`))
 	if !ctx.OK {
 		t.Fatalf("context: %+v", ctx)
