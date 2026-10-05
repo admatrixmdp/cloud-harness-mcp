@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -17,11 +18,15 @@ var unsafeHostSuffixes = []string{
 type EndpointOptions struct {
 	AllowInsecureHTTP     bool
 	AllowPrivateEndpoints bool
+	// Resolve is a test seam. Production uses net.LookupIP.
+	Resolve func(host string) ([]net.IP, error)
 }
 
-// ValidatedEndpoint is a credential-free URL that passed the policy.
+// ValidatedEndpoint is a credential-free URL that passed the policy, plus the
+// addresses the transport must pin so a rebinding resolver cannot redirect.
 type ValidatedEndpoint struct {
-	URL *url.URL
+	URL       *url.URL
+	Addresses []net.IP
 }
 
 // ValidateEndpoint checks a downstream MCP URL. Errors never echo the raw URL.
@@ -52,19 +57,63 @@ func ValidateEndpoint(raw string, opts EndpointOptions) (ValidatedEndpoint, erro
 		return ValidatedEndpoint{}, fmt.Errorf("cleartext http endpoints are refused unless the insecure http opt-in is enabled")
 	}
 	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	var addresses []net.IP
 	if ip := net.ParseIP(host); ip != nil {
+		addresses = []net.IP{ip}
+	} else {
+		if unsafeHostname(host) {
+			return ValidatedEndpoint{}, fmt.Errorf("endpoint hostname is not a public DNS name")
+		}
+		lookup := opts.Resolve
+		if lookup == nil {
+			lookup = net.LookupIP
+		}
+		resolved, err := lookup(host)
+		if err != nil || len(resolved) == 0 {
+			return ValidatedEndpoint{}, fmt.Errorf("endpoint hostname could not be resolved")
+		}
+		addresses = resolved
+	}
+	for _, ip := range addresses {
+		if ip == nil {
+			return ValidatedEndpoint{}, fmt.Errorf("endpoint resolved to an invalid address")
+		}
 		if !opts.AllowPrivateEndpoints && unsafeAddress(ip) {
 			return ValidatedEndpoint{}, fmt.Errorf("endpoint resolves to a private, loopback, link-local, or metadata address")
 		}
 		if alwaysBlocked(ip) {
 			return ValidatedEndpoint{}, fmt.Errorf("endpoint resolves to a link-local or metadata address, which is always refused")
 		}
-		return ValidatedEndpoint{URL: parsed}, nil
 	}
-	if unsafeHostname(host) {
-		return ValidatedEndpoint{}, fmt.Errorf("endpoint hostname is not a public DNS name")
+	return ValidatedEndpoint{URL: parsed, Addresses: addresses}, nil
+}
+
+// PinnedDialContext dials only the addresses validation returned. A later DNS
+// answer that points at a private host cannot steal a credentialed request.
+func PinnedDialContext(addresses []net.IP) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	pinned := append([]net.IP(nil), addresses...)
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		_, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		if len(pinned) == 0 {
+			return nil, fmt.Errorf("no validated address to pin")
+		}
+		var last error
+		d := net.Dialer{}
+		for _, ip := range pinned {
+			conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			last = err
+		}
+		if last == nil {
+			last = fmt.Errorf("no validated address to pin")
+		}
+		return nil, last
 	}
-	return ValidatedEndpoint{URL: parsed}, nil
 }
 
 func unsafeHostname(host string) bool {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,11 +19,13 @@ const redirectRefused = "downstream MCP endpoint returned an HTTP redirect; HTTP
 
 // DownstreamClient posts tools/call to a validated MCP HTTP endpoint.
 // Credentials attach only to the configured origin+pathname. Redirects fail closed.
+// Addresses, when set, pin the TCP dial so a rebinding resolver cannot steal the request.
 type DownstreamClient struct {
-	Endpoint *url.URL
-	Headers  map[string]string
-	HTTP     *http.Client
-	Timeout  time.Duration
+	Endpoint  *url.URL
+	Addresses []net.IP
+	Headers   map[string]string
+	HTTP      *http.Client
+	Timeout   time.Duration
 }
 
 func (c DownstreamClient) timeout() time.Duration {
@@ -36,8 +39,13 @@ func (c DownstreamClient) http() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if len(c.Addresses) > 0 {
+		transport.DialContext = PinnedDialContext(c.Addresses)
+	}
 	return &http.Client{
-		Timeout: c.timeout(),
+		Timeout:   c.timeout(),
+		Transport: transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return errRedirect
 		},

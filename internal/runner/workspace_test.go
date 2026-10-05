@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
@@ -196,5 +197,38 @@ func TestWorkspaceOpenClonesWithStdinTokenOnly(t *testing.T) {
 	data, _ := got.Data.(map[string]any)
 	if _, ok := data["token"]; ok {
 		t.Fatal("token field on public envelope")
+	}
+}
+
+func TestWorkspaceLeaseRenewCapsAtHardExpiry(t *testing.T) {
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, IdleTTL: time.Minute, WallTTL: 2 * time.Minute}, nil, nil)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-lease-1","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	id := open.Data.(map[string]any)["workspaceId"].(string)
+	renewed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceLeaseRenew,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","extensionSeconds":86400}`),
+	})
+	if !renewed.OK {
+		t.Fatalf("renew: %+v", renewed)
+	}
+	closed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceClose,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `"}`),
+	})
+	if !closed.OK {
+		t.Fatalf("close: %+v", closed)
+	}
+	again := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceLeaseRenew,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `"}`),
+	})
+	if again.OK || again.Error.Code != protocol.ErrorExpired {
+		t.Fatalf("closed renew: %+v", again)
 	}
 }

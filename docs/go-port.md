@@ -9,8 +9,8 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | Mode | TypeScript | Go |
 | --- | --- | --- |
 | Streamable HTTP `/mcp` | `apps/api/src/mcp-server.ts`, `apps/api/src/app.ts` | `cmd/cloud-harness-mcp`, `internal/mcp`, `internal/api` |
-| MCP gateway `/mcp-gateway` | `apps/api/src/mcp-gateway/` | `internal/gateway` (constant tools: search, inspect, execute, permissions, status; execute is SSRF-gated, no redirects, credentials only on the configured origin+path) |
-| Local stdio | `apps/api/src/cli-options.ts`, `apps/api/src/local/` | `cmd/cloud-harness-mcp --transport stdio --workspace` (`internal/mcp.ServeStdio` + confined `LocalBackend`; `workspace_open` remains unsupported) |
+| MCP gateway `/mcp-gateway` | `apps/api/src/mcp-gateway/` | `internal/gateway` (constant five-tool surface; execute is SSRF-gated, DNS-pinned, no redirects, credentials only on the configured origin+path) |
+| Local stdio | `apps/api/src/cli-options.ts`, `apps/api/src/local/` | `cmd/cloud-harness-mcp --transport stdio --workspace` (`internal/mcp.ServeStdio` + confined `LocalBackend` including write_batch/move/symbols/git_diff/git_log; `workspace_open` remains unsupported) |
 
 ## Control plane
 
@@ -26,7 +26,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | Runner HTTP RPC | `apps/runner/src/app.ts`, `internal-runner-operations.ts` | `cmd/runner`, `internal/runner` |
 | SQLite metadata / state | `apps/runner/src/metadata-store.ts`, `state-store.ts` | `internal/store` (`Memory` + `SQLite` via `database/sql` + `modernc.org/sqlite`; CHECK rejects raw `bridge`) |
 | Secrets keyring | `apps/runner/src/secret-keyring.ts`, `secret-metadata-store.ts` | `internal/secrets` (AES-256-GCM + SQLite envelopes; plaintext never stored, listed, or logged) |
-| Workspace + Docker policy | `apps/runner/src/workspace-service.ts`, `docker-engine.ts` | `internal/runner`, `internal/sandbox` (`workspace_open` clones via helper container when a cloner is wired; minted token on stdin only) |
+| Workspace + Docker policy | `apps/runner/src/workspace-service.ts`, `docker-engine.ts` | `internal/runner`, `internal/sandbox` (`workspace_open` clones via helper container when a cloner is wired; minted token on stdin only; `workspace_lease_renew` caps at hard expiry) |
 | GitHub App + transfer helpers | `apps/runner/src/github-*.ts`, `worker/*-helper.sh` | `internal/git` (RS256 App JWT + clone/transfer helpers; token on docker stdin only, never argv/logs/MCP results) |
 | Executor worker | `worker/harness-worker.mjs` | `cmd/harness-worker`, `internal/executor` (path confinement, truncation, unique `files_apply_patch`, confined `grep_search`/`files_write_batch`/`files_move`/`symbols_*`; TS remains image entry until Compose switches) |
 | Model gateway / agents | `apps/model-gateway`, `apps/agent-runtime`, `apps/runner/src/agent-*.ts` | `cmd/model-gateway`, `internal/agent` (opaque hashed leases, lease-gated HTTPS upstream, credential never logged or echoed). TS Compose remains runtime of record; Go images live in `docker/go-*.Dockerfile` |

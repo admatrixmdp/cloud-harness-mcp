@@ -102,6 +102,10 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.exec(ctx, in)
 	case protocol.OpGitStatus:
 		return w.gitStatus(ctx)
+	case protocol.OpGitDiff:
+		return w.gitCmd(ctx, "Git diff", "diff", "--no-ext-diff")
+	case protocol.OpGitLog:
+		return w.gitCmd(ctx, "Git log", "log", "--oneline", "-n", "50")
 	default:
 		return protocol.Fail(protocol.ErrorInvalidInput, "unsupported worker operation "+string(op), false)
 	}
@@ -543,7 +547,12 @@ func (w Workspace) exec(ctx context.Context, in pathInput) protocol.ToolResult {
 }
 
 func (w Workspace) gitStatus(ctx context.Context) protocol.ToolResult {
-	cmd := exec.CommandContext(ctx, "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.pager=cat", "status", "--short", "--branch", "--untracked-files=all")
+	return w.gitCmd(ctx, "Git status", "status", "--short", "--branch", "--untracked-files=all")
+}
+
+func (w Workspace) gitCmd(ctx context.Context, message string, args ...string) protocol.ToolResult {
+	full := append([]string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.pager=cat"}, args...)
+	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = w.root()
 	cmd.Env = confinedEnv()
 	out, err := cmd.CombinedOutput()
@@ -556,7 +565,7 @@ func (w Workspace) gitStatus(ctx context.Context) protocol.ToolResult {
 			return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
 		}
 	}
-	result := protocol.Success("Git status", map[string]any{"output": string(clipped), "exitCode": exit})
+	result := protocol.Success(message, map[string]any{"output": string(clipped), "exitCode": exit})
 	result.Truncated = truncated
 	return result
 }

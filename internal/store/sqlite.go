@@ -113,6 +113,29 @@ func (s *SQLite) UpdateStatus(id string, status Status) (Record, bool) {
 	return s.Get(id)
 }
 
+// RenewLease extends idle expiry without exceeding HardExpiresAt.
+func (s *SQLite) RenewLease(id string, expiresAt, lastActivityAt time.Time) (Record, bool) {
+	rec, ok := s.Get(id)
+	if !ok {
+		return Record{}, false
+	}
+	if rec.Status == StatusClosed || rec.Status == StatusFailed || rec.Status == StatusReaping {
+		return rec, false
+	}
+	if expiresAt.After(rec.HardExpiresAt) {
+		expiresAt = rec.HardExpiresAt
+	}
+	status := rec.Status
+	if status == StatusExpiredRecoverable {
+		status = StatusActive
+	}
+	if _, err := s.db.Exec(`UPDATE workspaces SET status = ?, expires_at = ?, last_activity_at = ? WHERE id = ?`,
+		string(status), expiresAt.UnixMilli(), lastActivityAt.UnixMilli(), id); err != nil {
+		return Record{}, false
+	}
+	return s.Get(id)
+}
+
 func (s *SQLite) scanOne(query string, args ...any) (Record, bool) {
 	row := s.db.QueryRow(query, args...)
 	rec, err := scanRecord(row)

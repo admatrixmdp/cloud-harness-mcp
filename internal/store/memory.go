@@ -45,6 +45,7 @@ type Store interface {
 	ByIdempotency(ownerID, key string) (Record, bool)
 	List(ownerID string) []Record
 	UpdateStatus(id string, status Status) (Record, bool)
+	RenewLease(id string, expiresAt, lastActivityAt time.Time) (Record, bool)
 }
 
 // Memory is a process-local store used until SQLite is wired.
@@ -118,6 +119,28 @@ func (m *Memory) UpdateStatus(id string, status Status) (Record, bool) {
 	rec.LastActivityAt = time.Now()
 	if status == StatusClosed {
 		rec.ContainerName = ""
+	}
+	return *rec, true
+}
+
+// RenewLease extends idle expiry without exceeding HardExpiresAt.
+func (m *Memory) RenewLease(id string, expiresAt, lastActivityAt time.Time) (Record, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.byID[id]
+	if !ok {
+		return Record{}, false
+	}
+	if rec.Status == StatusClosed || rec.Status == StatusFailed || rec.Status == StatusReaping {
+		return *rec, false
+	}
+	if !expiresAt.Before(rec.HardExpiresAt) && !expiresAt.Equal(rec.HardExpiresAt) {
+		expiresAt = rec.HardExpiresAt
+	}
+	rec.ExpiresAt = expiresAt
+	rec.LastActivityAt = lastActivityAt
+	if rec.Status == StatusExpiredRecoverable {
+		rec.Status = StatusActive
 	}
 	return *rec, true
 }

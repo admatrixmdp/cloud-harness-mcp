@@ -124,6 +124,8 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.status(req)
 	case protocol.OpWorkspaceClose:
 		return s.close(ctx, req)
+	case protocol.OpWorkspaceLeaseRenew:
+		return s.renew(req)
 	case protocol.OpWorkspaceCapabilities:
 		return protocol.Success("workspace capabilities", map[string]any{
 			"networkProfiles":       []string{string(protocol.NetworkNone), string(protocol.DependencyAccess)},
@@ -273,6 +275,48 @@ func (s *Service) close(ctx context.Context, req protocol.RunnerRequest) protoco
 	}
 	rec, _ = s.store.UpdateStatus(rec.ID, store.StatusClosed)
 	return protocol.Success("workspace closed", publicRecord(rec))
+}
+
+type renewInput struct {
+	WorkspaceID      string `json:"workspaceId"`
+	ExtensionSeconds int    `json:"extensionSeconds"`
+}
+
+func (s *Service) renew(req protocol.RunnerRequest) protocol.ToolResult {
+	var input renewInput
+	if err := json.Unmarshal(req.Input, &input); err != nil || !protocol.ValidOpaqueID(protocol.PrefixWorkspace, input.WorkspaceID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "workspaceId is required", false)
+	}
+	if input.ExtensionSeconds != 0 && (input.ExtensionSeconds < 60 || input.ExtensionSeconds > 86400) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "extensionSeconds must be between 60 and 86400", false)
+	}
+	rec, ok := s.store.Get(input.WorkspaceID)
+	if !ok {
+		return protocol.Fail(protocol.ErrorNotFound, "workspace not found", false)
+	}
+	if rec.Status == store.StatusClosed || rec.Status == store.StatusFailed {
+		return protocol.Fail(protocol.ErrorExpired, "workspace is "+strings.ToLower(string(rec.Status))+" and cannot be renewed", false)
+	}
+	if rec.Status == store.StatusCreating || rec.Status == store.StatusReaping {
+		return protocol.Fail(protocol.ErrorConflict, "workspace is "+strings.ToLower(string(rec.Status)), true)
+	}
+	now := time.Now()
+	if !rec.HardExpiresAt.After(now) {
+		return protocol.Fail(protocol.ErrorExpired, "Workspace hard lease limit reached and cannot be renewed", false)
+	}
+	ext := s.cfg.IdleTTL
+	if input.ExtensionSeconds > 0 {
+		ext = time.Duration(input.ExtensionSeconds) * time.Second
+	}
+	expires := now.Add(ext)
+	if expires.After(rec.HardExpiresAt) {
+		expires = rec.HardExpiresAt
+	}
+	updated, ok := s.store.RenewLease(rec.ID, expires, now)
+	if !ok {
+		return protocol.Fail(protocol.ErrorConflict, "workspace lifecycle changed during renewal", true)
+	}
+	return protocol.Success("workspace lease renewed", publicRecord(updated))
 }
 
 func publicRecord(rec store.Record) map[string]any {
