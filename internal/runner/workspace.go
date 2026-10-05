@@ -18,6 +18,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/executor"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/hooks"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/memories"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
@@ -91,6 +92,7 @@ type Service struct {
 	artifacts *artifacts.Store
 	memories  *memories.Store
 	knowledge *knowledge.Store
+	hooks     *hooks.Store
 }
 
 // WithCloner clones through a helper container after executor create.
@@ -122,6 +124,12 @@ func (s *Service) WithMemories(store *memories.Store) *Service {
 // WithKnowledge attaches retained SQLite knowledge items. Local stdio never hosts this.
 func (s *Service) WithKnowledge(store *knowledge.Store) *Service {
 	s.knowledge = store
+	return s
+}
+
+// WithHooks attaches retained lifecycle-hook activations. Local stdio never hosts this.
+func (s *Service) WithHooks(store *hooks.Store) *Service {
+	s.hooks = store
 	return s
 }
 
@@ -224,6 +232,10 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.knowledgeUnlink(req)
 	case protocol.OpKnowledgeGraph:
 		return s.knowledgeGraph(req)
+	case protocol.OpHooksActivate:
+		return s.hooksActivate(req)
+	case protocol.OpHooksDeactivate:
+		return s.hooksDeactivate(req)
 	case protocol.OpWorkspaceCapabilities:
 		return protocol.Success("workspace capabilities", map[string]any{
 			"networkProfiles":       []string{string(protocol.NetworkNone), string(protocol.DependencyAccess)},
@@ -1399,6 +1411,101 @@ func (s *Service) knowledgeGraph(req protocol.RunnerRequest) protocol.ToolResult
 	})
 	got.Truncated = truncated
 	return got
+}
+
+type hooksActivateInput struct {
+	WorkspaceID      string   `json:"workspaceId"`
+	ManifestSHA256   string   `json:"manifestSha256"`
+	Events           []string `json:"events"`
+	RetentionSeconds *int     `json:"retentionSeconds"`
+}
+
+func hooksFail(err error) protocol.ToolResult {
+	if he, ok := err.(*hooks.Error); ok {
+		return protocol.Fail(he.Code, he.Message, false)
+	}
+	return protocol.Fail(protocol.ErrorInternal, "hook activation store is unavailable", true)
+}
+
+func (s *Service) requireHooks() (*hooks.Store, *protocol.ToolResult) {
+	if s.hooks == nil {
+		fail := protocol.Fail(protocol.ErrorUnavailable, "hook activation storage is not configured", true)
+		return nil, &fail
+	}
+	return s.hooks, nil
+}
+
+func (s *Service) hooksActivate(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireHooks()
+	if fail != nil {
+		return *fail
+	}
+	var input hooksActivateInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid hooks_activate input", false)
+		}
+	}
+	if len(input.Events) < 1 || len(input.Events) > 10 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "events must contain between 1 and 10 hook events", false)
+	}
+	ownerID := req.OwnerID
+	if ownerID == "" {
+		ownerID = "owner"
+	}
+	rec, errRes := s.resolveWorkspace(ownerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	retention := 0
+	if input.RetentionSeconds != nil {
+		retention = *input.RetentionSeconds
+	}
+	activations := make([]map[string]any, 0, len(input.Events))
+	for _, event := range input.Events {
+		act, err := store.Activate(ownerID, rec.ID, event, input.ManifestSHA256, retention)
+		if err != nil {
+			return hooksFail(err)
+		}
+		activations = append(activations, act.PublicJSON())
+	}
+	return protocol.Success("Hooks activated", map[string]any{"activations": activations})
+}
+
+func (s *Service) hooksDeactivate(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireHooks()
+	if fail != nil {
+		return *fail
+	}
+	var input hooksActivateInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid hooks_deactivate input", false)
+		}
+	}
+	if len(input.Events) > 10 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "events must contain at most 10 hook events", false)
+	}
+	ownerID := req.OwnerID
+	if ownerID == "" {
+		ownerID = "owner"
+	}
+	rec, errRes := s.resolveWorkspace(ownerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	if len(input.Events) == 0 {
+		if _, err := store.Deactivate(ownerID, rec.ID, ""); err != nil {
+			return hooksFail(err)
+		}
+	} else {
+		for _, event := range input.Events {
+			if _, err := store.Deactivate(ownerID, rec.ID, event); err != nil {
+				return hooksFail(err)
+			}
+		}
+	}
+	return protocol.Success("Hooks deactivated", map[string]any{"deactivated": true})
 }
 
 const globalSecretEnvironment = "global"

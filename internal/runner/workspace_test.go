@@ -14,6 +14,7 @@ import (
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/hooks"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/memories"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
@@ -952,5 +953,68 @@ func TestKnowledgeCreateListReadDeleteOnRunner(t *testing.T) {
 	})
 	if !del.OK {
 		t.Fatalf("delete: %+v", del)
+	}
+}
+
+func TestHooksActivateDeactivateOnRunner(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "hooks.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	hookStore, err := hooks.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil).WithHooks(hookStore)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"hook-open-001","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	wsID := open.Data.(map[string]any)["workspaceId"].(string)
+	sha := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	bad := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpHooksActivate,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","manifestSha256":"short","events":["pre_commit"]}`),
+	})
+	if bad.OK || bad.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("bad digest: %+v", bad)
+	}
+	act := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpHooksActivate,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","manifestSha256":"` + sha + `","events":["pre_commit","post_commit"],"retentionSeconds":120}`),
+	})
+	if !act.OK {
+		t.Fatalf("activate: %+v", act)
+	}
+	data := act.Data.(map[string]any)
+	var rows []map[string]any
+	switch raw := data["activations"].(type) {
+	case []map[string]any:
+		rows = raw
+	case []any:
+		for _, row := range raw {
+			rows = append(rows, row.(map[string]any))
+		}
+	}
+	if len(rows) != 2 {
+		t.Fatalf("activations: %+v", data)
+	}
+	deact := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpHooksDeactivate,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","events":["pre_commit"]}`),
+	})
+	if !deact.OK {
+		t.Fatalf("deactivate: %+v", deact)
+	}
+	all := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpHooksDeactivate,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `"}`),
+	})
+	if !all.OK {
+		t.Fatalf("deactivate all: %+v", all)
 	}
 }

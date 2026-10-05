@@ -84,4 +84,8 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if kn.OK || kn.Error.Code != protocol.ErrorInvalidInput {
 		t.Fatalf("knowledge local: %+v", kn)
 	}
+	act := b.Call(context.Background(), protocol.OpHooksActivate, json.RawMessage(`{"manifestSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","events":["pre_commit"]}`))
+	if act.OK || act.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("hooks_activate local: %+v", act)
+	}
 }
