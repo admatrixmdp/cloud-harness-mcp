@@ -304,3 +304,49 @@ func TestGitLocalBranchAddCommitRejectsDashArgs(t *testing.T) {
 		t.Fatalf("worker export: %+v", bad)
 	}
 }
+
+func TestWorktreesStayConfinedAndRejectDashNames(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{Root: root}
+	if got := ws.gitCmd(context.Background(), "init", "init"); !got.OK || exitOf(got) != 0 {
+		t.Fatalf("init: %+v", got)
+	}
+	if got := ws.gitCmdEnv(context.Background(), []string{"GIT_AUTHOR_NAME=T", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=T", "GIT_COMMITTER_EMAIL=t@example.com"}, "seed", "commit", "--allow-empty", "-m", "seed"); !got.OK || exitOf(got) != 0 {
+		t.Fatalf("seed: %+v", got)
+	}
+	dash := ws.Execute(context.Background(), protocol.OpWorktreesCreate, json.RawMessage(`{"name":"--help","ref":"HEAD"}`))
+	if dash.OK || dash.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("dash name: %+v", dash)
+	}
+	slash := ws.Execute(context.Background(), protocol.OpWorktreesCreate, json.RawMessage(`{"name":"../escape","ref":"HEAD"}`))
+	if slash.OK || slash.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("slash name: %+v", slash)
+	}
+	dashRef := ws.Execute(context.Background(), protocol.OpWorktreesCreate, json.RawMessage(`{"name":"verification-tree","ref":"--help"}`))
+	if dashRef.OK || dashRef.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("dash ref: %+v", dashRef)
+	}
+	created := ws.Execute(context.Background(), protocol.OpWorktreesCreate, json.RawMessage(`{"name":"verification-tree","ref":"HEAD"}`))
+	if !created.OK {
+		t.Fatalf("create: %+v", created)
+	}
+	listed := ws.Execute(context.Background(), protocol.OpWorktreesList, json.RawMessage(`{}`))
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	out, _ := listed.Data.(map[string]any)["output"].(string)
+	if !strings.Contains(out, ".worktrees/verification-tree") {
+		t.Fatalf("list missing tree: %s", out)
+	}
+	info, err := os.Stat(filepath.Join(root, ".worktrees", "verification-tree"))
+	if err != nil || !info.IsDir() {
+		t.Fatalf("worktree dir: %v", err)
+	}
+	removed := ws.Execute(context.Background(), protocol.OpWorktreesRemove, json.RawMessage(`{"name":"verification-tree","force":true}`))
+	if !removed.OK {
+		t.Fatalf("remove: %+v", removed)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".worktrees", "verification-tree")); !os.IsNotExist(err) {
+		t.Fatalf("worktree still present: %v", err)
+	}
+}

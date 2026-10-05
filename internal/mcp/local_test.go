@@ -48,6 +48,10 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if dash.OK || dash.Error.Code != protocol.ErrorInvalidInput {
 		t.Fatalf("dash checkout: %+v", dash)
 	}
+	dashTree := b.Call(context.Background(), protocol.OpWorktreesCreate, json.RawMessage(`{"name":"--help","ref":"HEAD"}`))
+	if dashTree.OK || dashTree.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("dash worktree: %+v", dashTree)
+	}
 	gh := b.Call(context.Background(), protocol.OpGitHubAction, json.RawMessage(`{"action":"pr_create","title":"x","head":"feat"}`))
 	if gh.OK || gh.Error.Code != protocol.ErrorRepositoryOperationNotAuthorized {
 		t.Fatalf("github local: %+v", gh)

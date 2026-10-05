@@ -68,6 +68,7 @@ type pathInput struct {
 	Force          bool     `json:"force"`
 	Ref            string   `json:"ref"`
 	Create         bool     `json:"create"`
+	CreateBranch   bool     `json:"createBranch"`
 	All            bool     `json:"all"`
 	Paths          []string `json:"paths"`
 	Message        string   `json:"message"`
@@ -134,6 +135,12 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.gitMerge(ctx, in)
 	case protocol.OpGitRebase:
 		return w.gitRebase(ctx, in)
+	case protocol.OpWorktreesList:
+		return w.worktreesList(ctx)
+	case protocol.OpWorktreesCreate:
+		return w.worktreesCreate(ctx, in)
+	case protocol.OpWorktreesRemove:
+		return w.worktreesRemove(ctx, in)
 	case protocol.OpWorkspaceRecover:
 		return w.recover(ctx, in)
 	case protocol.OpArtifactsRestore:
@@ -780,6 +787,88 @@ func (w Workspace) gitMerge(ctx context.Context, in pathInput) protocol.ToolResu
 		return got
 	}
 	return protocol.Fail(protocol.ErrorConflict, stringFrom(got, "output"), false)
+}
+
+func validWorktreeName(name string) bool {
+	if name == "" || name == "." || name == ".." || len(name) > 80 {
+		return false
+	}
+	if strings.HasPrefix(name, "-") || strings.Contains(name, "\x00") || strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		return false
+	}
+	for _, r := range name {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (w Workspace) worktreesList(ctx context.Context) protocol.ToolResult {
+	return w.gitCmd(ctx, "Git worktrees", "worktree", "list", "--porcelain")
+}
+
+func (w Workspace) worktreesCreate(ctx context.Context, in pathInput) protocol.ToolResult {
+	if !validWorktreeName(in.Name) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "name is required and cannot start with a dash", false)
+	}
+	if !validGitArg(in.Ref) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "ref is required and cannot start with a dash", false)
+	}
+	location := ".worktrees/" + in.Name
+	if _, err := SafePath(w.root(), location, true); err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	if _, err := SafePath(w.root(), ".worktrees", true); err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	if err := os.MkdirAll(filepath.Join(w.root(), ".worktrees"), 0o755); err != nil {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+	}
+	args := []string{"worktree", "add"}
+	if in.CreateBranch {
+		args = append(args, "-b", in.Name)
+	}
+	args = append(args, location, in.Ref)
+	got := w.gitCmd(ctx, "Worktree created", args...)
+	if !got.OK || exitOf(got) != 0 {
+		if !got.OK {
+			return got
+		}
+		return protocol.Fail(protocol.ErrorConflict, optionalGitOut(got), false)
+	}
+	if data, ok := got.Data.(map[string]any); ok {
+		data["name"] = in.Name
+		data["path"] = location
+	}
+	return got
+}
+
+func (w Workspace) worktreesRemove(ctx context.Context, in pathInput) protocol.ToolResult {
+	if !validWorktreeName(in.Name) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "name is required and cannot start with a dash", false)
+	}
+	location := ".worktrees/" + in.Name
+	if _, err := SafePath(w.root(), location, true); err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	args := []string{"worktree", "remove"}
+	if in.Force {
+		args = append(args, "--force")
+	}
+	args = append(args, location)
+	got := w.gitCmd(ctx, "Worktree removed", args...)
+	if !got.OK || exitOf(got) != 0 {
+		if !got.OK {
+			return got
+		}
+		return protocol.Fail(protocol.ErrorConflict, optionalGitOut(got), false)
+	}
+	if data, ok := got.Data.(map[string]any); ok {
+		data["name"] = in.Name
+	}
+	return got
 }
 
 func (w Workspace) gitRebase(ctx context.Context, in pathInput) protocol.ToolResult {
