@@ -897,6 +897,68 @@ func TestTasksRunStatusCancelGraphAndIdempotency(t *testing.T) {
 	}
 }
 
+func TestOperationStatusWaitCancelAndTimeout(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{Root: root}
+	missing := ws.Execute(context.Background(), protocol.OpOperationStatus, json.RawMessage(`{}`))
+	if missing.OK || missing.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("missing id: %+v", missing)
+	}
+	run := ws.Execute(context.Background(), protocol.OpTasksRun, json.RawMessage(`{"command":"echo op-ok","cwd":".","idempotencyKey":"op-task-01","timeoutMs":5000}`))
+	if !run.OK {
+		t.Fatalf("run: %+v", run)
+	}
+	id := run.Data.(map[string]any)["id"].(string)
+	waited := ws.Execute(context.Background(), protocol.OpOperationWait, json.RawMessage(`{"operationId":"`+id+`","timeoutMs":5000}`))
+	if !waited.OK {
+		t.Fatalf("wait: %+v", waited)
+	}
+	if waited.Data.(map[string]any)["status"] != "completed" {
+		t.Fatalf("wait status %+v", waited.Data)
+	}
+	st := ws.Execute(context.Background(), protocol.OpOperationStatus, json.RawMessage(`{"operationId":"`+id+`"}`))
+	if !st.OK {
+		t.Fatalf("status: %+v", st)
+	}
+	if st.Data.(map[string]any)["kind"] != "task" {
+		t.Fatalf("kind %+v", st.Data)
+	}
+	if !strings.Contains(st.Data.(map[string]any)["output"].(string), "op-ok") {
+		t.Fatalf("output %+v", st.Data)
+	}
+	sleeping := ws.Execute(context.Background(), protocol.OpTasksRun, json.RawMessage(`{"command":"sleep 3","cwd":".","idempotencyKey":"op-task-02","timeoutMs":10000}`))
+	if !sleeping.OK {
+		t.Fatalf("sleep: %+v", sleeping)
+	}
+	sid := sleeping.Data.(map[string]any)["id"].(string)
+	timed := ws.Execute(context.Background(), protocol.OpOperationWait, json.RawMessage(`{"operationId":"`+sid+`","timeoutMs":100}`))
+	if timed.OK || timed.Error.Code != protocol.ErrorTimeout {
+		t.Fatalf("timeout: %+v", timed)
+	}
+	if timed.Error.RetryAfterMs == nil || *timed.Error.RetryAfterMs != 2000 {
+		t.Fatalf("retryAfter %+v", timed.Error)
+	}
+	if timed.Error.Deadline == "" {
+		t.Fatalf("missing deadline %+v", timed.Error)
+	}
+	cancelled := ws.Execute(context.Background(), protocol.OpOperationCancel, json.RawMessage(`{"operationId":"`+sid+`"}`))
+	if !cancelled.OK || cancelled.Data.(map[string]any)["status"] != "cancelled" {
+		t.Fatalf("cancel: %+v", cancelled)
+	}
+	rec, err := generics.register(root, "exec_run", time.Now().UnixMilli()+60_000)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	genericWait := ws.Execute(context.Background(), protocol.OpOperationWait, json.RawMessage(`{"operationId":"`+rec.id+`","timeoutMs":100}`))
+	if genericWait.OK || genericWait.Error.Code != protocol.ErrorTimeout {
+		t.Fatalf("generic wait: %+v", genericWait)
+	}
+	genericCancel := ws.Execute(context.Background(), protocol.OpOperationCancel, json.RawMessage(`{"operationId":"`+rec.id+`"}`))
+	if !genericCancel.OK || genericCancel.Data.(map[string]any)["status"] != "cancelled" {
+		t.Fatalf("generic cancel: %+v", genericCancel)
+	}
+}
+
 func asMaps(raw any) []map[string]any {
 	switch v := raw.(type) {
 	case []map[string]any:

@@ -128,4 +128,8 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if !taskListed.OK {
 		t.Fatalf("local tasks list: %+v", taskListed)
 	}
+	missingOp := b.Call(context.Background(), protocol.OpOperationStatus, json.RawMessage(`{"operationId":"op_ffffffffffffffffffffffff"}`))
+	if missingOp.OK || missingOp.Error.Code != protocol.ErrorNotFound {
+		t.Fatalf("local missing operation: %+v", missingOp)
+	}
 }

@@ -89,6 +89,7 @@ type pathInput struct {
 	Input                  string   `json:"input"`
 	WaitMs                 int      `json:"waitMs"`
 	TaskID                 string   `json:"taskId"`
+	OperationID            string   `json:"operationId"`
 	DependsOn              []string `json:"dependsOn"`
 	Args                   []string `json:"args"`
 	Files                  []struct {
@@ -187,6 +188,12 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.tasksCancel(in)
 	case protocol.OpTasksGraph:
 		return w.tasksGraph()
+	case protocol.OpOperationStatus:
+		return w.operationStatus(in)
+	case protocol.OpOperationCancel:
+		return w.operationCancel(in)
+	case protocol.OpOperationWait:
+		return w.operationWait(in)
 	case protocol.OpHooksList:
 		return w.hooksList(in)
 	case protocol.OpHooksRun:
