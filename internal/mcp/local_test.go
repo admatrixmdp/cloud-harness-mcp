@@ -52,4 +52,8 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if gh.OK || gh.Error.Code != protocol.ErrorRepositoryOperationNotAuthorized {
 		t.Fatalf("github local: %+v", gh)
 	}
+	secrets := b.Call(context.Background(), protocol.OpSecretsList, json.RawMessage(`{}`))
+	if secrets.OK || secrets.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("secrets local: %+v", secrets)
+	}
 }

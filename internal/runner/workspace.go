@@ -9,12 +9,14 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/executor"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
@@ -76,16 +78,24 @@ func (c Config) withDefaults() Config {
 
 // Service executes public runner operations.
 type Service struct {
-	cfg    Config
-	store  store.Store
-	engine Engine
-	cloner *git.Cloner
+	cfg     Config
+	store   store.Store
+	engine  Engine
+	cloner  *git.Cloner
+	secrets *secrets.Store
 }
 
 // WithCloner clones through a helper container after executor create.
 // The minted token rides helper stdin only and never appears in argv or MCP results.
 func (s *Service) WithCloner(c *git.Cloner) *Service {
 	s.cloner = c
+	return s
+}
+
+// WithSecrets attaches the runner keyring metadata store. secrets_list never
+// decrypts or returns plaintext.
+func (s *Service) WithSecrets(sec *secrets.Store) *Service {
+	s.secrets = sec
 	return s
 }
 
@@ -148,6 +158,8 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.githubCall(ctx, req)
 	case protocol.OpFilesList, protocol.OpFilesRead, protocol.OpFilesWrite, protocol.OpFilesWriteBatch, protocol.OpFilesApplyPatch, protocol.OpFilesDelete, protocol.OpFilesMove, protocol.OpFilesMkdir, protocol.OpGrepSearch, protocol.OpSymbolsSearch, protocol.OpSymbolsReferences, protocol.OpExecRun, protocol.OpGitStatus, protocol.OpGitDiff, protocol.OpGitLog, protocol.OpGitBranch, protocol.OpGitCheckout, protocol.OpGitAdd, protocol.OpGitCommit, protocol.OpGitMerge, protocol.OpGitRebase:
 		return s.runWorker(ctx, req)
+	case protocol.OpSecretsList:
+		return s.secretsList(req)
 	case protocol.OpWorkspaceCapabilities:
 		return protocol.Success("workspace capabilities", map[string]any{
 			"networkProfiles":       []string{string(protocol.NetworkNone), string(protocol.DependencyAccess)},
@@ -202,6 +214,7 @@ func (s *Service) open(ctx context.Context, req protocol.RunnerRequest) protocol
 		NetworkProfile: profile,
 		IdempotencyKey: input.IdempotencyKey,
 		Fingerprint:    fingerprint(input, profile),
+		EnvironmentID:  input.EnvironmentID,
 		Generation:     1,
 		CreatedAt:      now,
 		LastActivityAt: now,
@@ -529,6 +542,154 @@ func (s *Service) recoverExport(ctx context.Context, rec store.Record, targetBra
 		}
 	}
 	return protocol.Success("Recovered work exported to "+targetBranch, data)
+}
+
+const globalSecretEnvironment = "global"
+
+type secretsListInput struct {
+	WorkspaceID   string `json:"workspaceId"`
+	EnvironmentID string `json:"environmentId"`
+	Query         string `json:"query"`
+	Cursor        string `json:"cursor"`
+	Limit         int    `json:"limit"`
+}
+
+func (s *Service) secretsList(req protocol.RunnerRequest) protocol.ToolResult {
+	var input secretsListInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid secrets_list input", false)
+		}
+	}
+	ownerID := req.OwnerID
+	if ownerID == "" {
+		ownerID = "owner"
+	}
+	environmentID := input.EnvironmentID
+	if input.WorkspaceID != "" {
+		if !protocol.ValidOpaqueID(protocol.PrefixWorkspace, input.WorkspaceID) {
+			return protocol.Fail(protocol.ErrorInvalidInput, "workspaceId is required", false)
+		}
+		rec, errRes := s.requireOwned(ownerID, input.WorkspaceID)
+		if errRes != nil {
+			return *errRes
+		}
+		if environmentID == "" {
+			environmentID = rec.EnvironmentID
+		}
+	}
+	if environmentID == "" {
+		seen := map[string]struct{}{}
+		var unique []string
+		for _, rec := range s.store.List(ownerID) {
+			if rec.Status != store.StatusActive && rec.Status != store.StatusCreating {
+				continue
+			}
+			if rec.EnvironmentID == "" {
+				continue
+			}
+			if _, ok := seen[rec.EnvironmentID]; ok {
+				continue
+			}
+			seen[rec.EnvironmentID] = struct{}{}
+			unique = append(unique, rec.EnvironmentID)
+		}
+		if len(unique) == 1 {
+			environmentID = unique[0]
+		} else if len(unique) > 1 {
+			return protocol.Fail(protocol.ErrorConflict, "multiple active workspaces exist with different environments; specify an explicit environmentId or workspaceId", false)
+		}
+	}
+	if environmentID != "" && environmentID != globalSecretEnvironment && !protocol.ValidOpaqueID(protocol.PrefixEnvironment, environmentID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "environmentId is invalid", false)
+	}
+	offset := 0
+	if input.Cursor != "" {
+		n, err := strconv.Atoi(input.Cursor)
+		if err != nil || n < 0 {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid secrets_list cursor", false)
+		}
+		offset = n
+	}
+	limit := input.Limit
+	if limit == 0 {
+		limit = 100
+	}
+	if limit < 1 || limit > 500 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "limit must be between 1 and 500", false)
+	}
+	merged := map[string]map[string]any{}
+	order := make([]string, 0)
+	appendViews := func(views []secrets.View, scope string) {
+		for _, view := range views {
+			item := map[string]any{
+				"name":          view.Name,
+				"description":   nullableString(view.Description),
+				"scope":         scope,
+				"environmentId": view.EnvironmentID,
+				"version":       view.Version,
+				"updatedAt":     view.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			}
+			if _, exists := merged[view.Name]; !exists {
+				order = append(order, view.Name)
+			}
+			merged[view.Name] = item
+		}
+	}
+	if s.secrets != nil {
+		globals, err := s.secrets.List(ownerID, globalSecretEnvironment)
+		if err != nil {
+			return protocol.Fail(protocol.ErrorInternal, "secret metadata is unavailable", true)
+		}
+		appendViews(globals, "global")
+		if environmentID != "" && environmentID != globalSecretEnvironment {
+			envs, err := s.secrets.List(ownerID, environmentID)
+			if err != nil {
+				return protocol.Fail(protocol.ErrorInternal, "secret metadata is unavailable", true)
+			}
+			appendViews(envs, "environment")
+		}
+	}
+	filtered := make([]map[string]any, 0, len(order))
+	q := strings.ToLower(input.Query)
+	for _, name := range order {
+		item := merged[name]
+		if q != "" {
+			desc := ""
+			if s, ok := item["description"].(string); ok {
+				desc = s
+			}
+			if !strings.Contains(strings.ToLower(name), q) && !strings.Contains(strings.ToLower(desc), q) {
+				continue
+			}
+		}
+		filtered = append(filtered, item)
+	}
+	if offset > len(filtered) {
+		offset = len(filtered)
+	}
+	end := offset + limit
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	page := filtered[offset:end]
+	hasMore := end < len(filtered)
+	data := map[string]any{"secrets": page}
+	got := protocol.Success(fmt.Sprintf("Listed %d secret reference(s)", len(page)), data)
+	if hasMore {
+		got.Cursor = strconv.Itoa(end)
+		got.Truncated = true
+		data["cursor"] = got.Cursor
+		got.Data = data
+	}
+	return got
+}
+
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func (s *Service) contextOf(req protocol.RunnerRequest) protocol.ToolResult {
@@ -1045,6 +1206,7 @@ func publicRecord(rec store.Record) map[string]any {
 		"ref":              rec.Ref,
 		"status":           string(rec.Status),
 		"networkProfile":   string(rec.NetworkProfile),
+		"environmentId":    rec.EnvironmentID,
 		"generation":       rec.Generation,
 		"createdAt":        rec.CreatedAt.UTC().Format(time.RFC3339Nano),
 		"lastActivityAt":   rec.LastActivityAt.UTC().Format(time.RFC3339Nano),

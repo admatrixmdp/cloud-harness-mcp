@@ -1,7 +1,9 @@
 package runner
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -12,8 +14,11 @@ import (
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
+
+	_ "modernc.org/sqlite"
 )
 
 type recordingEngine struct {
@@ -574,5 +579,98 @@ func TestRunWorkerConfinesPathsAndInjectsGitIdentity(t *testing.T) {
 	})
 	if dash.OK || dash.Error.Code != protocol.ErrorInvalidInput {
 		t.Fatalf("dash checkout: %+v", dash)
+	}
+}
+
+func TestSecretsListReturnsMetadataNeverPlaintext(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ring, err := secrets.NewKeyring(1, []secrets.KeyConfig{{Version: 1, Key: bytes.Repeat([]byte{9}, 32)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(ring.Close)
+	sec, err := secrets.OpenMetadata(db, ring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	envID := protocol.NewOpaqueID(protocol.PrefixEnvironment)
+	if _, err := sec.Create("owner", "global", "GLOBAL_CONFIG", "global_secret_abc123", "Global app config", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sec.Create("owner", envID, "STRIPE_KEY", "sk_live_verysecret12345", "Stripe production secret", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sec.Create("owner", envID, "DB_PASS", "db_pass_secret999", "Database master password", now); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil).WithSecrets(sec)
+	listed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSecretsList,
+		Input: json.RawMessage(`{"environmentId":"` + envID + `"}`),
+	})
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	raw, _ := json.Marshal(listed)
+	for _, secret := range []string{"global_secret_abc123", "sk_live_verysecret12345", "db_pass_secret999"} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("plaintext leaked: %s", secret)
+		}
+	}
+	data := listed.Data.(map[string]any)
+	items := secretMaps(data["secrets"])
+	if len(items) != 3 {
+		t.Fatalf("want 3 secrets, got %+v", data["secrets"])
+	}
+	for _, m := range items {
+		if _, ok := m["value"]; ok {
+			t.Fatal("value field")
+		}
+		if m["name"] == "STRIPE_KEY" && m["scope"] != "environment" {
+			t.Fatalf("%+v", m)
+		}
+		if m["name"] == "GLOBAL_CONFIG" && m["scope"] != "global" {
+			t.Fatalf("%+v", m)
+		}
+	}
+	query := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSecretsList,
+		Input: json.RawMessage(`{"environmentId":"` + envID + `","query":"stripe"}`),
+	})
+	if !query.OK {
+		t.Fatalf("query: %+v", query)
+	}
+	qitems := secretMaps(query.Data.(map[string]any)["secrets"])
+	if len(qitems) != 1 || qitems[0]["name"] != "STRIPE_KEY" {
+		t.Fatalf("query %+v", query.Data)
+	}
+	empty := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)
+	none := empty.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSecretsList, Input: json.RawMessage(`{}`),
+	})
+	if !none.OK {
+		t.Fatalf("empty: %+v", none)
+	}
+}
+
+func secretMaps(raw any) []map[string]any {
+	switch v := raw.(type) {
+	case []map[string]any:
+		return v
+	case []any:
+		out := make([]map[string]any, 0, len(v))
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
