@@ -72,4 +72,12 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if !hooks.OK {
 		t.Fatalf("local hooks list: %+v", hooks)
 	}
+	wrote := b.Call(context.Background(), protocol.OpMemoriesWrite, json.RawMessage(`{"name":"local-note","content":"stdio"}`))
+	if !wrote.OK {
+		t.Fatalf("local memory write: %+v", wrote)
+	}
+	memListed := b.Call(context.Background(), protocol.OpMemoriesList, json.RawMessage(`{}`))
+	if !memListed.OK {
+		t.Fatalf("local memory list: %+v", memListed)
+	}
 }

@@ -502,6 +502,49 @@ func TestHooksListConfinedAndFiltersEvents(t *testing.T) {
 	}
 }
 
+func TestMemoriesStayConfinedAndRejectDashNames(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{Root: root}
+	empty := ws.Execute(context.Background(), protocol.OpMemoriesList, json.RawMessage(`{}`))
+	if !empty.OK {
+		t.Fatalf("empty: %+v", empty)
+	}
+	dash := ws.Execute(context.Background(), protocol.OpMemoriesWrite, json.RawMessage(`{"name":"--help","content":"nope"}`))
+	if dash.OK || dash.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("dash name: %+v", dash)
+	}
+	slash := ws.Execute(context.Background(), protocol.OpMemoriesWrite, json.RawMessage(`{"name":"../escape","content":"nope"}`))
+	if slash.OK || slash.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("slash name: %+v", slash)
+	}
+	wrote := ws.Execute(context.Background(), protocol.OpMemoriesWrite, json.RawMessage(`{"name":"note","content":"hello memory"}`))
+	if !wrote.OK {
+		t.Fatalf("write: %+v", wrote)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".cloud-harness", "memories", "note.md")); err != nil {
+		t.Fatal(err)
+	}
+	read := ws.Execute(context.Background(), protocol.OpMemoriesRead, json.RawMessage(`{"name":"note"}`))
+	if !read.OK || read.Data.(map[string]any)["content"] != "hello memory" {
+		t.Fatalf("read: %+v", read)
+	}
+	found := ws.Execute(context.Background(), protocol.OpMemoriesSearch, json.RawMessage(`{"query":"hello"}`))
+	if !found.OK {
+		t.Fatalf("search: %+v", found)
+	}
+	if len(asMaps(found.Data.(map[string]any)["memories"])) != 1 {
+		t.Fatalf("search hits %+v", found.Data)
+	}
+	deleted := ws.Execute(context.Background(), protocol.OpMemoriesDelete, json.RawMessage(`{"name":"note"}`))
+	if !deleted.OK {
+		t.Fatalf("delete: %+v", deleted)
+	}
+	missing := ws.Execute(context.Background(), protocol.OpMemoriesRead, json.RawMessage(`{"name":"note"}`))
+	if missing.OK || missing.Error.Code != protocol.ErrorNotFound {
+		t.Fatalf("missing: %+v", missing)
+	}
+}
+
 func asMaps(raw any) []map[string]any {
 	switch v := raw.(type) {
 	case []map[string]any:

@@ -149,6 +149,16 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.skillsRead(in)
 	case protocol.OpHooksList:
 		return w.hooksList(in)
+	case protocol.OpMemoriesList:
+		return w.memoriesList(in)
+	case protocol.OpMemoriesRead:
+		return w.memoriesRead(in)
+	case protocol.OpMemoriesWrite:
+		return w.memoriesWrite(in)
+	case protocol.OpMemoriesSearch:
+		return w.memoriesSearch(in)
+	case protocol.OpMemoriesDelete:
+		return w.memoriesDelete(in)
 	case protocol.OpWorkspaceRecover:
 		return w.recover(ctx, in)
 	case protocol.OpArtifactsRestore:

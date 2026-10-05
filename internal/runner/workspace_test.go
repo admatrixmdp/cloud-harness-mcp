@@ -14,6 +14,7 @@ import (
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/memories"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
@@ -774,5 +775,78 @@ func TestArtifactsSnapshotListReadRestoreDelete(t *testing.T) {
 	})
 	if missing.OK || missing.Error.Code != protocol.ErrorNotFound {
 		t.Fatalf("read after delete: %+v", missing)
+	}
+}
+
+func TestMemoriesWriteListReadDeleteOnRunner(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "mem.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	memStore, err := memories.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil).WithMemories(memStore)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"mem-open-001","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	wsID := open.Data.(map[string]any)["workspaceId"].(string)
+	wrote := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpMemoriesWrite,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","name":"alpha","content":"runner note","tags":["keep"]}`),
+	})
+	if !wrote.OK {
+		t.Fatalf("write: %+v", wrote)
+	}
+	if wrote.Data.(map[string]any)["content"] != "runner note" {
+		t.Fatalf("write data %+v", wrote.Data)
+	}
+	dup := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpMemoriesWrite,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","name":"alpha","content":"dup"}`),
+	})
+	if dup.OK || dup.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("dup: %+v", dup)
+	}
+	listed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpMemoriesList,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `"}`),
+	})
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	items := secretMaps(listed.Data.(map[string]any)["memories"])
+	if len(items) != 1 || items[0]["name"] != "alpha" {
+		t.Fatalf("list %+v", listed.Data)
+	}
+	if _, ok := items[0]["content"]; ok {
+		t.Fatal("list must omit content")
+	}
+	read := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpMemoriesRead,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","name":"alpha"}`),
+	})
+	if !read.OK || read.Data.(map[string]any)["content"] != "runner note" {
+		t.Fatalf("read: %+v", read)
+	}
+	search := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpMemoriesSearch,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","query":"runner"}`),
+	})
+	if !search.OK {
+		t.Fatalf("search: %+v", search)
+	}
+	del := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpMemoriesDelete,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","name":"alpha","expectedGeneration":1}`),
+	})
+	if !del.OK {
+		t.Fatalf("delete: %+v", del)
 	}
 }

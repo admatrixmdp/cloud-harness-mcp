@@ -18,6 +18,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/executor"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/memories"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
@@ -87,6 +88,7 @@ type Service struct {
 	cloner    *git.Cloner
 	secrets   *secrets.Store
 	artifacts *artifacts.Store
+	memories  *memories.Store
 }
 
 // WithCloner clones through a helper container after executor create.
@@ -106,6 +108,12 @@ func (s *Service) WithSecrets(sec *secrets.Store) *Service {
 // WithArtifacts attaches retained snapshot storage. Local stdio never hosts this.
 func (s *Service) WithArtifacts(store *artifacts.Store) *Service {
 	s.artifacts = store
+	return s
+}
+
+// WithMemories attaches retained SQLite memory notes. Local stdio uses confined markdown instead.
+func (s *Service) WithMemories(store *memories.Store) *Service {
+	s.memories = store
 	return s
 }
 
@@ -180,6 +188,16 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.artifactsSnapshot(req)
 	case protocol.OpArtifactsRestore:
 		return s.artifactsRestore(ctx, req)
+	case protocol.OpMemoriesList:
+		return s.memoriesList(req)
+	case protocol.OpMemoriesRead:
+		return s.memoriesRead(req)
+	case protocol.OpMemoriesWrite:
+		return s.memoriesWrite(req)
+	case protocol.OpMemoriesSearch:
+		return s.memoriesSearch(req)
+	case protocol.OpMemoriesDelete:
+		return s.memoriesDelete(req)
 	case protocol.OpWorkspaceCapabilities:
 		return protocol.Success("workspace capabilities", map[string]any{
 			"networkProfiles":       []string{string(protocol.NetworkNone), string(protocol.DependencyAccess)},
@@ -788,6 +806,220 @@ func (s *Service) artifactsRestore(ctx context.Context, req protocol.RunnerReque
 		"sizeBytes":   size,
 		"sha256":      sha,
 	})
+}
+
+type memoryInput struct {
+	WorkspaceID        string   `json:"workspaceId"`
+	Scope              string   `json:"scope"`
+	Name               string   `json:"name"`
+	MemoryID           string   `json:"memoryId"`
+	Content            string   `json:"content"`
+	Tags               []string `json:"tags"`
+	Query              string   `json:"query"`
+	TagMatch           string   `json:"tagMatch"`
+	Cursor             string   `json:"cursor"`
+	Limit              *int     `json:"limit"`
+	RetentionSeconds   int      `json:"retentionSeconds"`
+	ExpectedGeneration *int     `json:"expectedGeneration"`
+}
+
+func memoryFail(err error) protocol.ToolResult {
+	if mem, ok := err.(*memories.Error); ok {
+		return protocol.Fail(mem.Code, mem.Message, false)
+	}
+	return protocol.Fail(protocol.ErrorInternal, "memory store is unavailable", true)
+}
+
+func (s *Service) requireMemories() (*memories.Store, *protocol.ToolResult) {
+	if s.memories == nil {
+		fail := protocol.Fail(protocol.ErrorUnavailable, "memory storage is not configured", true)
+		return nil, &fail
+	}
+	return s.memories, nil
+}
+
+func repositoryKey(url string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(url)))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *Service) memoryContext(req protocol.RunnerRequest, input memoryInput) (ownerID string, rec store.Record, errRes *protocol.ToolResult) {
+	ownerID = req.OwnerID
+	if ownerID == "" {
+		ownerID = "owner"
+	}
+	rec, errRes = s.resolveWorkspace(ownerID, input.WorkspaceID)
+	if errRes != nil {
+		return "", store.Record{}, errRes
+	}
+	return ownerID, rec, nil
+}
+
+func (s *Service) memoriesWrite(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireMemories()
+	if fail != nil {
+		return *fail
+	}
+	var input memoryInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid memories_write input", false)
+		}
+	}
+	ownerID, rec, errRes := s.memoryContext(req, input)
+	if errRes != nil {
+		return *errRes
+	}
+	expected := 0
+	if input.ExpectedGeneration != nil {
+		expected = *input.ExpectedGeneration
+	}
+	row, err := store.Write(memories.WriteParams{
+		PrincipalID:        ownerID,
+		Scope:              input.Scope,
+		RepositoryKey:      repositoryKey(rec.RepositoryURL),
+		WorkspaceID:        rec.ID,
+		Name:               input.Name,
+		Content:            input.Content,
+		Tags:               input.Tags,
+		RetentionSeconds:   input.RetentionSeconds,
+		ExpectedGeneration: expected,
+	})
+	if err != nil {
+		return memoryFail(err)
+	}
+	return protocol.Success("Memory note saved", row.PublicJSON())
+}
+
+func (s *Service) memoriesRead(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireMemories()
+	if fail != nil {
+		return *fail
+	}
+	var input memoryInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid memories_read input", false)
+		}
+	}
+	ownerID, rec, errRes := s.memoryContext(req, input)
+	if errRes != nil {
+		return *errRes
+	}
+	row, err := store.Read(memories.Lookup{
+		PrincipalID: ownerID, ID: input.MemoryID, Name: input.Name, Scope: input.Scope,
+		RepositoryKey: repositoryKey(rec.RepositoryURL), WorkspaceID: rec.ID,
+	})
+	if err != nil {
+		return memoryFail(err)
+	}
+	return protocol.Success("Memory note read", row.PublicJSON())
+}
+
+func (s *Service) memoriesList(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireMemories()
+	if fail != nil {
+		return *fail
+	}
+	var input memoryInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid memories_list input", false)
+		}
+	}
+	ownerID, rec, errRes := s.memoryContext(req, input)
+	if errRes != nil {
+		return *errRes
+	}
+	limit := 50
+	if input.Limit != nil {
+		limit = *input.Limit
+	}
+	rows, next, err := store.List(memories.ListParams{
+		PrincipalID: ownerID, Scope: input.Scope, RepositoryKey: repositoryKey(rec.RepositoryURL),
+		WorkspaceID: rec.ID, Tags: input.Tags, TagMatch: input.TagMatch, Limit: limit, Cursor: input.Cursor,
+	})
+	if err != nil {
+		return memoryFail(err)
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.ListJSON())
+	}
+	got := protocol.Success(fmt.Sprintf("Found %d memories", len(out)), map[string]any{"memories": out})
+	if next != "" {
+		got.Cursor = next
+		got.Truncated = true
+		got.Data = map[string]any{"memories": out, "cursor": next}
+	}
+	return got
+}
+
+func (s *Service) memoriesSearch(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireMemories()
+	if fail != nil {
+		return *fail
+	}
+	var input memoryInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid memories_search input", false)
+		}
+	}
+	ownerID, rec, errRes := s.memoryContext(req, input)
+	if errRes != nil {
+		return *errRes
+	}
+	limit := 20
+	if input.Limit != nil {
+		limit = *input.Limit
+	}
+	rows, next, err := store.Search(memories.ListParams{
+		PrincipalID: ownerID, Scope: input.Scope, RepositoryKey: repositoryKey(rec.RepositoryURL),
+		WorkspaceID: rec.ID, Tags: input.Tags, TagMatch: input.TagMatch, Query: input.Query, Limit: limit, Cursor: input.Cursor,
+	})
+	if err != nil {
+		return memoryFail(err)
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.PublicJSON())
+	}
+	got := protocol.Success(fmt.Sprintf("Found %d matching memories", len(out)), map[string]any{"memories": out})
+	if next != "" {
+		got.Cursor = next
+		got.Truncated = true
+		got.Data = map[string]any{"memories": out, "cursor": next}
+	}
+	return got
+}
+
+func (s *Service) memoriesDelete(req protocol.RunnerRequest) protocol.ToolResult {
+	store, fail := s.requireMemories()
+	if fail != nil {
+		return *fail
+	}
+	var input memoryInput
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid memories_delete input", false)
+		}
+	}
+	ownerID, rec, errRes := s.memoryContext(req, input)
+	if errRes != nil {
+		return *errRes
+	}
+	expected := 1
+	if input.ExpectedGeneration != nil {
+		expected = *input.ExpectedGeneration
+	}
+	if err := store.Delete(memories.Lookup{
+		PrincipalID: ownerID, ID: input.MemoryID, Name: input.Name, Scope: input.Scope,
+		RepositoryKey: repositoryKey(rec.RepositoryURL), WorkspaceID: rec.ID,
+	}, expected); err != nil {
+		return memoryFail(err)
+	}
+	return protocol.Success("Memory note deleted", map[string]any{"deleted": true})
 }
 
 const globalSecretEnvironment = "global"
