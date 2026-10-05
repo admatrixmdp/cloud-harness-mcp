@@ -18,6 +18,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/executor"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/hooks"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/memories"
@@ -93,6 +94,7 @@ type Service struct {
 	memories  *memories.Store
 	knowledge *knowledge.Store
 	hooks     *hooks.Store
+	grants    *grants.Store
 }
 
 // WithCloner clones through a helper container after executor create.
@@ -130,6 +132,12 @@ func (s *Service) WithKnowledge(store *knowledge.Store) *Service {
 // WithHooks attaches retained lifecycle-hook activations. Local stdio never hosts this.
 func (s *Service) WithHooks(store *hooks.Store) *Service {
 	s.hooks = store
+	return s
+}
+
+// WithGrants attaches owner privilege grants. skills_run on the runner requires one.
+func (s *Service) WithGrants(store *grants.Store) *Service {
+	s.grants = store
 	return s
 }
 
@@ -190,6 +198,8 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.gitPush(ctx, req)
 	case protocol.OpGitHubAction, protocol.OpGitHubRead:
 		return s.githubCall(ctx, req)
+	case protocol.OpSkillsRun:
+		return s.skillsRun(ctx, req)
 	case protocol.OpFilesList, protocol.OpFilesRead, protocol.OpFilesWrite, protocol.OpFilesWriteBatch, protocol.OpFilesApplyPatch, protocol.OpFilesDelete, protocol.OpFilesMove, protocol.OpFilesMkdir, protocol.OpGrepSearch, protocol.OpSymbolsSearch, protocol.OpSymbolsReferences, protocol.OpExecRun, protocol.OpGitStatus, protocol.OpGitDiff, protocol.OpGitLog, protocol.OpGitBranch, protocol.OpGitCheckout, protocol.OpGitAdd, protocol.OpGitCommit, protocol.OpGitMerge, protocol.OpGitRebase, protocol.OpWorktreesList, protocol.OpWorktreesCreate, protocol.OpWorktreesRemove, protocol.OpSkillsList, protocol.OpSkillsRead, protocol.OpHooksList, protocol.OpHooksRun:
 		return s.runWorker(ctx, req)
 	case protocol.OpSecretsList:
@@ -500,6 +510,61 @@ func (s *Service) recoverWorker(ctx context.Context, rec store.Record, mode, mes
 		return protocol.Fail(protocol.ErrorInternal, "could not encode recovery worker input", false)
 	}
 	return s.executeInJob(ctx, rec, protocol.OpWorkspaceRecover, payload)
+}
+
+func (s *Service) skillsRun(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
+	if s.grants == nil {
+		return protocol.Fail(protocol.ErrorUnavailable, "privilege grant storage is not configured", true)
+	}
+	var input struct {
+		WorkspaceID           string `json:"workspaceId"`
+		Name                  string `json:"name"`
+		Script                string `json:"script"`
+		ExpectedSHA256        string `json:"expectedSha256"`
+		ExpectedContentSHA256 string `json:"expectedContentSha256"`
+		ApprovalGrantToken    string `json:"approvalGrantToken"`
+	}
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid skills_run input", false)
+		}
+	}
+	expected := input.ExpectedContentSHA256
+	if expected == "" {
+		expected = input.ExpectedSHA256
+	}
+	if expected == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "expectedContentSha256 or expectedSha256 is required to run a skill", false)
+	}
+	ownerID := req.OwnerID
+	if ownerID == "" {
+		ownerID = "owner"
+	}
+	rec, errRes := s.resolveWorkspace(ownerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	command := grants.SkillGrantCommand(input.Name, input.Script, expected)
+	if input.ApprovalGrantToken == "" {
+		grant, err := s.grants.Create(ownerID, rec.ID, command, ".", 60_000)
+		if err != nil {
+			return protocol.Fail(protocol.ErrorInternal, "privilege grant store is unavailable", true)
+		}
+		return grants.ApprovalRequired(grant, input.Name, input.Script)
+	}
+	digest := grants.SkillGrantDigest(input.Name, input.Script, expected)
+	if !s.grants.Consume(ownerID, rec.ID, input.ApprovalGrantToken, digest, ".") {
+		return protocol.Fail(protocol.ErrorForbidden, "Invalid, expired, or already-consumed approval grant token", false)
+	}
+	if fail := s.requireActiveExecutor(rec); fail != nil {
+		return *fail
+	}
+	got := s.executeInJob(ctx, rec, protocol.OpSkillsRun, req.Input)
+	if data, ok := got.Data.(map[string]any); ok {
+		data["executionMode"] = "local"
+		got.Data = data
+	}
+	return got
 }
 
 func (s *Service) runWorker(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {

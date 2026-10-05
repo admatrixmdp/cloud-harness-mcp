@@ -1,11 +1,15 @@
 package executor
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -202,6 +206,191 @@ func (w Workspace) skillsRead(in pathInput) protocol.ToolResult {
 	})
 	got.Truncated = truncated
 	return got
+}
+
+func validSkillScript(name string) bool {
+	if name == "" || len(name) > 120 || strings.HasPrefix(name, "-") {
+		return false
+	}
+	for _, r := range name {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (w Workspace) skillsRun(ctx context.Context, in pathInput) protocol.ToolResult {
+	if !skillNameOK(in.Name) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid skill name", false)
+	}
+	if !validSkillScript(in.Script) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid skill script name", false)
+	}
+	expected := in.ExpectedContentSHA256
+	if expected == "" {
+		expected = in.ExpectedSHA256
+	}
+	if expected == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "expectedContentSha256 or expectedSha256 is required to run a skill", false)
+	}
+	if len(expected) != 64 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "expectedSha256 must be a 64-character hex digest", false)
+	}
+	if len(in.Args) > 50 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "too many skill arguments", false)
+	}
+	entries, err := w.skillEntries()
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+	}
+	var entry *skillEntry
+	for i := range entries {
+		if entries[i].Name == in.Name {
+			entry = &entries[i]
+			break
+		}
+	}
+	if entry == nil {
+		return protocol.Fail(protocol.ErrorNotFound, "skill not found", false)
+	}
+	selected := entry.All[0]
+	if in.Source != "" {
+		found := false
+		for _, cand := range entry.All {
+			if cand.Source == in.Source {
+				selected = cand
+				found = true
+				break
+			}
+		}
+		if !found {
+			return protocol.Fail(protocol.ErrorNotFound, "skill source not found", false)
+		}
+	}
+	snapDir, err := os.MkdirTemp("", "cloud-harness-skill-")
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), true)
+	}
+	defer func() {
+		_ = os.RemoveAll(snapDir)
+	}()
+	if err := copySkillTree(selected.SkillDir, snapDir); err != nil {
+		return protocol.Fail(protocol.ErrorConflict, "skill integrity validation failed: "+err.Error(), false)
+	}
+	bundleDigest, err := skillBundleDigest(snapDir)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorConflict, "skill integrity validation failed: "+err.Error(), false)
+	}
+	scriptPath := filepath.Join(snapDir, "scripts", in.Script)
+	scriptBytes, err := os.ReadFile(scriptPath)
+	if err != nil {
+		alt := filepath.Join(snapDir, in.Script)
+		scriptBytes, err = os.ReadFile(alt)
+		if err != nil {
+			if _, scriptsErr := os.Stat(filepath.Join(snapDir, "scripts")); os.IsNotExist(scriptsErr) {
+				return protocol.Fail(protocol.ErrorNoExecutableAssets, "this skill revision carries instructions but no scripts to run", false)
+			}
+			return protocol.Fail(protocol.ErrorNotFound, "skill script "+in.Script+" not found in snapshot", false)
+		}
+		scriptPath = alt
+	}
+	sum := sha256.Sum256(scriptBytes)
+	scriptSHA := hex.EncodeToString(sum[:])
+	if expected != bundleDigest && expected != scriptSHA {
+		return protocol.Fail(protocol.ErrorConflict, fmt.Sprintf("skill digest mismatch: expected %s, got bundle %s (script: %s)", expected, bundleDigest, scriptSHA), false)
+	}
+	timeout := 60 * time.Second
+	if in.TimeoutMs > 0 {
+		timeout = time.Duration(in.TimeoutMs) * time.Millisecond
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, scriptPath, in.Args...)
+	cmd.Dir = snapDir
+	cmd.Env = confinedEnv()
+	var buf bytes.Buffer
+	limited := &limitedWriter{max: 65536, buf: &buf}
+	cmd.Stdout = limited
+	cmd.Stderr = limited
+	err = cmd.Run()
+	exit := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exit = exitErr.ExitCode()
+		} else if runCtx.Err() == context.DeadlineExceeded {
+			return protocol.Fail(protocol.ErrorTimeout, "skill script timed out", true)
+		} else {
+			got := protocol.Fail(protocol.ErrorExecutionFailed, err.Error(), false)
+			got.Data = map[string]any{"output": buf.String(), "exitCode": exit, "signal": nil, "executionMode": "local"}
+			got.Truncated = limited.truncated
+			return got
+		}
+	}
+	data := map[string]any{"output": buf.String(), "exitCode": exit, "signal": nil, "executionMode": "local"}
+	if exit != 0 {
+		got := protocol.Fail(protocol.ErrorExecutionFailed, fmt.Sprintf("Skill script exited with %d", exit), false)
+		got.Data = data
+		got.Truncated = limited.truncated
+		return got
+	}
+	got := protocol.Success(fmt.Sprintf("Skill script exited with %d", exit), data)
+	got.Truncated = limited.truncated
+	return got
+}
+
+func copySkillTree(src, dst string) error {
+	canonical, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		canonical = src
+	}
+	canonical = filepath.Clean(canonical)
+	return filepath.WalkDir(canonical, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(canonical, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.Type()&os.ModeSymlink != 0 {
+			linkTarget, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return fmt.Errorf("broken symlink %s", rel)
+			}
+			relTarget, err := filepath.Rel(canonical, linkTarget)
+			if err != nil || strings.HasPrefix(relTarget, "..") || filepath.IsAbs(relTarget) {
+				return fmt.Errorf("symlink %s escapes skill directory root", rel)
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+				return err
+			}
+			return os.Symlink(relTarget, target)
+		}
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o700)
+		}
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("unsupported special directory entry %s", rel)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return err
+		}
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o700)
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+		_, err = io.Copy(out, in)
+		return err
+	})
 }
 
 func (w Workspace) skillEntries() ([]skillEntry, error) {

@@ -92,4 +92,8 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if runMissing.OK || runMissing.Error.Code != protocol.ErrorInvalidInput {
 		t.Fatalf("hooks_run missing digest: %+v", runMissing)
 	}
+	skillRun := b.Call(context.Background(), protocol.OpSkillsRun, json.RawMessage(`{"name":"tdd","script":"run.sh"}`))
+	if skillRun.OK || skillRun.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("skills_run missing digest: %+v", skillRun)
+	}
 }

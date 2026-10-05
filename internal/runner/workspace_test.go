@@ -14,6 +14,7 @@ import (
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/hooks"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/memories"
@@ -1016,5 +1017,49 @@ func TestHooksActivateDeactivateOnRunner(t *testing.T) {
 	})
 	if !all.OK {
 		t.Fatalf("deactivate all: %+v", all)
+	}
+}
+
+func TestSkillsRunRequiresPrivilegeGrant(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "grants.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	grantStore, err := grants.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil).WithGrants(grantStore)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"skill-open-001","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	wsID := open.Data.(map[string]any)["workspaceId"].(string)
+	sha := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	denied := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSkillsRun,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","name":"tdd","script":"run.sh","expectedSha256":"` + sha + `"}`),
+	})
+	if denied.OK || denied.Error.Code != protocol.ErrorPrivilegeApprovalRequired {
+		t.Fatalf("denied: %+v", denied)
+	}
+	grantReq, _ := denied.Error.GrantRequest.(map[string]any)
+	grantID, _ := grantReq["grantId"].(string)
+	if grantID == "" {
+		t.Fatalf("grantRequest %+v", denied.Error)
+	}
+	if !grantStore.Approve("owner", grantID) {
+		t.Fatal("approve")
+	}
+	bad := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSkillsRun,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","name":"tdd","script":"run.sh","expectedSha256":"` + sha + `","approvalGrantToken":"pvg_missing"}`),
+	})
+	if bad.OK || bad.Error.Code != protocol.ErrorForbidden {
+		t.Fatalf("bad token: %+v", bad)
 	}
 }

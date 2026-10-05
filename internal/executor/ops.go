@@ -80,6 +80,9 @@ type pathInput struct {
 	Mode                   string   `json:"mode"`
 	Event                  string   `json:"event"`
 	ExpectedManifestSHA256 string   `json:"expectedManifestSha256"`
+	ExpectedContentSHA256  string   `json:"expectedContentSha256"`
+	Script                 string   `json:"script"`
+	Args                   []string `json:"args"`
 	Files                  []struct {
 		Path           string `json:"path"`
 		Content        string `json:"content"`
@@ -148,6 +151,8 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.skillsList(in)
 	case protocol.OpSkillsRead:
 		return w.skillsRead(in)
+	case protocol.OpSkillsRun:
+		return w.skillsRun(ctx, in)
 	case protocol.OpHooksList:
 		return w.hooksList(in)
 	case protocol.OpHooksRun:

@@ -3,6 +3,8 @@ package executor
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -582,6 +584,46 @@ func TestHooksRunRequiresDigestAndRejectsMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := ws.Execute(context.Background(), protocol.OpHooksRun, json.RawMessage(`{"name":"lint","expectedManifestSha256":"`+sha+`"}`))
+	if stale.OK || stale.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("stale: %+v", stale)
+	}
+}
+
+func TestSkillsRunRequiresDigestAndRejectsMismatch(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, ".cloud-harness", "skills", "tdd")
+	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# TDD\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := []byte("#!/bin/sh\necho skill-ok\n")
+	if err := os.WriteFile(filepath.Join(skillDir, "scripts", "run.sh"), script, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ws := Workspace{Root: root}
+	missing := ws.Execute(context.Background(), protocol.OpSkillsRun, json.RawMessage(`{"name":"tdd","script":"run.sh"}`))
+	if missing.OK || missing.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("missing digest: %+v", missing)
+	}
+	mismatch := ws.Execute(context.Background(), protocol.OpSkillsRun, json.RawMessage(`{"name":"tdd","script":"run.sh","expectedSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+	if mismatch.OK || mismatch.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("mismatch: %+v", mismatch)
+	}
+	sum := sha256.Sum256(script)
+	sha := hex.EncodeToString(sum[:])
+	ok := ws.Execute(context.Background(), protocol.OpSkillsRun, json.RawMessage(`{"name":"tdd","script":"run.sh","expectedSha256":"`+sha+`"}`))
+	if !ok.OK {
+		t.Fatalf("run: %+v", ok)
+	}
+	if !strings.Contains(ok.Data.(map[string]any)["output"].(string), "skill-ok") {
+		t.Fatalf("output %+v", ok.Data)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "scripts", "run.sh"), []byte("#!/bin/sh\necho tampered\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := ws.Execute(context.Background(), protocol.OpSkillsRun, json.RawMessage(`{"name":"tdd","script":"run.sh","expectedSha256":"`+sha+`"}`))
 	if stale.OK || stale.Error.Code != protocol.ErrorConflict {
 		t.Fatalf("stale: %+v", stale)
 	}
