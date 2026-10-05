@@ -10,7 +10,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | --- | --- | --- |
 | Streamable HTTP `/mcp` | `apps/api/src/mcp-server.ts`, `apps/api/src/app.ts` | `cmd/cloud-harness-mcp`, `internal/mcp`, `internal/api` |
 | MCP gateway `/mcp-gateway` | `apps/api/src/mcp-gateway/` | `internal/gateway` (constant tools: search, inspect, execute, permissions, status) |
-| Local stdio | `apps/api/src/cli-options.ts`, `apps/api/src/local/` | `cmd/cloud-harness-mcp --transport stdio --workspace` |
+| Local stdio | `apps/api/src/cli-options.ts`, `apps/api/src/local/` | `cmd/cloud-harness-mcp --transport stdio --workspace` (`internal/mcp.ServeStdio` + confined `LocalBackend`; `workspace_open` remains unsupported) |
 
 ## Control plane
 
@@ -27,7 +27,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | SQLite metadata / state | `apps/runner/src/metadata-store.ts`, `state-store.ts` | `internal/store` (`Memory` + `SQLite` via `database/sql` + `modernc.org/sqlite`; CHECK rejects raw `bridge`) |
 | Secrets keyring | `apps/runner/src/secret-keyring.ts` | `internal/secrets` |
 | Workspace + Docker policy | `apps/runner/src/workspace-service.ts`, `docker-engine.ts` | `internal/runner`, `internal/sandbox` |
-| GitHub App + transfer helpers | `apps/runner/src/github-*.ts`, `worker/*-helper.sh` | `internal/git` |
+| GitHub App + transfer helpers | `apps/runner/src/github-*.ts`, `worker/*-helper.sh` | `internal/git` (RS256 App JWT + installation mint; token on helper stdin only, never argv/logs) |
 | Executor worker | `worker/harness-worker.mjs` | `cmd/harness-worker`, `internal/executor` (path confinement, truncation, unique `files_apply_patch`, confined `grep_search`; TS remains image entry until Compose switches) |
 | Model gateway / agents | `apps/model-gateway`, `apps/agent-runtime`, `apps/runner/src/agent-*.ts` | `cmd/model-gateway`, `internal/agent` (opaque hashed leases, per-agent internal network, no host/repo/secret mounts). TS Compose remains runtime of record; Go images live in `docker/go-*.Dockerfile` |
 

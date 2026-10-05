@@ -20,16 +20,19 @@ type Options struct {
 	EnvForward []string
 }
 
-// Valid reports whether o is internally consistent.
-func (o Options) Valid() error {
+// Valid reports whether o is internally consistent. git-push implies git-network.
+func (o *Options) Valid() error {
 	if o.Transport != TransportHTTP && o.Transport != TransportStdio {
 		return errInvalidTransport
 	}
 	if o.Transport == TransportStdio && o.Workspace == "" {
 		return errStdioNeedsWorkspace
 	}
-	if o.GitPush && !o.GitNetwork {
-		// git-push implies git-network, matching the TypeScript CLI.
+	if o.Transport == TransportHTTP && o.Workspace != "" {
+		return errWorkspaceHTTP
+	}
+	if o.GitPush {
+		o.GitNetwork = true
 	}
 	return nil
 }
@@ -41,4 +44,5 @@ func (e configError) Error() string { return string(e) }
 const (
 	errInvalidTransport    configError = "invalid transport: must be http or stdio"
 	errStdioNeedsWorkspace configError = "stdio transport requires --workspace"
+	errWorkspaceHTTP       configError = "--workspace is only supported with --transport stdio"
 )
