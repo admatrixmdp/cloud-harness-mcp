@@ -11,3 +11,11 @@ coverage/
 .cloud-harness-state/
 deploy/.generated/
 .cloud-harness-test-fixtures/
+
+# Go build artifacts (binaries named after cmd/ packages)
+/cloud-harness-mcp
+/runner
+/ingress-proxy
+/model-gateway
+*.exe
+vendor/

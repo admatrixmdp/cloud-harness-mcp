@@ -1,0 +1,59 @@
+# Go port map
+
+Parallel Go sources live next to the TypeScript tree. This document maps
+executable owners. Behavior, defaults, and schemas remain owned by the TS
+files and `packages/contracts` until a package is marked runtime-of-record.
+
+## Composition roots
+
+| Mode | TypeScript | Go |
+| --- | --- | --- |
+| Streamable HTTP `/mcp` | `apps/api/src/mcp-server.ts`, `apps/api/src/app.ts` | `cmd/cloud-harness-mcp`, `internal/mcp`, `internal/api` |
+| MCP gateway `/mcp-gateway` | `apps/api/src/mcp-gateway/` | `internal/gateway` (constant tools: search, inspect, execute, permissions, status) |
+| Local stdio | `apps/api/src/cli-options.ts`, `apps/api/src/local/` | `cmd/cloud-harness-mcp --transport stdio --workspace` |
+
+## Control plane
+
+| Concern | TypeScript owner | Go package |
+| --- | --- | --- |
+| CLI flags | `apps/api/src/cli-options.ts` | `internal/config`, `cmd/cloud-harness-mcp` |
+| Owner bearer / Access JWT | `apps/api/src/auth.ts`, `access-jwt-verifier.ts` | `internal/auth` |
+| Request security | `apps/api/src/request-security.ts` | `internal/api` (later) |
+| Dashboard BFF | `apps/api/src/dashboard-*.ts` | `internal/api` (later) |
+| Ingress proxy | `deploy/ingress-proxy.mjs` | `cmd/ingress-proxy` |
+| API-key Worker | `apps/api-key-gateway` | Keep Wrangler TS unless a later task ports it; Go verifies keys in `internal/auth` + runner store |
+| Public contracts | `packages/contracts/src/` | `pkg/protocol` |
+| Runner HTTP RPC | `apps/runner/src/app.ts`, `internal-runner-operations.ts` | `cmd/runner`, `internal/runner` |
+| SQLite metadata / state | `apps/runner/src/metadata-store.ts`, `state-store.ts` | `internal/store` |
+| Secrets keyring | `apps/runner/src/secret-keyring.ts` | `internal/secrets` |
+| Workspace + Docker policy | `apps/runner/src/workspace-service.ts`, `docker-engine.ts` | `internal/runner`, `internal/sandbox` |
+| GitHub App + transfer helpers | `apps/runner/src/github-*.ts`, `worker/*-helper.sh` | `internal/git` |
+| Executor worker | `worker/harness-worker.mjs` | later: `cmd/harness-worker` |
+| Model gateway / agents | `apps/model-gateway`, `apps/agent-runtime`, `apps/runner/src/agent-*.ts` | `cmd/model-gateway` |
+
+## MUST-preserve security invariants
+
+Source of truth: `docs/security-model.md`, `AGENTS.md`.
+
+1. Private single-owner (or mutually trusted operators) threat model. Not a hostile multi-tenant sandbox.
+2. Only the credential-free ingress proxy publishes a host port; bind loopback. API and runner do not publish host ports. Ingress has no secrets and does not join the control network.
+3. Docker socket, job/state mounts, GitHub App credentials: runner only.
+4. Executors: non-root, read-only rootfs, dropped capabilities, `no-new-privileges`, resource limits, TTL, one writable repo mount, no Docker socket, no control-plane credentials.
+5. Network: default `dependency-access` (public DNS + TCP 80/443, attested host firewall). `network-none` is the isolation opt-out. No raw `bridge` profile. Attestation failure → `DEPENDENCY_EGRESS_UNAVAILABLE`, never a silent downgrade.
+6. Credential-free HTTPS repository URLs. Private-clone tokens stay in the broker/helper stdin. Exception: operator-injected `GH_TOKEN`/`GITHUB_TOKEN` for workspace `gh`.
+7. Public MCP schemas and result envelopes in `packages/contracts` / `pkg/protocol`.
+8. Cleanup scoped by verified workspace identity, canonical job path, state record, and managed-container labels.
+9. Never commit `.env`, tokens, keys, databases, runtime state, or user data.
+
+## GoClaw alignment (patterns, not code)
+
+| GoClaw | Cloud Harness Go |
+| --- | --- |
+| `cmd/` + `internal/` + `pkg/protocol` | same |
+| Cobra | same |
+| `mark3labs/mcp-go` | MCP client/server |
+| `modernc.org/sqlite` + `database/sql` | metadata store |
+| `internal/sandbox` Docker helpers | Docker API style only; **policy is Cloud Harness**, not GoClaw mode/off defaults |
+| slog / structured logs | slog; never log secrets |
+
+Do not `require` `github.com/nextlevelbuilder/goclaw`.
