@@ -1,8 +1,7 @@
-# Go network-guard image for the opt-in compose.go.yaml overlay.
-# TypeScript docker/network-guard.Dockerfile remains the shipped
-# NETWORK_GUARD_IMAGE until Compose switches. Must not publish a host
-# port, receive docker.sock, or carry secrets. iptables-save stays in
-# the image because attestation reads the host netns via NET_ADMIN.
+# Go network-guard image shipped by compose.yaml as NETWORK_GUARD_IMAGE.
+# TypeScript docker/network-guard.Dockerfile remains in-tree. Must not
+# publish a host port, receive docker.sock, or carry secrets. iptables-save
+# stays in the image because attestation reads the host netns via NET_ADMIN.
 FROM golang:1.26-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./

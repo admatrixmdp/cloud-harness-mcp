@@ -18,7 +18,8 @@ func main() {
 		Long: `NET_ADMIN-only probe. Prints iptables-save on stdout and exits.
 
 Must not publish a host port, receive secrets, or mount docker.sock.
-Overlay-only: compose.yaml still ships docker/network-guard.Dockerfile.`,
+compose.yaml ships docker/go-network-guard.Dockerfile; the TypeScript
+iptables-save image remains in-tree.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return netguard.Dump(os.Stdout, netguard.Options{})

@@ -1,6 +1,6 @@
-# Go executor image for the opt-in compose.go.yaml overlay.
-# TypeScript docker/executor.Dockerfile remains the shipped image until Compose
-# switches. This file must not publish a host port or mount docker.sock.
+# Go executor image shipped by compose.yaml.
+# TypeScript docker/executor.Dockerfile remains in-tree.
+# This file must not publish a host port or mount docker.sock.
 FROM oven/bun:1.2-slim AS bun-source
 FROM ghcr.io/astral-sh/uv:latest AS uv-source
 

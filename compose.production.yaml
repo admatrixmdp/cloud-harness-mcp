@@ -73,7 +73,8 @@ services:
 
   agent-image-keepalive:
     image: cloud-harness-agent:local
-    command: ["sleep", "infinity"]
+    entrypoint: ["/agent-runtime"]
+    command: ["--hold"]
     read_only: true
     network_mode: none
     cap_drop: [ALL]

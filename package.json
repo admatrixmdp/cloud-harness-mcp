@@ -51,7 +51,7 @@
     "plugin:sync": "node scripts/sync-cloudharness-plugin-skill.mjs",
     "release:dry-run": "semantic-release --dry-run --no-ci",
     "verify:production": "node scripts/verify-production.mjs",
-    "verify:compose": "node scripts/verify-compose-boundaries.mjs",
+    "verify:compose": "node scripts/verify-compose-boundaries.mjs && node scripts/verify-go-compose-overlay.mjs",
     "verify": "npm run plugin:check && npm run lint && npm run typecheck && npm test && npm run build",
     "verify:typesafe": "node scripts/verify-typesafe.mjs"
   },

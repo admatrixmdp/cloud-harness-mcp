@@ -1,7 +1,6 @@
-# Go agent-runtime image for the opt-in compose.go.yaml overlay.
-# TypeScript docker/agent.Dockerfile remains the shipped AGENT_IMAGE until
-# Compose switches. Must not publish a host port, receive docker.sock, or
-# carry provider credentials.
+# Go agent-runtime image shipped by compose.yaml as AGENT_IMAGE.
+# TypeScript docker/agent.Dockerfile remains in-tree.
+# Must not publish a host port, receive docker.sock, or carry provider credentials.
 FROM golang:1.26-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./

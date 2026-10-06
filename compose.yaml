@@ -5,7 +5,9 @@ services:
     image: cloud-harness-api:local
     build:
       context: .
-      dockerfile: docker/api.Dockerfile
+      dockerfile: docker/go-api.Dockerfile
+    entrypoint: ["/cloud-harness-mcp"]
+    command: ["--listen", "0.0.0.0:3000"]
     restart: unless-stopped
     env_file: ${CLOUD_HARNESS_ENV_FILE:-.env}
     environment:
@@ -32,7 +34,7 @@ services:
     security_opt: [no-new-privileges:true]
     networks: [frontend, control, api-egress]
     healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)})"]
+      test: ["CMD", "/cloud-harness-mcp", "--healthcheck"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -40,7 +42,8 @@ services:
   ingress:
     image: cloud-harness-api:local
     restart: unless-stopped
-    command: ["node", "/app/deploy/ingress-proxy.mjs"]
+    entrypoint: ["/ingress-proxy"]
+    command: []
     environment:
       INGRESS_HOST: 0.0.0.0
       INGRESS_PORT: 3100
@@ -58,7 +61,7 @@ services:
     security_opt: [no-new-privileges:true]
     networks: [frontend, ingress]
     healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:3100/readyz').then(r=>{if(!r.ok)process.exit(1)})"]
+      test: ["CMD", "/ingress-proxy", "--healthcheck"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -67,7 +70,9 @@ services:
     image: cloud-harness-runner:local
     build:
       context: .
-      dockerfile: docker/runner.Dockerfile
+      dockerfile: docker/go-runner.Dockerfile
+    entrypoint: ["/runner"]
+    command: ["--listen", "0.0.0.0:3001"]
     restart: unless-stopped
     env_file: ${CLOUD_HARNESS_ENV_FILE:-.env}
     environment:
@@ -92,7 +97,7 @@ services:
       model-gateway:
         condition: service_healthy
     healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:3001/healthz').then(r=>{if(!r.ok)process.exit(1)})"]
+      test: ["CMD", "/runner", "--healthcheck"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -100,7 +105,8 @@ services:
   provisioning-proxy:
     image: cloud-harness-api:local
     restart: unless-stopped
-    command: ["node", "/app/deploy/provisioning-proxy.mjs"]
+    entrypoint: ["/provisioning-proxy"]
+    command: []
     environment:
       PROVISIONING_PROXY_HOST: 0.0.0.0
       PROVISIONING_PROXY_PORT: 3128
@@ -113,12 +119,17 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     networks: [provisioning, runner-egress]
+    healthcheck:
+      test: ["CMD", "/provisioning-proxy", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
 
   executor-image:
     image: cloud-harness-executor:local
     build:
       context: .
-      dockerfile: docker/executor.Dockerfile
+      dockerfile: docker/go-executor.Dockerfile
     profiles: [images]
     command: ["true"]
 
@@ -126,7 +137,7 @@ services:
     image: cloud-harness-network-guard:local
     build:
       context: .
-      dockerfile: docker/network-guard.Dockerfile
+      dockerfile: docker/go-network-guard.Dockerfile
     profiles: [images]
     command: ["true"]
 
@@ -134,15 +145,17 @@ services:
     image: cloud-harness-agent:local
     build:
       context: .
-      dockerfile: docker/agent.Dockerfile
+      dockerfile: docker/go-agent.Dockerfile
     profiles: [images]
-    command: ["true"]
+    command: ["--hold"]
 
   model-gateway:
     image: cloud-harness-model-gateway:local
     build:
       context: .
-      dockerfile: docker/model-gateway.Dockerfile
+      dockerfile: docker/go-model-gateway.Dockerfile
+    entrypoint: ["/model-gateway"]
+    command: ["--listen", "0.0.0.0:3210"]
     restart: unless-stopped
     environment:
       MODEL_GATEWAY_MODE: production
@@ -163,13 +176,13 @@ services:
     security_opt: [no-new-privileges:true]
     networks: [provider-egress]
     healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:3210/healthz').then(r=>{if(!r.ok)process.exit(1)})"]
+      test: ["CMD", "/model-gateway", "--healthcheck"]
       interval: 10s
       timeout: 3s
       retries: 6
 
   model-gateway-test:
-    image: cloud-harness-model-gateway:local
+    image: cloud-harness-model-gateway-ts:local
     build:
       context: .
       dockerfile: docker/model-gateway.Dockerfile
@@ -196,7 +209,10 @@ services:
     networks: [model-gateway-test-agent, provider-egress-test]
 
   fake-provider:
-    image: cloud-harness-model-gateway:local
+    image: cloud-harness-model-gateway-ts:local
+    build:
+      context: .
+      dockerfile: docker/model-gateway.Dockerfile
     profiles: [gateway-test]
     command: [node, apps/model-gateway/dist/fake-provider.js]
     environment:

@@ -1,5 +1,5 @@
-# Go API binary. TypeScript docker/api.Dockerfile remains the shipped image
-# until Compose is switched. This file must not publish a host port.
+# Go API binary shipped by compose.yaml. TypeScript docker/api.Dockerfile
+# remains in-tree. This file must not publish a host port.
 FROM golang:1.26-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
