@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/audit"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 
@@ -80,6 +81,56 @@ func TestDashboardPrivilegeGrantRPC(t *testing.T) {
 	}
 	if !approved.OK {
 		t.Fatalf("%+v", approved)
+	}
+}
+
+func TestDashboardAuditListRPC(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "audit.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := audit.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Record("owner", "workspace_open", "workspace", "ws_1", 1, map[string]any{"ok": true}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil).WithAudit(store)
+	listed := svc.Execute(t.Context(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAuditList, Input: json.RawMessage(`{"limit":50}`),
+	})
+	if !listed.OK {
+		t.Fatalf("%+v", listed)
+	}
+	data, _ := listed.Data.(map[string]any)
+	events, _ := data["events"].([]map[string]any)
+	if len(events) == 0 {
+		if raw, ok := data["events"].([]any); ok {
+			if len(raw) != 1 {
+				t.Fatalf("events %v", listed.Data)
+			}
+		} else {
+			t.Fatalf("events %v", listed.Data)
+		}
+	}
+	raw, _ := json.Marshal(listed.Data)
+	if !bytes.Contains(raw, []byte(`"workspace_open"`)) {
+		t.Fatalf("missing action %s", raw)
+	}
+	if protocol.OpAuditList.Known() || !protocol.OpAuditList.Dashboard() {
+		t.Fatal("audit_list must stay dashboard-only")
+	}
+	foreign := svc.Execute(t.Context(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "other", Operation: protocol.OpAuditList, Input: json.RawMessage(`{}`),
+	})
+	if !foreign.OK {
+		t.Fatalf("%+v", foreign)
+	}
+	foreignRaw, _ := json.Marshal(foreign.Data)
+	if bytes.Contains(foreignRaw, []byte("workspace_open")) {
+		t.Fatal("audit leaked across principals")
 	}
 }
 

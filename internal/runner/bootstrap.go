@@ -10,6 +10,7 @@ import (
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/agent"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/audit"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/hooks"
@@ -172,6 +173,9 @@ func ProductionService(getenv Env) (*Service, error) {
 		svc = svc.WithMCPGateway(gw)
 		if grantStore, err := grants.Open(db); err == nil {
 			svc = svc.WithGrants(grantStore)
+		}
+		if auditStore, err := audit.Open(db); err == nil {
+			svc = svc.WithAudit(auditStore)
 		}
 		if hookStore, err := hooks.Open(db); err == nil {
 			svc = svc.WithHooks(hookStore)

@@ -33,6 +33,8 @@ func (s *Service) dashboard(ctx context.Context, req protocol.RunnerRequest) pro
 		return s.artifactsRestore(ctx, req)
 	case protocol.OpArtifactDelete:
 		return s.artifactsDelete(req)
+	case protocol.OpAuditList:
+		return s.auditList(req)
 	case protocol.OpPrivilegeGrantList:
 		if s.grants == nil {
 			return protocol.Fail(protocol.ErrorUnavailable, "privilege grant store is unavailable", true)
@@ -86,6 +88,47 @@ func (s *Service) dashboard(ctx context.Context, req protocol.RunnerRequest) pro
 	default:
 		return protocol.Fail(protocol.ErrorInvalidInput, "unknown dashboard operation", false)
 	}
+}
+
+func (s *Service) auditList(req protocol.RunnerRequest) protocol.ToolResult {
+	if s.audit == nil {
+		return protocol.Fail(protocol.ErrorUnavailable, "audit store is unavailable", true)
+	}
+	var input struct {
+		Cursor string `json:"cursor"`
+		Limit  int    `json:"limit"`
+	}
+	if len(req.Input) > 0 {
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid audit_list input", false)
+		}
+	}
+	if input.Cursor != "" && !protocol.ValidOpaqueID(protocol.PrefixAudit, input.Cursor) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "cursor is invalid", false)
+	}
+	if input.Limit < 0 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "limit is invalid", false)
+	}
+	rows, err := s.audit.List(req.OwnerID, input.Cursor, input.Limit)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), true)
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, e := range rows {
+		out = append(out, e.PublicJSON())
+	}
+	res := protocol.Success("Audit events listed", map[string]any{"events": out})
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if len(rows) == limit && limit > 0 {
+		res.Cursor = rows[len(rows)-1].ID
+	}
+	return res
 }
 
 func grantIDFrom(raw json.RawMessage) string {

@@ -239,6 +239,18 @@ func dashboardHandler(opts Options, sessions *Sessions) http.Handler {
 		delete(body, "default")
 		proxyDashboard(w, r, opts.Runner, protocol.OpMCPServerSetPermissions, mergeServerID(body, serverID))
 	})))))
+	mux.Handle("GET /api/v1/audit", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyDashboard(w, r, opts.Runner, protocol.OpAuditList, pageQuery(r))
+	})))
+	mux.Handle("GET /api/v1/overview", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeOverview(w, r, opts.Runner)
+	})))
+	mux.Handle("GET /api/v1/metrics", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeMetrics(w, r, opts.Runner)
+	})))
+	mux.Handle("GET /api/v1/reliability", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeReliability(w, r, opts.Runner)
+	})))
 	mux.Handle("GET /api/v1/artifacts", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxyDashboard(w, r, opts.Runner, protocol.OpArtifactList, pageQuery(r))
 	})))
@@ -622,6 +634,8 @@ func projectDashboard(op protocol.Operation, data any) any {
 		return projectMCPServer(obj)
 	case protocol.OpMCPGatewayTraceList:
 		return map[string]any{"traces": projectObjects(obj["traces"], "id", "serverId", "serverName", "tool", "operation", "clientId", "durationMs", "status", "errorCode", "errorMessage", "requestBytes", "responseBytes", "createdAt")}
+	case protocol.OpAuditList:
+		return map[string]any{"events": projectObjects(obj["events"], "id", "action", "subjectType", "subjectId", "subjectGeneration", "details", "createdAt")}
 	case protocol.OpArtifactList:
 		return map[string]any{"artifacts": projectObjects(obj["artifacts"], artifactKeys...)}
 	case protocol.OpArtifactSnapshot, protocol.OpArtifactDelete:

@@ -100,6 +100,9 @@ func TestInternalGatewayOpsStayOffPublicCatalog(t *testing.T) {
 	if protocol.OpArtifactList.Known() || protocol.OpArtifactSnapshot.Known() || protocol.OpArtifactRead.Known() || protocol.OpArtifactRestore.Known() || protocol.OpArtifactDelete.Known() {
 		t.Fatal("dashboard artifact_* aliases must not be public /mcp tools")
 	}
+	if protocol.OpAuditList.Known() || !protocol.OpAuditList.Dashboard() {
+		t.Fatal("audit_list must not be a public /mcp tool")
+	}
 	if len(protocol.AllOperations) != 92 {
 		t.Fatalf("AllOperations = %d", len(protocol.AllOperations))
 	}

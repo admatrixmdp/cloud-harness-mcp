@@ -58,6 +58,9 @@ func TestAllOperationsMatchCatalogCount(t *testing.T) {
 	if !OpArtifactSnapshot.Dashboard() || OpArtifactRead.Known() || OpArtifactRestore.Internal() || OpArtifactDelete.Known() {
 		t.Fatal("artifact_snapshot/read/restore/delete must be dashboard-only")
 	}
+	if !OpAuditList.Dashboard() || OpAuditList.Known() || OpAuditList.Internal() {
+		t.Fatal("audit_list must be dashboard-only, not a public /mcp tool")
+	}
 }
 
 func TestOperationJSONIsBareString(t *testing.T) {

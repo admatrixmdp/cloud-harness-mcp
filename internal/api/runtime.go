@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcp"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
@@ -251,7 +252,7 @@ func writeActivity(w http.ResponseWriter, r *http.Request, runner *mcp.RunnerCli
 		mapped, _ := projectDashboard(protocol.OpAgentList, agentsResult.Data).(map[string]any)
 		agents = asObjectList(mapped["agents"])
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": buildActivityProjection(nil, agents, workspaceID)})
+	writeJSON(w, http.StatusOK, map[string]any{"data": buildActivityProjection(listAuditEvents(r, runner), agents, workspaceID)})
 }
 
 func buildActivityProjection(events, agents []map[string]any, workspaceID string) map[string]any {
@@ -262,7 +263,7 @@ func buildActivityProjection(events, agents []map[string]any, workspaceID string
 			continue
 		}
 		rows = append(rows, map[string]any{
-			"at":       event["createdAt"],
+			"at":       instantISO(event["createdAt"]),
 			"category": categoryFor(event["action"], event["subjectType"]),
 			"status":   "recorded",
 			"actor":    strings.TrimSpace(str(event["subjectType"]) + " " + str(event["subjectId"])),
@@ -280,7 +281,7 @@ func buildActivityProjection(events, agents []map[string]any, workspaceID string
 		}
 		id := str(agent["agentId"])
 		rows = append(rows, map[string]any{
-			"at":       at,
+			"at":       instantISO(at),
 			"category": "agents",
 			"status":   strings.ToLower(str(agent["status"])),
 			"actor":    str(agent["workspaceId"]),
@@ -358,6 +359,14 @@ func agentNeedsAttention(agent map[string]any) bool {
 func str(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+func instantISO(v any) any {
+	ms, ok := parseInstant(v)
+	if !ok {
+		return v
+	}
+	return time.UnixMilli(ms).UTC().Format(time.RFC3339Nano)
 }
 
 func firstNonEmpty(values ...string) string {

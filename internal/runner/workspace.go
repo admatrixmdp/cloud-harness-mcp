@@ -17,6 +17,7 @@ import (
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/agent"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/audit"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/executor"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
@@ -94,6 +95,7 @@ type Service struct {
 	cloner    *git.Cloner
 	secrets   *secrets.Store
 	artifacts *artifacts.Store
+	audit     *audit.Store
 	memories  *memories.Store
 	knowledge *knowledge.Store
 	hooks     *hooks.Store
@@ -131,6 +133,12 @@ func (s *Service) WithSecrets(sec *secrets.Store) *Service {
 // WithArtifacts attaches retained snapshot storage. Local stdio never hosts this.
 func (s *Service) WithArtifacts(store *artifacts.Store) *Service {
 	s.artifacts = store
+	return s
+}
+
+// WithAudit attaches retained dashboard audit events. Local stdio never hosts this.
+func (s *Service) WithAudit(store *audit.Store) *Service {
+	s.audit = store
 	return s
 }
 

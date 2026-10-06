@@ -25,6 +25,7 @@ const (
 	PrefixEnvironment           = "env"
 	PrefixSecret                = "sec"
 	PrefixArtifact              = "art"
+	PrefixAudit                 = "aud"
 )
 
 const opaqueAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"

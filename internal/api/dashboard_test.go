@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	apiembed "github.com/bestagentkits/cloud-harness-mcp/apps/api"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/audit"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcp"
@@ -25,6 +27,12 @@ import (
 )
 
 func dashboardFixture(t *testing.T) (http.Handler, *grants.Store) {
+	t.Helper()
+	h, store, _ := dashboardStores(t)
+	return h, store
+}
+
+func dashboardStores(t *testing.T) (http.Handler, *grants.Store, *audit.Store) {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "grants.sqlite"))
 	if err != nil {
@@ -47,8 +55,12 @@ func dashboardFixture(t *testing.T) (http.Handler, *grants.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	aud, err := audit.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
 	svc := runner.NewService(runner.Config{NetworkProfile: protocol.NetworkNone, JobsRoot: t.TempDir()}, nil, nil).
-		WithGrants(store).WithKnowledge(kn).WithMCPGateway(gw).WithArtifacts(art)
+		WithGrants(store).WithKnowledge(kn).WithMCPGateway(gw).WithArtifacts(art).WithAudit(aud)
 	inner := httptest.NewServer(runner.Handler(runner.Options{Service: svc}))
 	t.Cleanup(inner.Close)
 	h := Handler(Options{
@@ -60,7 +72,7 @@ func dashboardFixture(t *testing.T) (http.Handler, *grants.Store) {
 			return []net.IP{net.ParseIP("93.184.216.34")}, nil
 		},
 	})
-	return h, store
+	return h, store, aud
 }
 
 func dashboardDo(t *testing.T, h http.Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
@@ -873,5 +885,175 @@ func TestDashboardProfileAndPreferences(t *testing.T) {
 	badName := dashboardDo(t, h, http.MethodPut, "/dashboard/api/v1/preferences", `{"displayName":"<script>"}`, auth)
 	if badName.Code != http.StatusBadRequest {
 		t.Fatalf("bad name %d %s", badName.Code, badName.Body.String())
+	}
+}
+
+func TestOverviewMetricsReliabilityProjections(t *testing.T) {
+	now := time.Date(2026, 8, 17, 1, 0, 0, 0, time.UTC).UnixMilli()
+	ws := func(id, status string, expiresMinutes int) map[string]any {
+		return map[string]any{
+			"workspaceId": id, "status": status,
+			"expiresAt": time.UnixMilli(now + int64(expiresMinutes)*60_000).UTC().Format(time.RFC3339Nano),
+		}
+	}
+	agent := func(id, status string, cost int64, startedMinutesAgo int) map[string]any {
+		return map[string]any{
+			"agentId": id, "status": status, "usage": map[string]any{"costMicros": cost},
+			"startedAt": time.UnixMilli(now - int64(startedMinutesAgo)*60_000).UTC().Format(time.RFC3339Nano),
+		}
+	}
+
+	projection := buildOverviewProjection(
+		[]map[string]any{
+			ws("ws_"+strings.Repeat("c", 24), "FAILED", 120),
+			ws("ws_"+strings.Repeat("d", 24), "NETWORK_QUARANTINED", 120),
+			ws("ws_"+strings.Repeat("e", 24), "ACTIVE", 5),
+			ws("ws_"+strings.Repeat("f", 24), "ACTIVE", 600),
+		},
+		[]map[string]any{
+			agent("agent_"+strings.Repeat("g", 24), "FAILED", 0, 1),
+			agent("agent_"+strings.Repeat("h", 24), "LIMIT_EXCEEDED", 0, 1),
+			agent("agent_"+strings.Repeat("i", 24), "RUNNING", 250_000, 1),
+		},
+		[]map[string]any{{"id": "grant_1"}, {"id": "grant_2"}},
+		now,
+	)
+	ids := make([]string, 0)
+	for _, item := range asObjectList(projection["attention"]) {
+		ids = append(ids, str(item["id"]))
+		if !strings.HasPrefix(str(item["href"]), "/dashboard") {
+			t.Fatalf("href %v", item["href"])
+		}
+	}
+	joined := strings.Join(ids, ",")
+	for _, want := range []string{
+		"workspace-failed-ws_" + strings.Repeat("c", 24),
+		"workspace-quarantined-ws_" + strings.Repeat("d", 24),
+		"workspace-expiring-ws_" + strings.Repeat("e", 24),
+		"agent-agent_" + strings.Repeat("g", 24),
+		"pending-approvals",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %s in %s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "ws_"+strings.Repeat("f", 24)) || strings.Contains(joined, "agent_"+strings.Repeat("i", 24)) {
+		t.Fatalf("healthy rows in attention %s", joined)
+	}
+
+	costed := buildOverviewProjection(
+		[]map[string]any{ws("ws_"+strings.Repeat("a", 24), "ACTIVE", 120), ws("ws_"+strings.Repeat("c", 24), "CLOSED", 120)},
+		[]map[string]any{
+			agent("agent_"+strings.Repeat("b", 24), "RUNNING", 1_000_000, 1),
+			agent("agent_"+strings.Repeat("j", 24), "SUCCEEDED", 9_000_000, 1),
+		},
+		nil, now,
+	)
+	running, _ := costed["running"].(map[string]any)
+	if running["agents"] != 1 || running["workspaces"] != 1 {
+		t.Fatalf("running %+v", running)
+	}
+	cost, _ := costed["cost"].(map[string]any)
+	if cost["scope"] != "running agents" || numberInt64(cost["costMicros"]) != 1_000_000 || cost["agentCount"] != 1 {
+		t.Fatalf("cost %+v", cost)
+	}
+
+	empty := buildOverviewProjection(nil, nil, nil, now)
+	if len(asObjectList(empty["attention"])) != 0 {
+		t.Fatal("empty attention")
+	}
+	if empty["agentSeriesScope"] != "no agents on record" {
+		t.Fatalf("scope %v", empty["agentSeriesScope"])
+	}
+
+	events := []map[string]any{
+		{"action": "workspace_open", "subjectType": "workspace", "createdAt": time.UnixMilli(now - 30*60_000).UTC().Format(time.RFC3339Nano)},
+		{"action": "workspace_close", "subjectType": "workspace", "createdAt": time.UnixMilli(now - 3*3_600_000).UTC().Format(time.RFC3339Nano)},
+		{"action": "skill_import_start", "subjectType": "skill", "createdAt": time.UnixMilli(now - 6*86_400_000).UTC().Format(time.RFC3339Nano)},
+	}
+	hour := buildMetricsProjection(events, "1h", now, 12)
+	if hour["eventCount"] != 1 {
+		t.Fatalf("hour count %v", hour["eventCount"])
+	}
+	cats, _ := hour["categories"].(map[string]int)
+	if cats["workspace"] != 1 {
+		t.Fatalf("hour cats %+v", cats)
+	}
+	week := buildMetricsProjection(events, "7d", now, 12)
+	if week["eventCount"] != 3 {
+		t.Fatalf("week count %v", week["eventCount"])
+	}
+
+	traces := []map[string]any{
+		{"serverId": "mcps_a", "serverName": "linear", "durationMs": 10, "status": "ok"},
+		{"serverId": "mcps_a", "serverName": "linear", "durationMs": 20, "status": "ok"},
+		{"serverId": "mcps_a", "serverName": "linear", "durationMs": 30, "status": "error", "errorCode": "TIMEOUT"},
+		{"serverId": "mcps_a", "serverName": "linear", "durationMs": 40, "status": "ok"},
+		{"serverId": "mcps_a", "serverName": "linear", "durationMs": 50, "status": "ok"},
+		{"serverId": "mcps_b", "serverName": "jira", "durationMs": 5, "status": "ok"},
+	}
+	rel := buildReliabilityProjection(traces)
+	if rel["totalCalls"] != 6 {
+		t.Fatalf("calls %v", rel["totalCalls"])
+	}
+	var linear map[string]any
+	for _, row := range asObjectList(rel["servers"]) {
+		if str(row["serverId"]) == "mcps_a" {
+			linear = row
+		}
+	}
+	if linear["success"] != 4 || linear["error"] != 1 || linear["calls"] != 5 || linear["p50Ms"] != 30.0 || linear["p95Ms"] != 50.0 {
+		t.Fatalf("linear %+v", linear)
+	}
+	emptyRel := buildReliabilityProjection(nil)
+	if emptyRel["totalCalls"] != 0 || len(asObjectList(emptyRel["servers"])) != 0 {
+		t.Fatalf("empty rel %+v", emptyRel)
+	}
+}
+
+func TestDashboardOverviewMetricsAudit(t *testing.T) {
+	h, store, aud := dashboardStores(t)
+	if _, err := store.Create("owner", "ws_abcdefghijklmnopqrstuvwx", grants.SkillGrantCommand("tdd", "run.sh", "aa"), ".", 60_000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := aud.Record("owner", "workspace_open", "workspace", "ws_abcdefghijklmnopqrstuvwx", 1, map[string]any{"ok": true}); err != nil {
+		t.Fatal(err)
+	}
+	auth := map[string]string{"Authorization": "Bearer owner-secret"}
+
+	overview := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/overview", "", auth)
+	if overview.Code != 200 {
+		t.Fatalf("overview %d %s", overview.Code, overview.Body.String())
+	}
+	if !strings.Contains(overview.Body.String(), `"pending-approvals"`) || strings.Contains(overview.Body.String(), "owner-secret") {
+		t.Fatalf("overview body %s", overview.Body.String())
+	}
+
+	metrics := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/metrics?window=24h", "", auth)
+	if metrics.Code != 200 || !strings.Contains(metrics.Body.String(), `"eventCount":1`) {
+		t.Fatalf("metrics %d %s", metrics.Code, metrics.Body.String())
+	}
+	badWindow := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/metrics?window=30d", "", auth)
+	if badWindow.Code != http.StatusBadRequest {
+		t.Fatalf("window %d %s", badWindow.Code, badWindow.Body.String())
+	}
+
+	auditList := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/audit?limit=50", "", auth)
+	if auditList.Code != 200 || !strings.Contains(auditList.Body.String(), `"workspace_open"`) {
+		t.Fatalf("audit %d %s", auditList.Code, auditList.Body.String())
+	}
+
+	activity := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/activity", "", auth)
+	if activity.Code != 200 || !strings.Contains(activity.Body.String(), `"durable":true`) {
+		t.Fatalf("activity %d %s", activity.Code, activity.Body.String())
+	}
+
+	reliability := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/reliability", "", auth)
+	if reliability.Code != 200 || !strings.Contains(reliability.Body.String(), `"totalCalls":0`) {
+		t.Fatalf("reliability %d %s", reliability.Code, reliability.Body.String())
+	}
+
+	if protocol.OpAuditList.Known() || !protocol.OpAuditList.Dashboard() {
+		t.Fatal("audit_list must stay dashboard-only")
 	}
 }

@@ -149,6 +149,8 @@ const (
 	OpArtifactRead     Operation = "artifact_read"
 	OpArtifactRestore  Operation = "artifact_restore"
 	OpArtifactDelete   Operation = "artifact_delete"
+
+	OpAuditList Operation = "audit_list"
 )
 
 // AllOperations is the ordered public MCP tool catalog from RunnerOperationSchema.
@@ -238,7 +240,8 @@ func (op Operation) Dashboard() bool {
 		OpKnowledgeDashboardList, OpKnowledgeDashboardGet, OpKnowledgeDashboardCreate, OpKnowledgeDashboardUpdate,
 		OpKnowledgeDashboardDelete, OpKnowledgeDashboardSearch, OpKnowledgeDashboardGraph,
 		OpKnowledgeDashboardLinkCreate, OpKnowledgeDashboardLinkDelete,
-		OpArtifactList, OpArtifactSnapshot, OpArtifactRead, OpArtifactRestore, OpArtifactDelete:
+		OpArtifactList, OpArtifactSnapshot, OpArtifactRead, OpArtifactRestore, OpArtifactDelete,
+		OpAuditList:
 		return true
 	default:
 		return false
