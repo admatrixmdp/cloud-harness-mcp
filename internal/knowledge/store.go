@@ -116,7 +116,7 @@ func (i Item) PublicJSON() map[string]any {
 	return out
 }
 
-// Store keeps knowledge items in SQLite. FTS/embeddings stay unwired in this slice.
+// Store keeps knowledge items in SQLite. Search uses FTS5 + local hashed embeddings fused with RRF.
 type Store struct {
 	db *sql.DB
 }
@@ -177,6 +177,18 @@ CREATE TABLE IF NOT EXISTS knowledge_links (
 );
 CREATE INDEX IF NOT EXISTS knowledge_links_source_idx ON knowledge_links(principal_id, source_id);
 CREATE INDEX IF NOT EXISTS knowledge_links_target_idx ON knowledge_links(principal_id, target_id);
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(item_id UNINDEXED, title, tags, content, tokenize='unicode61');
+CREATE TABLE IF NOT EXISTS knowledge_embeddings (
+  principal_id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  chunk_ordinal INTEGER NOT NULL,
+  chunk_sha256 TEXT NOT NULL,
+  vector_blob BLOB NOT NULL,
+  dimensions INTEGER NOT NULL,
+  model_fingerprint TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(principal_id, item_id, chunk_ordinal, model_fingerprint)
+);
 `); err != nil {
 		return nil, err
 	}
@@ -352,9 +364,13 @@ func (s *Store) Create(p CreateParams) (Item, error) {
 			return Item{}, fail(protocol.ErrorInternal, err.Error())
 		}
 	}
+	if err := upsertFTS(tx, id, title, tags, p.Content); err != nil {
+		return Item{}, fail(protocol.ErrorInternal, err.Error())
+	}
 	if err := tx.Commit(); err != nil {
 		return Item{}, fail(protocol.ErrorInternal, err.Error())
 	}
+	s.indexEmbeddings(p.PrincipalID, id, title, p.Content)
 	item := Item{
 		ID: id, PrincipalID: p.PrincipalID, Kind: p.Kind, Scope: p.Scope, ProjectID: p.ProjectID,
 		WorkspaceID: p.WorkspaceID, Title: title, Content: p.Content, ContentSHA256: sha,
@@ -478,9 +494,13 @@ func (s *Store) Update(p UpdateParams) (Item, error) {
 			}
 		}
 	}
+	if err := upsertFTS(tx, item.ID, item.Title, item.Tags, item.Content); err != nil {
+		return Item{}, fail(protocol.ErrorInternal, err.Error())
+	}
 	if err := tx.Commit(); err != nil {
 		return Item{}, fail(protocol.ErrorInternal, err.Error())
 	}
+	s.indexEmbeddings(p.PrincipalID, item.ID, item.Title, item.Content)
 	item.Generation = next
 	item.UpdatedAt = now
 	return item, nil
@@ -506,6 +526,7 @@ func (s *Store) Delete(principalID, id string, expectedGeneration int) error {
 	if n != 1 {
 		return fail(protocol.ErrorConflict, "knowledge item generation conflict")
 	}
+	s.dropIndex(id)
 	return nil
 }
 
@@ -520,16 +541,15 @@ func (s *Store) List(p ListParams) ([]Item, string, error) {
 }
 
 func (s *Store) Search(p ListParams) ([]Item, string, error) {
-	if strings.TrimSpace(p.Query) == "" {
-		return nil, "", fail(protocol.ErrorInvalidInput, "query is required")
+	hits, next, err := s.SearchHits(p)
+	if err != nil {
+		return nil, "", err
 	}
-	if p.Limit <= 0 {
-		p.Limit = 20
+	out := make([]Item, 0, len(hits))
+	for _, hit := range hits {
+		out = append(out, hit.Item)
 	}
-	if p.Limit > 50 {
-		return nil, "", fail(protocol.ErrorInvalidInput, "limit must be between 1 and 50")
-	}
-	return s.query(p, p.Limit)
+	return out, next, nil
 }
 
 func (s *Store) query(p ListParams, limit int) ([]Item, string, error) {

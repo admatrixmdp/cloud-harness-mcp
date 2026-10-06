@@ -1659,7 +1659,7 @@ func (s *Service) knowledgeSearch(req protocol.RunnerRequest) protocol.ToolResul
 	if input.Limit != nil {
 		limit = *input.Limit
 	}
-	rows, next, err := store.Search(knowledge.ListParams{
+	hits, next, err := store.SearchHits(knowledge.ListParams{
 		PrincipalID: ownerID, Kind: input.Kind, Scope: input.Scope, ProjectID: input.ProjectID,
 		WorkspaceID: rec.ID, JournalType: input.JournalType, Tags: input.Tags, TagMatch: input.TagMatch,
 		Query: input.Query, Kinds: input.Kinds, Limit: limit, Cursor: input.Cursor,
@@ -1667,9 +1667,9 @@ func (s *Service) knowledgeSearch(req protocol.RunnerRequest) protocol.ToolResul
 	if err != nil {
 		return knowledgeFail(err)
 	}
-	results := make([]map[string]any, 0, len(rows))
-	for _, row := range rows {
-		results = append(results, map[string]any{"item": row.PublicJSON(), "relevancePercent": 100, "matchMode": "lexical"})
+	results := make([]map[string]any, 0, len(hits))
+	for _, hit := range hits {
+		results = append(results, hit.PublicJSON())
 	}
 	got := protocol.Success(fmt.Sprintf("Found %d matching knowledge items", len(results)), map[string]any{"results": results})
 	if next != "" {
