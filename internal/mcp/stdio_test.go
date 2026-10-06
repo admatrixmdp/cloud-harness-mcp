@@ -69,3 +69,19 @@ func TestServeStdioListsToolsAndConfinesWorkspace(t *testing.T) {
 		t.Fatalf("open: %+v", open.Result)
 	}
 }
+
+func TestLocalStdioDispatchesEveryPublicOperation(t *testing.T) {
+	backend := NewLocalBackend(t.TempDir(), false, false)
+	for _, op := range protocol.AllOperations {
+		res := backend.Call(context.Background(), op, nil)
+		if res.OK {
+			continue
+		}
+		if res.Error == nil {
+			t.Fatalf("%s failed without an error envelope: %+v", op, res)
+		}
+		if strings.Contains(res.Message, "has not implemented") || strings.Contains(res.Error.Message, "has not implemented") {
+			t.Fatalf("%s fell through to the unimplemented stub: %s", op, res.Message)
+		}
+	}
+}

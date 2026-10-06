@@ -1838,6 +1838,26 @@ func TestAgentSpawnRunsWhenLauncherWired(t *testing.T) {
 	}
 }
 
+func TestPublicCatalogOpsAreDispatched(t *testing.T) {
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)
+	for _, op := range protocol.AllOperations {
+		res := svc.Execute(context.Background(), protocol.RunnerRequest{
+			Version:   2,
+			OwnerID:   "owner",
+			Operation: op,
+		})
+		if res.OK {
+			continue
+		}
+		if res.Error == nil {
+			t.Fatalf("%s failed without an error envelope: %+v", op, res)
+		}
+		if strings.Contains(res.Message, "has not implemented") || strings.Contains(res.Error.Message, "has not implemented") {
+			t.Fatalf("%s fell through to the unimplemented stub: %s", op, res.Message)
+		}
+	}
+}
+
 func asAnyMaps(raw any) []map[string]any {
 	switch v := raw.(type) {
 	case []map[string]any:
