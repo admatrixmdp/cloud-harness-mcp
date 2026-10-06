@@ -14,6 +14,8 @@ type RequestIdentity struct {
 	Email     string
 	Name      string
 	ExpiresAt int64
+	// APIKeyID is set only on the /mcp-api-key lane. It never holds the secret.
+	APIKeyID string
 }
 
 // WithIdentity stores a verified identity on ctx.

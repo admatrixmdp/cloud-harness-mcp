@@ -197,6 +197,54 @@ func (c *RunnerClient) CallApiKeys(ctx context.Context, operation string, input 
 	return result
 }
 
+// AuthenticateApiKey posts {version:1,apiKey} to /v1/internal/api-keys.
+// The raw key is never logged. Transport failure is authentication_failed.
+func (c *RunnerClient) AuthenticateApiKey(ctx context.Context, apiKey string) (principal protocol.ExternalPrincipal, keyID string, ok bool) {
+	if c.BaseURL == "" || !protocol.ValidAPIKeyValue(apiKey) {
+		return protocol.ExternalPrincipal{}, "", false
+	}
+	body, err := json.Marshal(map[string]any{"version": 1, "apiKey": apiKey})
+	if err != nil {
+		return protocol.ExternalPrincipal{}, "", false
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/internal/api-keys", bytes.NewReader(body))
+	if err != nil {
+		return protocol.ExternalPrincipal{}, "", false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.ServiceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.ServiceToken)
+	}
+	res, err := c.http().Do(req)
+	if err != nil {
+		return protocol.ExternalPrincipal{}, "", false
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<16))
+	if err != nil {
+		return protocol.ExternalPrincipal{}, "", false
+	}
+	var parsed struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Principal protocol.ExternalPrincipal `json:"principal"`
+			KeyID     string                     `json:"keyId"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil || !parsed.OK {
+		return protocol.ExternalPrincipal{}, "", false
+	}
+	if parsed.Data.Principal.Kind != protocol.PrincipalExternal || parsed.Data.Principal.Issuer == "" || parsed.Data.Principal.Subject == "" {
+		return protocol.ExternalPrincipal{}, "", false
+	}
+	if !protocol.ValidAPIKeyID(parsed.Data.KeyID) {
+		return protocol.ExternalPrincipal{}, "", false
+	}
+	return parsed.Data.Principal, parsed.Data.KeyID, true
+}
+
 func (c *RunnerClient) identity(ctx context.Context) (string, json.RawMessage) {
 	if id, ok := auth.IdentityFrom(ctx); ok {
 		switch id.Mode {

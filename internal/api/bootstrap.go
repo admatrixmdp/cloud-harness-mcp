@@ -107,5 +107,31 @@ func ProductionOptions(getenv Env) (Options, error) {
 	enabled := strings.TrimSpace(strings.ToLower(getenv("API_KEY_AUTH_ENABLED")))
 	opts.APIKeyAuthEnabled = enabled == "true" || enabled == "1"
 	opts.APIKeyGatewayPublicURL = strings.TrimSpace(getenv("API_KEY_GATEWAY_PUBLIC_URL"))
+	opts.APIKeyGatewayAccessAudience = strings.TrimSpace(getenv("API_KEY_GATEWAY_ACCESS_AUDIENCE"))
+	opts.APIKeyGatewayServiceSubject = strings.TrimSpace(getenv("API_KEY_GATEWAY_SERVICE_SUBJECT"))
+	if opts.APIKeyAuthEnabled {
+		if mode != auth.ModeCloudflareAccess {
+			return Options{}, fmt.Errorf("API key gateway is only valid in cloudflare-access mode")
+		}
+		if opts.APIKeyGatewayAccessAudience == "" || opts.APIKeyGatewayServiceSubject == "" || opts.APIKeyGatewayPublicURL == "" {
+			return Options{}, fmt.Errorf("API_KEY_GATEWAY_ACCESS_AUDIENCE, API_KEY_GATEWAY_SERVICE_SUBJECT, and API_KEY_GATEWAY_PUBLIC_URL are required when API key authentication is enabled")
+		}
+		if !strings.HasPrefix(opts.APIKeyGatewayPublicURL, "https://") {
+			return Options{}, fmt.Errorf("API_KEY_GATEWAY_PUBLIC_URL must be https")
+		}
+		if !strings.HasPrefix(opts.APIKeyGatewayServiceSubject, "cf-service:") {
+			return Options{}, fmt.Errorf("API_KEY_GATEWAY_SERVICE_SUBJECT must be a Cloudflare service token subject")
+		}
+		if opts.APIKeyGatewayAccessAudience == strings.TrimSpace(getenv("CLOUDFLARE_ACCESS_AUDIENCE")) {
+			return Options{}, fmt.Errorf("API key gateway audience must differ from the main Access audience")
+		}
+		opts.APIKeyGatewayVerifier = auth.NewAccessVerifier(auth.AccessConfig{
+			Issuer:   strings.TrimSpace(getenv("CLOUDFLARE_ACCESS_ISSUER")),
+			Audience: opts.APIKeyGatewayAccessAudience,
+			JWKSURL:  strings.TrimSpace(getenv("CLOUDFLARE_ACCESS_JWKS_URL")),
+		}, nil, nil)
+	} else if opts.APIKeyGatewayAccessAudience != "" || opts.APIKeyGatewayServiceSubject != "" || opts.APIKeyGatewayPublicURL != "" {
+		return Options{}, fmt.Errorf("API key gateway settings require API key authentication to be enabled")
+	}
 	return opts, nil
 }

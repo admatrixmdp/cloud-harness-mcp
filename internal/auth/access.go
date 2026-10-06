@@ -21,19 +21,20 @@ const serviceSubjectPrefix = "cf-service:"
 type Failure string
 
 const (
-	FailMissingAssertion   Failure = "missing_assertion"
-	FailMalformedAssertion Failure = "malformed_assertion"
-	FailUnsupportedAlg     Failure = "unsupported_algorithm"
-	FailInvalidSignature   Failure = "invalid_signature"
-	FailUnknownKey         Failure = "unknown_key"
-	FailJWKSUnavailable    Failure = "jwks_unavailable"
-	FailWrongIssuer        Failure = "wrong_issuer"
-	FailWrongAudience      Failure = "wrong_audience"
-	FailWrongTokenType     Failure = "wrong_token_type"
-	FailInvalidSubject     Failure = "invalid_subject"
-	FailInvalidLifetime    Failure = "invalid_lifetime"
-	FailExpired            Failure = "expired_assertion"
-	FailInactive           Failure = "inactive_assertion"
+	FailMissingAssertion    Failure = "missing_assertion"
+	FailMalformedAssertion  Failure = "malformed_assertion"
+	FailUnsupportedAlg      Failure = "unsupported_algorithm"
+	FailInvalidSignature    Failure = "invalid_signature"
+	FailUnknownKey          Failure = "unknown_key"
+	FailJWKSUnavailable     Failure = "jwks_unavailable"
+	FailWrongIssuer         Failure = "wrong_issuer"
+	FailWrongAudience       Failure = "wrong_audience"
+	FailWrongTokenType      Failure = "wrong_token_type"
+	FailInvalidSubject      Failure = "invalid_subject"
+	FailInvalidLifetime     Failure = "invalid_lifetime"
+	FailExpired             Failure = "expired_assertion"
+	FailInactive            Failure = "inactive_assertion"
+	FailIdentityNotAccepted Failure = "assertion_identity_not_accepted"
 )
 
 // Error is a verification failure. Reason is loggable; the JWT is not.

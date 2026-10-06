@@ -26,10 +26,13 @@ type Options struct {
 	Runner         *mcp.RunnerClient
 	Security       SecurityConfig
 	// APIKeyAuthEnabled and APIKeyGatewayPublicURL project GET /api/v1/server.
-	APIKeyAuthEnabled      bool
-	APIKeyGatewayPublicURL string
-	MaxBodyBytes           int
-	RequestTimeoutMs       int
+	APIKeyAuthEnabled           bool
+	APIKeyGatewayPublicURL      string
+	APIKeyGatewayAccessAudience string
+	APIKeyGatewayServiceSubject string
+	APIKeyGatewayVerifier       *auth.AccessVerifier
+	MaxBodyBytes                int
+	RequestTimeoutMs            int
 	// MCPGatewayAllowInsecureHTTP permits cleartext http:// downstream endpoints.
 	MCPGatewayAllowInsecureHTTP bool
 	// MCPGatewayAllowPrivateEndpoints permits RFC1918/loopback destinations except link-local/metadata.
@@ -57,6 +60,9 @@ func Handler(opts Options) http.Handler {
 	})
 	mux.Handle("/mcp", authenticate(opts, mcp.HandlerWith(mcp.HandlerOptions{Runner: opts.Runner})))
 	mux.Handle("/mcp-gateway", authenticate(opts, mcp.GatewayHandlerWith(mcp.HandlerOptions{Runner: opts.Runner})))
+	if opts.APIKeyAuthEnabled {
+		mux.Handle("/mcp-api-key", withAPIKeyGateway(opts, mcp.HandlerWith(mcp.HandlerOptions{Runner: opts.Runner})))
+	}
 	sessions := newSessions()
 	dash := authenticate(opts, stripDashboard(dashboardHandler(opts, sessions)))
 	mux.Handle("/dashboard", dash)
@@ -70,12 +76,13 @@ func Handler(opts Options) http.Handler {
 
 func authenticate(opts Options, next http.Handler) http.Handler {
 	if opts.Mode == auth.ModeCloudflareAccess {
-		return withAccess(opts.AccessVerifier, next)
+		return withAccess(opts, next)
 	}
 	return withBearer(opts.BearerToken, opts.OwnerID, next)
 }
 
-func withAccess(verifier *auth.AccessVerifier, next http.Handler) http.Handler {
+func withAccess(opts Options, next http.Handler) http.Handler {
+	verifier := opts.AccessVerifier
 	var active atomic.Int32
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if verifier == nil {
@@ -98,12 +105,12 @@ func withAccess(verifier *auth.AccessVerifier, next http.Handler) http.Handler {
 		assertion := r.Header.Get("Cf-Access-Jwt-Assertion")
 		id, err := verifier.Verify(assertion)
 		if err != nil {
-			reason := auth.ReasonOf(err)
-			path := r.URL.Path
-			if len(path) > 256 {
-				path = path[:256]
-			}
-			slog.Warn("access assertion rejected", "reason", string(reason), "path", path)
+			logAssertionRejected(r, auth.ReasonOf(err))
+			writeAuthFailed(w)
+			return
+		}
+		if opts.APIKeyGatewayServiceSubject != "" && id.Principal.Subject == opts.APIKeyGatewayServiceSubject {
+			logAssertionRejected(r, auth.FailIdentityNotAccepted)
 			writeAuthFailed(w)
 			return
 		}
@@ -117,6 +124,62 @@ func withAccess(verifier *auth.AccessVerifier, next http.Handler) http.Handler {
 		})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func withAPIKeyGateway(opts Options, next http.Handler) http.Handler {
+	var active atomic.Int32
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !opts.APIKeyAuthEnabled || opts.APIKeyGatewayVerifier == nil || opts.Runner == nil {
+			http.Error(w, `{"error":"not_found"}`, http.StatusNotFound)
+			return
+		}
+		if active.Load() >= maxAccessVerifications {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "too_many_requests"})
+			return
+		}
+		active.Add(1)
+		defer active.Add(-1)
+		id, err := opts.APIKeyGatewayVerifier.Verify(r.Header.Get("Cf-Access-Jwt-Assertion"))
+		if err != nil {
+			logAssertionRejected(r, auth.ReasonOf(err))
+			writeAuthFailed(w)
+			return
+		}
+		if id.Principal.Subject != opts.APIKeyGatewayServiceSubject {
+			logAssertionRejected(r, auth.FailIdentityNotAccepted)
+			writeAuthFailed(w)
+			return
+		}
+		authz := r.Header.Get("Authorization")
+		apiKey := ""
+		if strings.HasPrefix(authz, "Bearer ") && len(authz) <= 103 {
+			apiKey = strings.TrimSpace(authz[len("Bearer "):])
+		}
+		principal, keyID, ok := opts.Runner.AuthenticateApiKey(r.Context(), apiKey)
+		if !ok {
+			writeAuthFailed(w)
+			return
+		}
+		ctx := auth.WithIdentity(r.Context(), auth.RequestIdentity{
+			Mode:     auth.ModeCloudflareAccess,
+			Issuer:   principal.Issuer,
+			Subject:  principal.Subject,
+			Email:    principal.Email,
+			Name:     principal.Name,
+			APIKeyID: keyID,
+		})
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func logAssertionRejected(r *http.Request, reason auth.Failure) {
+	path := r.URL.Path
+	if len(path) > 256 {
+		path = path[:256]
+	}
+	slog.Warn("access assertion rejected", "reason", string(reason), "path", path)
 }
 
 func withBearer(token, ownerID string, next http.Handler) http.Handler {
