@@ -72,7 +72,7 @@ Local stdio executes confined file/search/exec tools in --workspace.`,
 				root = opts.Workspace
 			}
 			return mcp.ServeStdio(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), mcp.HandlerOptions{
-				Local: mcp.LocalBackend{Root: root, GitNetwork: opts.GitNetwork, GitPush: opts.GitPush},
+				Local: mcp.NewLocalBackend(root, opts.GitNetwork, opts.GitPush),
 			})
 		}
 		var runner *mcp.RunnerClient

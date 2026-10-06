@@ -23,7 +23,7 @@ func TestServeStdioListsToolsAndConfinesWorkspace(t *testing.T) {
 {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"workspace_open","arguments":{}}}
 `)
 	var out bytes.Buffer
-	if err := ServeStdio(context.Background(), in, &out, HandlerOptions{Local: LocalBackend{Root: root}}); err != nil {
+	if err := ServeStdio(context.Background(), in, &out, HandlerOptions{Local: NewLocalBackend(root, false, false)}); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")

@@ -10,7 +10,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | --- | --- | --- |
 | Streamable HTTP `/mcp` | `apps/api/src/mcp-server.ts`, `apps/api/src/app.ts` | `cmd/cloud-harness-mcp`, `internal/mcp`, `internal/api` |
 | MCP gateway `/mcp-gateway` | `apps/api/src/mcp-gateway/` | `internal/gateway` + runner `mcp_gateway_catalog`/`mcp_server_get_credentials` (internal RPCs, not public `/mcp` 92). Constant five-tool surface; search/inspect/execute load the runner catalog; denied execute is an ok `{allowed:false}` envelope and never opens a socket; inspect deny/disabled/unknown is `NOT_FOUND` with the same message; live execute is SSRF-gated, DNS-pinned, no redirects, credentials only on the configured origin+path. Local stdio stays empty/UNAVAILABLE. |
-| Local stdio | `apps/api/src/cli-options.ts`, `apps/api/src/local/` | `cmd/cloud-harness-mcp --transport stdio --workspace` (`internal/mcp.ServeStdio` + confined `LocalBackend` including write_batch/move/symbols/git local; `git_fetch`/`git_pull` require `--git-network`, `git_push` requires `--git-push`; host `git` stays confined, tokens never in argv; `workspace_open` remains unsupported) |
+| Local stdio | `apps/api/src/cli-options.ts`, `apps/api/src/local/` | `cmd/cloud-harness-mcp --transport stdio --workspace` (`internal/mcp.ServeStdio` + confined `LocalBackend` including write_batch/move/symbols/git local; `workspace_list`/`status`/`capabilities`/`lease_renew`/`close` plus in-process `git_identity_*`; `git_fetch`/`git_pull` require `--git-network`, `git_push` requires `--git-push`; host `git` stays confined, tokens never in argv; `workspace_open`/`set_active`/`finalize` remain unsupported) |
 
 ## Control plane
 
