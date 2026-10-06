@@ -185,6 +185,8 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.skillsRead(in)
 	case protocol.OpSkillsRun:
 		return w.skillsRun(ctx, in)
+	case protocol.OpSkillsRoster:
+		return w.skillsRoster()
 	case protocol.OpSkillSuggest:
 		return w.skillSuggest(in)
 	case protocol.OpSessionsList:

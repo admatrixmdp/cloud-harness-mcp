@@ -591,6 +591,38 @@ func TestHooksRunRequiresDigestAndRejectsMismatch(t *testing.T) {
 	}
 }
 
+func TestSkillsRosterIsWorkerInternalAndBoundsFields(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, ".cloud-harness", "skills", "tdd")
+	if err := os.MkdirAll(skillDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "---\ndescription: test driven development\n---\n\nWrite the test first.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := Workspace{Root: root}
+	got := ws.Execute(context.Background(), protocol.OpSkillsRoster, json.RawMessage(`{}`))
+	if !got.OK {
+		t.Fatalf("roster: %+v", got)
+	}
+	data, _ := got.Data.(map[string]any)
+	entries := asMaps(data["entries"])
+	if len(entries) != 1 || entries[0]["name"] != "tdd" {
+		t.Fatalf("entries %+v", data["entries"])
+	}
+	if entries[0]["indexDescription"] != "test driven development" {
+		t.Fatalf("indexDescription %+v", entries[0])
+	}
+	digest, _ := data["rosterDigest"].(string)
+	if len(digest) != 64 {
+		t.Fatalf("digest %q", digest)
+	}
+	if protocol.OpSkillsRoster.Known() {
+		t.Fatal("skills_roster must not appear in the public catalog")
+	}
+}
+
 func TestSkillsRunRequiresDigestAndRejectsMismatch(t *testing.T) {
 	root := t.TempDir()
 	skillDir := filepath.Join(root, ".cloud-harness", "skills", "tdd")

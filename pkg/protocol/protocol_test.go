@@ -76,6 +76,9 @@ func TestAllOperationsMatchCatalogCount(t *testing.T) {
 	if !OpSkillList.Dashboard() || OpSkillCreateCustom.Known() || OpSkillSetList.Internal() || OpSkillImportStart.Known() || OpSkillArchiveImport.Known() {
 		t.Fatal("skill dashboard ops must be dashboard-only, not public /mcp tools")
 	}
+	if OpSkillsRoster.Known() || OpSkillsRoster.Dashboard() || OpSkillsRoster.Internal() {
+		t.Fatal("skills_roster must stay worker-internal, not a public /mcp, dashboard, or gateway RPC")
+	}
 	if !OpSettingsGet.Dashboard() || OpSettingsUpdate.Known() || OpToolkitsList.Internal() || OpSettingsNetworkCheck.Known() {
 		t.Fatal("settings/toolkits dashboard ops must be dashboard-only, not public /mcp tools")
 	}

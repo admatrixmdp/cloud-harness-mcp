@@ -70,6 +70,8 @@ const (
 	OpSkillsRead   Operation = "skills_read"
 	OpSkillsRun    Operation = "skills_run"
 	OpSkillSuggest Operation = "skill_suggest"
+	// Worker-internal TypeSafe inventory. Never listed on public /mcp.
+	OpSkillsRoster Operation = "skills_roster"
 
 	OpHooksList       Operation = "hooks_list"
 	OpHooksRun        Operation = "hooks_run"

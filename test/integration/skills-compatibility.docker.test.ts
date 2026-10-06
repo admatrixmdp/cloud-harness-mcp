@@ -38,7 +38,7 @@ function sh(script: string) {
 }
 
 function workerRequest(operation: string, input: Record<string, unknown>): string {
-  return `printf '%s' '${JSON.stringify({ version: 2, operation, input })}' | node /opt/harness/harness-worker.mjs`;
+  return `printf '%s' '${JSON.stringify({ version: 2, operation, input })}' | /opt/harness/harness-worker`;
 }
 
 beforeAll(() => {

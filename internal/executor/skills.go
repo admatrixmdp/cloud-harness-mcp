@@ -222,22 +222,34 @@ func validSkillScript(name string) bool {
 	return true
 }
 
+func (w Workspace) skillsRoster() protocol.ToolResult {
+	roster, digest, err := w.SkillRoster()
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+	}
+	entries := make([]map[string]any, 0, len(roster))
+	for _, entry := range roster {
+		entries = append(entries, map[string]any{
+			"name":             entry.Name,
+			"source":           entry.Source,
+			"contentSha256":    entry.ContentSHA256,
+			"indexDescription": entry.IndexDescription,
+			"descriptionFull":  entry.DescriptionFull,
+			"bodyExcerpt":      entry.BodyExcerpt,
+		})
+	}
+	return protocol.Success(fmt.Sprintf("Roster of %d skills", len(entries)), map[string]any{
+		"entries":      entries,
+		"rosterDigest": digest,
+	})
+}
+
 func (w Workspace) skillsRun(ctx context.Context, in pathInput) protocol.ToolResult {
 	if !skillNameOK(in.Name) {
 		return protocol.Fail(protocol.ErrorInvalidInput, "invalid skill name", false)
 	}
 	if !validSkillScript(in.Script) {
 		return protocol.Fail(protocol.ErrorInvalidInput, "invalid skill script name", false)
-	}
-	expected := in.ExpectedContentSHA256
-	if expected == "" {
-		expected = in.ExpectedSHA256
-	}
-	if expected == "" {
-		return protocol.Fail(protocol.ErrorInvalidInput, "expectedContentSha256 or expectedSha256 is required to run a skill", false)
-	}
-	if len(expected) != 64 {
-		return protocol.Fail(protocol.ErrorInvalidInput, "expectedSha256 must be a 64-character hex digest", false)
 	}
 	if len(in.Args) > 50 {
 		return protocol.Fail(protocol.ErrorInvalidInput, "too many skill arguments", false)
@@ -296,6 +308,16 @@ func (w Workspace) skillsRun(ctx context.Context, in pathInput) protocol.ToolRes
 			return protocol.Fail(protocol.ErrorNotFound, "skill script "+in.Script+" not found in snapshot", false)
 		}
 		scriptPath = alt
+	}
+	expected := in.ExpectedContentSHA256
+	if expected == "" {
+		expected = in.ExpectedSHA256
+	}
+	if expected == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "expectedContentSha256 or expectedSha256 is required to run a skill", false)
+	}
+	if len(expected) != 64 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "expectedSha256 must be a 64-character hex digest", false)
 	}
 	sum := sha256.Sum256(scriptBytes)
 	scriptSHA := hex.EncodeToString(sum[:])
