@@ -254,7 +254,77 @@ func ProductionService(getenv Env) (*Service, error) {
 		if sock := strings.TrimSpace(getenv("MODEL_GATEWAY_CONTROL_SOCKET")); sock != "" {
 			gateway = &agent.ControlClient{Path: sock}
 		}
-		svc = svc.WithAgents(launcher, gateway, nil)
+		profiles, err := loadAgentProfiles(getenv)
+		if err != nil {
+			return nil, err
+		}
+		svc = svc.WithAgents(launcher, gateway, profiles)
 	}
 	return svc, nil
+}
+
+type agentProfileFile struct {
+	ID                           string   `json:"id"`
+	DisplayName                  string   `json:"displayName"`
+	Provider                     string   `json:"provider"`
+	Model                        string   `json:"model"`
+	APIMode                      string   `json:"apiMode"`
+	InputMicrosPerMillionTokens  int64    `json:"inputMicrosPerMillionTokens"`
+	OutputMicrosPerMillionTokens int64    `json:"outputMicrosPerMillionTokens"`
+	MaxInputTokens               int      `json:"maxInputTokens"`
+	MaxOutputTokens              int      `json:"maxOutputTokens"`
+	MaxCostMicros                int64    `json:"maxCostMicros"`
+	MaxProxyOperations           []string `json:"maxProxyOperations"`
+}
+
+func loadAgentProfiles(getenv Env) (map[string]agent.Profile, error) {
+	jsonValue := strings.TrimSpace(getenv("AGENT_PROFILES_JSON"))
+	fileValue := strings.TrimSpace(getenv("AGENT_PROFILES_FILE"))
+	if jsonValue != "" && fileValue != "" {
+		return nil, fmt.Errorf("configure only one of AGENT_PROFILES_JSON or AGENT_PROFILES_FILE")
+	}
+	serialized := jsonValue
+	if serialized == "" && fileValue != "" {
+		raw, err := os.ReadFile(fileValue)
+		if err != nil {
+			return nil, fmt.Errorf("agent profiles must contain valid JSON")
+		}
+		serialized = string(raw)
+	}
+	if serialized == "" {
+		return nil, fmt.Errorf("agent profiles must contain valid JSON")
+	}
+	var rows []agentProfileFile
+	if err := json.Unmarshal([]byte(serialized), &rows); err != nil {
+		return nil, fmt.Errorf("agent profiles must contain valid JSON")
+	}
+	out := map[string]agent.Profile{}
+	for _, row := range rows {
+		if !protocol.ValidModelProfileID(row.ID) {
+			return nil, fmt.Errorf("agent profiles must contain valid JSON")
+		}
+		if _, dup := out[row.ID]; dup {
+			return nil, fmt.Errorf("agent profile IDs must be unique")
+		}
+		apiMode := row.APIMode
+		if apiMode == "" {
+			apiMode = "chat-completions"
+		}
+		out[row.ID] = agent.Profile{
+			ID:                     row.ID,
+			DisplayName:            row.DisplayName,
+			Provider:               row.Provider,
+			Model:                  row.Model,
+			APIMode:                apiMode,
+			InputMicrosPerMillion:  row.InputMicrosPerMillionTokens,
+			OutputMicrosPerMillion: row.OutputMicrosPerMillionTokens,
+			Limits: agent.ProfileLimits{
+				MaxInputTokens:  row.MaxInputTokens,
+				MaxOutputTokens: row.MaxOutputTokens,
+				MaxCostMicros:   row.MaxCostMicros,
+			},
+			MaxProxyOperations: append([]string{}, row.MaxProxyOperations...),
+		}
+	}
+	return out, nil
 }

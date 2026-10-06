@@ -25,14 +25,19 @@ type ProfileLimits struct {
 	MaxCostMicros   int64
 }
 
-// Profile is the subset of a gateway profile the lease layer needs.
+// Profile is the subset of a gateway / runner agent profile the spawn
+// path and lease layer need. Provider secrets never live here.
 type Profile struct {
 	ID                     string
+	DisplayName            string
+	Provider               string
 	Model                  string
+	APIMode                string
 	DownstreamPath         string
 	InputMicrosPerMillion  int64
 	OutputMicrosPerMillion int64
 	Limits                 ProfileLimits
+	MaxProxyOperations     []string
 	Upstream               Upstream
 }
 

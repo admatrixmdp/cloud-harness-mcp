@@ -127,6 +127,7 @@ type Service struct {
 // WithAgents attaches the Docker subagent launcher and optional gateway control client.
 func (s *Service) WithAgents(launcher *agent.Launcher, gateway *agent.ControlClient, profiles map[string]agent.Profile) *Service {
 	s.agents.withRuntime(launcher, gateway, profiles)
+	s.agents.models = s.models
 	return s
 }
 
@@ -154,6 +155,9 @@ func (s *Service) WithSecrets(sec *secrets.Store) *Service {
 // Dashboard list/create/rotate never return apiKey plaintext.
 func (s *Service) WithModels(store *models.Store) *Service {
 	s.models = store
+	if s.agents != nil {
+		s.agents.models = store
+	}
 	return s
 }
 

@@ -69,6 +69,61 @@ func TestProductionServiceWiresClonerSQLiteAndGitHubApp(t *testing.T) {
 	}
 }
 
+func TestProductionServiceLoadsAgentProfilesFromFile(t *testing.T) {
+	jobs := t.TempDir()
+	state := filepath.Join(t.TempDir(), "state.db")
+	path := filepath.Join(t.TempDir(), "profiles.json")
+	if err := os.WriteFile(path, []byte(`[
+		{"id":"openai-default","displayName":"OpenAI","provider":"openai","model":"gpt-5.2-codex",
+		 "inputMicrosPerMillionTokens":1,"outputMicrosPerMillionTokens":2,"maxInputTokens":400000,
+		 "maxOutputTokens":128000,"maxCostMicros":100000000,"maxProxyOperations":["files_list","files_read"]}
+	]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{
+		"JOBS_ROOT":                 jobs,
+		"STATE_DB":                  state,
+		"EXECUTOR_IMAGE":            "cloud-harness-executor:local",
+		"INSTANCE_ID":               "inst",
+		"WORKSPACE_NETWORK_PROFILE": "network-none",
+		"AGENT_IMAGE":               "cloud-harness-agent:local",
+		"AGENT_GATEWAY_URL":         "http://model-gateway:3210",
+		"AGENT_PROFILES_FILE":       path,
+	}
+	svc, err := ProductionService(func(name string) string { return env[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.agents.launcher == nil {
+		t.Fatal("launcher")
+	}
+	got, ok := svc.agents.profiles["openai-default"]
+	if !ok || got.Model != "gpt-5.2-codex" || got.Limits.MaxInputTokens != 400000 {
+		t.Fatalf("%+v", got)
+	}
+	both := map[string]string{"AGENT_PROFILES_JSON": "[]", "AGENT_PROFILES_FILE": path}
+	if _, err := loadAgentProfiles(func(name string) string { return both[name] }); err == nil || !strings.Contains(err.Error(), "configure only one") {
+		t.Fatalf("both sources: %v", err)
+	}
+	missing := map[string]string{"AGENT_IMAGE": "cloud-harness-agent:local"}
+	if _, err := ProductionService(func(name string) string {
+		switch name {
+		case "JOBS_ROOT":
+			return jobs
+		case "STATE_DB":
+			return filepath.Join(t.TempDir(), "missing.db")
+		case "EXECUTOR_IMAGE":
+			return "cloud-harness-executor:local"
+		case "AGENT_IMAGE":
+			return missing["AGENT_IMAGE"]
+		default:
+			return ""
+		}
+	}); err == nil || !strings.Contains(err.Error(), "agent profiles must contain valid JSON") {
+		t.Fatalf("missing profiles: %v", err)
+	}
+}
+
 func TestProductionServiceCloneThenCreateMountsRepoNotSocket(t *testing.T) {
 	jobs := t.TempDir()
 	state := filepath.Join(t.TempDir(), "state.db")

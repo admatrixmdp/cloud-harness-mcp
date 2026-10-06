@@ -105,3 +105,52 @@ func TestStartRecordRedactsPromptFromMCP(t *testing.T) {
 	}
 	_ = sync.Mutex{}
 }
+
+func TestAgentSpawnRejectsUnknownProfileAndOverBudget(t *testing.T) {
+	profiles := map[string]agent.Profile{
+		"openai-default": {
+			ID: "openai-default", DisplayName: "OpenAI", Model: "gpt-5.2-codex", APIMode: "chat-completions",
+			Limits:             agent.ProfileLimits{MaxInputTokens: 1000, MaxOutputTokens: 100, MaxCostMicros: 50},
+			MaxProxyOperations: []string{"files_list"},
+		},
+	}
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil).WithAgents(&agent.Launcher{
+		Docker: &recordingDocker{}, InstanceID: "local", Image: "cloud-harness-agent:local", GatewayURL: "http://model-gateway:3210",
+	}, nil, profiles)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"agent-open-profile","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open %+v", open)
+	}
+	wsID := open.Data.(map[string]any)["workspaceId"].(string)
+	unknown := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentSpawn,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","prompt":"Please refactor auth.","idempotencyKey":"agent-spawn-unknown","profileId":"missing-profile","proxyOperations":["files_list"]}`),
+	})
+	if unknown.OK || unknown.Error == nil || unknown.Error.Code != protocol.ErrorInvalidInput || unknown.Error.Message != "unknown agent model profile" {
+		t.Fatalf("unknown %+v", unknown)
+	}
+	over := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentSpawn,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","prompt":"Please refactor auth.","idempotencyKey":"agent-spawn-budget","profileId":"openai-default","proxyOperations":["files_list"],"maxInputTokens":400000}`),
+	})
+	if over.OK || over.Error == nil || over.Error.Message != "requested budget exceeds the selected profile" {
+		t.Fatalf("budget %+v", over)
+	}
+	tool := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentSpawn,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","prompt":"Please refactor auth.","idempotencyKey":"agent-spawn-tools","profileId":"openai-default","proxyOperations":["files_list","files_read"]}`),
+	})
+	if tool.OK || tool.Error == nil || tool.Error.Message != "requested proxy operation exceeds the selected profile" {
+		t.Fatalf("tools %+v", tool)
+	}
+	ok := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentSpawn,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","prompt":"Please refactor auth.","idempotencyKey":"agent-spawn-ok","profileId":"openai-default","proxyOperations":["files_list"],"maxInputTokens":500,"maxOutputTokens":50,"maxCostMicros":10}`),
+	})
+	if !ok.OK {
+		t.Fatalf("ok %+v", ok)
+	}
+}

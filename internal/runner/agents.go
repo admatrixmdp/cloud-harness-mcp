@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/agent"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/models"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
@@ -82,6 +83,7 @@ type agentRecord struct {
 	leaseID         string
 	channel         *agent.Channel
 	usage           agent.Usage
+	profile         agent.Profile
 }
 
 type agentMessage struct {
@@ -98,6 +100,7 @@ type agentHub struct {
 	launcher *agent.Launcher
 	gateway  *agent.ControlClient
 	profiles map[string]agent.Profile
+	models   *models.Store
 	exec     func(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult
 	seenReq  map[string]struct{}
 }
@@ -186,11 +189,18 @@ func (h *agentHub) spawn(ctx context.Context, ws store.Record, in agentInput) pr
 	if in.ParentAgentID != "" && !protocol.ValidOpaqueID(protocol.PrefixAgent, in.ParentAgentID) {
 		return protocol.Fail(protocol.ErrorInvalidInput, "invalid parentAgentId", false)
 	}
-	ops, errMsg := normalizeProxyOps(in.ProxyOperations)
+	profile, errMsg := h.resolveProfile(ws.OwnerID, in.ProfileID)
+	if errMsg != "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, errMsg, false)
+	}
+	ops, errMsg := normalizeProxyOps(in.ProxyOperations, profile.MaxProxyOperations)
 	if errMsg != "" {
 		return protocol.Fail(protocol.ErrorInvalidInput, errMsg, false)
 	}
 	budget := defaultBudget(in)
+	if errMsg := budgetExceedsProfile(budget, profile); errMsg != "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, errMsg, false)
+	}
 	fp := spawnFingerprint(in.Prompt, in.ProfileID, in.ParentAgentID, ops, budget)
 	promptHash := sha256Hex(in.Prompt)
 	mapKey := ws.OwnerID + ":" + ws.ID + ":" + in.IdempotencyKey
@@ -237,6 +247,7 @@ func (h *agentHub) spawn(ctx context.Context, ws store.Record, in agentInput) pr
 		promptHash:      promptHash,
 		messages:        map[string]agentMessage{},
 		leaseID:         protocol.NewOpaqueID(protocol.PrefixAgentLease),
+		profile:         profile,
 	}
 	h.byID[rec.id] = rec
 	h.byKey[mapKey] = rec.id
@@ -288,19 +299,7 @@ func (h *agentHub) launchOrFail(ctx context.Context, rec *agentRecord, ws store.
 		if deadlineMs < 1_000 {
 			deadlineMs = 1_000
 		}
-		if err := rec.channel.Send(agent.StartRecord{
-			Type: "start", RequestID: rec.id, AgentID: rec.id, Prompt: prompt, Tools: rec.proxyOperations,
-			Gateway: agent.StartGateway{Profile: rec.profileID, Lease: lease},
-			Model: agent.StartModel{
-				ID: rec.profileID, Name: rec.profileID, API: "openai-completions",
-				ContextWindow: rec.budget.MaxInputTokens + rec.budget.MaxOutputTokens,
-				MaxTokens:     rec.budget.MaxOutputTokens,
-			},
-			Limits: agent.StartLimits{
-				DeadlineMs: deadlineMs, MaxEvents: 10_000, MaxOutputBytes: rec.budget.MaxOutputBytes,
-				MaxEventBytes: 65_536, MaxToolResultBytes: 4 * 1024 * 1024,
-			},
-		}); err != nil {
+		if err := rec.channel.Send(startRecord(rec, prompt, lease, deadlineMs)); err != nil {
 			rec.status = "FAILED"
 			rec.terminalAt = time.Now().UTC()
 			rec.terminalReason = "agent protocol start failed"
@@ -733,14 +732,146 @@ func (r *agentRecord) public() map[string]any {
 	}
 }
 
-func normalizeProxyOps(ops []string) ([]string, string) {
+func (h *agentHub) resolveProfile(ownerID, id string) (agent.Profile, string) {
+	if h.models != nil && ownerID != "" {
+		listed, err := h.models.ListProfiles(ownerID)
+		if err == nil {
+			for _, row := range listed {
+				if row.Status != "ACTIVE" || row.ActiveRevision == nil {
+					continue
+				}
+				rev := row.ActiveRevision
+				if row.ID == id || (row.ActiveRevisionID != nil && *row.ActiveRevisionID == id) || rev.ID == id {
+					return agentProfileFromRevision(row.DisplayName, *rev), ""
+				}
+			}
+		}
+	}
+	if profile, ok := h.profiles[id]; ok {
+		return profile, ""
+	}
+	if len(h.profiles) == 0 && h.models == nil {
+		return agent.Profile{ID: id}, ""
+	}
+	return agent.Profile{}, "unknown agent model profile"
+}
+
+func agentProfileFromRevision(displayName string, rev models.Revision) agent.Profile {
+	return agent.Profile{
+		ID:                     rev.ID,
+		DisplayName:            displayName,
+		Provider:               rev.Model,
+		Model:                  rev.Model,
+		APIMode:                rev.APIMode,
+		DownstreamPath:         rev.DownstreamPath,
+		InputMicrosPerMillion:  int64FromAny(rev.Pricing["inputMicrosPerMillionTokens"]),
+		OutputMicrosPerMillion: int64FromAny(rev.Pricing["outputMicrosPerMillionTokens"]),
+		Limits: agent.ProfileLimits{
+			MaxInputTokens:  intFromAny(rev.Limits["maxInputTokens"]),
+			MaxOutputTokens: intFromAny(rev.Limits["maxOutputTokens"]),
+			MaxCostMicros:   int64FromAny(rev.Limits["maxCostMicros"]),
+		},
+		MaxProxyOperations: append([]string{}, rev.MaxProxyOperations...),
+	}
+}
+
+func intFromAny(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	default:
+		return 0
+	}
+}
+
+func int64FromAny(v any) int64 {
+	switch n := v.(type) {
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return i
+	default:
+		return 0
+	}
+}
+
+func startRecord(rec *agentRecord, prompt, lease string, deadlineMs int) agent.StartRecord {
+	profile := rec.profile
+	api := "openai-completions"
+	if profile.APIMode == "responses" {
+		api = "openai-responses"
+	}
+	modelID := profile.Model
+	if modelID == "" {
+		modelID = rec.profileID
+	}
+	name := profile.DisplayName
+	if name == "" {
+		name = rec.profileID
+	}
+	contextWindow := rec.budget.MaxInputTokens + rec.budget.MaxOutputTokens
+	if profile.Limits.MaxInputTokens > 0 || profile.Limits.MaxOutputTokens > 0 {
+		contextWindow = profile.Limits.MaxInputTokens + profile.Limits.MaxOutputTokens
+	}
+	if contextWindow > 2_000_000 {
+		contextWindow = 2_000_000
+	}
+	maxTokens := rec.budget.MaxOutputTokens
+	if profile.Limits.MaxOutputTokens > 0 && profile.Limits.MaxOutputTokens < maxTokens {
+		maxTokens = profile.Limits.MaxOutputTokens
+	}
+	if maxTokens > contextWindow {
+		maxTokens = contextWindow
+	}
+	gatewayProfile := rec.profileID
+	if profile.ID != "" {
+		gatewayProfile = profile.ID
+	}
+	return agent.StartRecord{
+		Type: "start", RequestID: rec.id, AgentID: rec.id, Prompt: prompt, Tools: rec.proxyOperations,
+		Gateway: agent.StartGateway{Profile: gatewayProfile, Lease: lease},
+		Model: agent.StartModel{
+			ID: modelID, Name: name, API: api,
+			ContextWindow: contextWindow, MaxTokens: maxTokens,
+			Cost: agent.ModelCost{
+				Input:  float64(profile.InputMicrosPerMillion) / 1_000_000,
+				Output: float64(profile.OutputMicrosPerMillion) / 1_000_000,
+			},
+		},
+		Limits: agent.StartLimits{
+			DeadlineMs: deadlineMs, MaxEvents: 10_000, MaxOutputBytes: rec.budget.MaxOutputBytes,
+			MaxEventBytes: 65_536, MaxToolResultBytes: 4 * 1024 * 1024,
+		},
+	}
+}
+
+func normalizeProxyOps(ops, allowed []string) ([]string, string) {
 	if len(ops) < 1 || len(ops) > len(allowedProxyOps) {
 		return nil, "proxyOperations is required"
+	}
+	allow := allowedProxyOps
+	if len(allowed) > 0 {
+		allow = map[string]struct{}{}
+		for _, op := range allowed {
+			allow[op] = struct{}{}
+		}
 	}
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(ops))
 	for _, op := range ops {
-		if _, ok := allowedProxyOps[op]; !ok {
+		if _, ok := allow[op]; !ok {
 			return nil, "requested proxy operation exceeds the selected profile"
 		}
 		if _, ok := seen[op]; ok {
@@ -750,6 +881,19 @@ func normalizeProxyOps(ops []string) ([]string, string) {
 		out = append(out, op)
 	}
 	return out, ""
+}
+
+func budgetExceedsProfile(budget agentBudget, profile agent.Profile) string {
+	if profile.Limits.MaxInputTokens > 0 && budget.MaxInputTokens > profile.Limits.MaxInputTokens {
+		return "requested budget exceeds the selected profile"
+	}
+	if profile.Limits.MaxOutputTokens > 0 && budget.MaxOutputTokens > profile.Limits.MaxOutputTokens {
+		return "requested budget exceeds the selected profile"
+	}
+	if profile.Limits.MaxCostMicros > 0 && budget.MaxCostMicros > profile.Limits.MaxCostMicros {
+		return "requested budget exceeds the selected profile"
+	}
+	return ""
 }
 
 func defaultBudget(in agentInput) agentBudget {
