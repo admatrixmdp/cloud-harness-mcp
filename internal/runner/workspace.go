@@ -221,6 +221,9 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 	if req.Operation.Internal() {
 		return s.mcpGateway(req)
 	}
+	if req.Operation.Dashboard() {
+		return s.dashboard(req)
+	}
 	if !req.Operation.Known() {
 		return protocol.Fail(protocol.ErrorInvalidInput, "unknown operation", false)
 	}

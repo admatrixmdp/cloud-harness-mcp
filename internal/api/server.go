@@ -45,6 +45,8 @@ func Handler(opts Options) http.Handler {
 	})
 	mux.Handle("/mcp", authenticate(opts, mcp.HandlerWith(mcp.HandlerOptions{Runner: opts.Runner})))
 	mux.Handle("/mcp-gateway", authenticate(opts, mcp.GatewayHandlerWith(mcp.HandlerOptions{Runner: opts.Runner})))
+	sessions := newSessions()
+	mux.Handle("/dashboard/", http.StripPrefix("/dashboard", authenticate(opts, dashboardHandler(opts, sessions))))
 	inner := securityHeaders(mux)
 	if len(opts.Security.PublicHosts) > 0 {
 		return RequestSecurity(opts.Security, inner)

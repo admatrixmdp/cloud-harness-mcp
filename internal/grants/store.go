@@ -163,6 +163,50 @@ func (s *Store) Consume(ownerID, workspaceID, grantID, commandSHA256, cwd string
 	return n == 1
 }
 
+func (s *Store) Reject(ownerID, grantID string) bool {
+	res, err := s.db.Exec(`UPDATE privilege_grants SET status = 'REJECTED' WHERE id = ? AND owner_id = ? AND status = 'PENDING'`, grantID, ownerID)
+	if err != nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n == 1
+}
+
+func (s *Store) List(ownerID, workspaceID string, limit int) []Grant {
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	var rows *sql.Rows
+	var err error
+	if workspaceID != "" {
+		rows, err = s.db.Query(`SELECT id, owner_id, workspace_id, command, cwd, command_sha256, status, created_at, expires_at, consumed_at FROM privilege_grants WHERE owner_id = ? AND workspace_id = ? ORDER BY created_at DESC LIMIT ?`, ownerID, workspaceID, limit)
+	} else {
+		rows, err = s.db.Query(`SELECT id, owner_id, workspace_id, command, cwd, command_sha256, status, created_at, expires_at, consumed_at FROM privilege_grants WHERE owner_id = ? ORDER BY created_at DESC LIMIT ?`, ownerID, limit)
+	}
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	now := time.Now().UnixMilli()
+	out := []Grant{}
+	for rows.Next() {
+		var g Grant
+		var consumed sql.NullInt64
+		if err := rows.Scan(&g.ID, &g.OwnerID, &g.WorkspaceID, &g.Command, &g.Cwd, &g.CommandSHA256, &g.Status, &g.CreatedAt, &g.ExpiresAt, &consumed); err != nil {
+			return out
+		}
+		g.ConsumedAt = consumed.Int64
+		if (g.Status == StatusPending || g.Status == StatusApproved) && g.ExpiresAt <= now {
+			g.Status = StatusExpired
+		}
+		out = append(out, g)
+	}
+	return out
+}
+
 func (s *Store) Get(grantID string) (Grant, bool) {
 	var g Grant
 	var consumed sql.NullInt64

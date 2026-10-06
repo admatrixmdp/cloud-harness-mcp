@@ -31,6 +31,12 @@ func TestAllOperationsMatchCatalogCount(t *testing.T) {
 	if !OpMCPGatewayTraceAppend.Internal() || OpMCPGatewayTraceAppend.Known() || !OpMCPGatewayTraceList.Internal() || OpMCPGatewayTraceList.Known() {
 		t.Fatal("mcp_gateway_trace_* must be runner-internal, not a public /mcp tool")
 	}
+	if !OpPrivilegeGrantList.Dashboard() || OpPrivilegeGrantList.Known() || OpPrivilegeGrantList.Internal() {
+		t.Fatal("privilege_grant_list must be dashboard-only, not a public /mcp tool")
+	}
+	if !OpPrivilegeGrantApprove.Dashboard() || !OpPrivilegeGrantReject.Dashboard() {
+		t.Fatal("privilege_grant_approve/reject must be dashboard-only")
+	}
 }
 
 func TestOperationJSONIsBareString(t *testing.T) {

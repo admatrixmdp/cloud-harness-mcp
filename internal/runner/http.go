@@ -28,6 +28,9 @@ func Handler(opts Options) http.Handler {
 	mux.Handle("/v1/operations", withServiceToken(opts.ServiceToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handleOperation(w, r, svc)
 	})))
+	mux.Handle("/v1/internal/dashboard-operations", withServiceToken(opts.ServiceToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleDashboard(w, r, svc)
+	})))
 	return mux
 }
 
@@ -41,8 +44,30 @@ func handleOperation(w http.ResponseWriter, r *http.Request, svc *Service) {
 		writeResult(w, http.StatusBadRequest, protocol.Fail(protocol.ErrorInvalidInput, "invalid runner request", false))
 		return
 	}
-	if !req.Operation.Known() && !req.Operation.Internal() {
+	if !req.Operation.Known() && !req.Operation.Internal() && !req.Operation.Dashboard() {
 		writeResult(w, http.StatusBadRequest, protocol.Fail(protocol.ErrorInvalidInput, "unknown operation", false))
+		return
+	}
+	result := svc.Execute(r.Context(), req)
+	status := http.StatusOK
+	if !result.OK {
+		status = statusFor(result)
+	}
+	writeResult(w, status, result)
+}
+
+func handleDashboard(w http.ResponseWriter, r *http.Request, svc *Service) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req protocol.RunnerRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 12<<20)).Decode(&req); err != nil {
+		writeResult(w, http.StatusBadRequest, protocol.Fail(protocol.ErrorInvalidInput, "invalid runner request", false))
+		return
+	}
+	if !req.Operation.Dashboard() && !req.Operation.Internal() {
+		writeResult(w, http.StatusBadRequest, protocol.Fail(protocol.ErrorInvalidInput, "unknown dashboard operation", false))
 		return
 	}
 	result := svc.Execute(r.Context(), req)

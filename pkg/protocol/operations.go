@@ -120,6 +120,11 @@ const (
 	OpMCPServerSetPermissions Operation = "mcp_server_set_permissions"
 	OpMCPGatewayTraceAppend   Operation = "mcp_gateway_trace_append"
 	OpMCPGatewayTraceList     Operation = "mcp_gateway_trace_list"
+
+	// Dashboard-only runner RPCs. Never listed on public /mcp.
+	OpPrivilegeGrantList    Operation = "privilege_grant_list"
+	OpPrivilegeGrantApprove Operation = "privilege_grant_approve"
+	OpPrivilegeGrantReject  Operation = "privilege_grant_reject"
 )
 
 // AllOperations is the ordered public MCP tool catalog from RunnerOperationSchema.
@@ -195,6 +200,16 @@ func (op Operation) Known() bool {
 func (op Operation) Internal() bool {
 	switch op {
 	case OpMCPGatewayCatalog, OpMCPServerGetCredentials, OpMCPServerCreate, OpMCPServerReplaceTools, OpMCPServerSetPermissions, OpMCPGatewayTraceAppend, OpMCPGatewayTraceList:
+		return true
+	default:
+		return false
+	}
+}
+
+// Dashboard reports whether op is a runner-only dashboard-control RPC.
+func (op Operation) Dashboard() bool {
+	switch op {
+	case OpPrivilegeGrantList, OpPrivilegeGrantApprove, OpPrivilegeGrantReject:
 		return true
 	default:
 		return false

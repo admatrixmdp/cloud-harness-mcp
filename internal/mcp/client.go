@@ -101,6 +101,54 @@ func (c *RunnerClient) Call(ctx context.Context, op protocol.Operation, input js
 	return result
 }
 
+// CallInternal posts /v1/internal/dashboard-operations and returns the ToolResult envelope.
+func (c *RunnerClient) CallInternal(ctx context.Context, op protocol.Operation, input json.RawMessage) protocol.ToolResult {
+	if c.BaseURL == "" {
+		return protocol.Fail(protocol.ErrorUnavailable, "Runner is unavailable", true)
+	}
+	if input == nil {
+		input = json.RawMessage(`{}`)
+	}
+	ownerID, principal := c.identity(ctx)
+	body, err := json.Marshal(protocol.RunnerRequest{
+		Version:   2,
+		OwnerID:   ownerID,
+		Principal: principal,
+		Operation: op,
+		Input:     input,
+	})
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInternal, "failed to encode runner request", false)
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/internal/dashboard-operations", bytes.NewReader(body))
+	if err != nil {
+		return protocol.Fail(protocol.ErrorUnavailable, "Runner is unavailable", true)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.ServiceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.ServiceToken)
+	}
+	res, err := c.http().Do(req)
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return protocol.Fail(protocol.ErrorTimeout, "Runner request timed out", true)
+		}
+		return protocol.Fail(protocol.ErrorUnavailable, "Runner is unavailable", true)
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return protocol.Fail(protocol.ErrorUnavailable, "Runner is unavailable", true)
+	}
+	var result protocol.ToolResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return protocol.Fail(protocol.ErrorUnavailable, fmt.Sprintf("Runner returned invalid envelope (HTTP %d)", res.StatusCode), true)
+	}
+	return result
+}
+
 func (c *RunnerClient) identity(ctx context.Context) (string, json.RawMessage) {
 	if id, ok := auth.IdentityFrom(ctx); ok {
 		switch id.Mode {

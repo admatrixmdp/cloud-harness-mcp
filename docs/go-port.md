@@ -19,7 +19,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | CLI flags | `apps/api/src/cli-options.ts` | `internal/config`, `cmd/cloud-harness-mcp` |
 | Owner bearer / Access JWT | `apps/api/src/auth.ts`, `access-jwt-verifier.ts` | `cmd/cloud-harness-mcp` `ProductionOptions` + `internal/auth`. `AUTH_MODE=cloudflare-access` verifies `Cf-Access-Jwt-Assertion` against team JWKS (https only), ignores opaque client bearer / `chm_key_`, and forwards `principal: {kind:external,issuer,subject}` on each runner RPC. Owner-bearer requires `MCP_BEARER_TOKEN` and forbids Access settings. The raw JWT never appears in logs or runner envelopes. |
 | Request security | `apps/api/src/request-security.ts` | `internal/api` (Host/Origin allowlist, `no-store`/`nosniff`/`X-Accel-Buffering`, pre-auth 429) |
-| Dashboard BFF | `apps/api/src/dashboard-*.ts` | `internal/api` (later) |
+| Dashboard BFF | `apps/api/src/dashboard-*.ts` | `internal/api` session CSRF (`__Host-ch-dashboard` HttpOnly + hashed `x-csrf-token`) and privilege-grant list/approve/reject via runner `/v1/internal/dashboard-operations`. Mutations require Origin + CSRF. Raw runner errors never reach the browser. Remaining dashboard routes (workspaces, files, MCP servers, knowledge, assets) stay later. |
 | Ingress proxy | `deploy/ingress-proxy.mjs` | `cmd/ingress-proxy` + `internal/ingress` (raw TCP byte pipe, no secrets, SIGINT/SIGTERM). Opt-in overlay `compose.go.yaml`; TS `compose.yaml` stays shipped |
 | API-key Worker | `apps/api-key-gateway` | Keep Wrangler TS (Cloudflare Worker). Go hashes/verifies `chm_key_` secrets in `internal/auth` + `internal/store` and never logs plaintext |
 | Public contracts | `packages/contracts/src/` | `pkg/protocol` |
