@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
@@ -275,6 +276,41 @@ func ValidateWorkerExecArgs(args []string) error {
 	}
 	if !strings.Contains(joined, "/usr/bin/setsid") {
 		return fmt.Errorf("worker exec must isolate the process group")
+	}
+	return nil
+}
+
+// OverlayExecutorImageOwnsGoWorker reports whether the opt-in Go executor
+// Dockerfile installs the static harness-worker as the worker-runner entry.
+func OverlayExecutorImageOwnsGoWorker(dockerfile string) error {
+	raw, err := os.ReadFile(dockerfile)
+	if err != nil {
+		return err
+	}
+	text := string(raw)
+	if !strings.Contains(text, "go build -o /out/harness-worker ./cmd/harness-worker") {
+		return fmt.Errorf("Go executor image must build cmd/harness-worker")
+	}
+	if !strings.Contains(text, "COPY --chown=root:root worker/worker-runner.go.sh /opt/harness/worker-runner.sh") {
+		return fmt.Errorf("Go executor image must install worker-runner.go.sh as worker-runner.sh")
+	}
+	if strings.Contains(text, "harness-worker.mjs") {
+		return fmt.Errorf("Go executor image must not ship the TypeScript worker as image entry")
+	}
+	if !strings.Contains(text, "USER 10001:10001") {
+		return fmt.Errorf("Go executor image must drop to UID 10001")
+	}
+	for _, line := range strings.Split(text, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") {
+			continue
+		}
+		if strings.Contains(trim, "docker.sock") {
+			return fmt.Errorf("Go executor image must not mention docker.sock")
+		}
+		if strings.HasPrefix(strings.ToUpper(trim), "EXPOSE") {
+			return fmt.Errorf("Go executor image must not publish a port")
+		}
 	}
 	return nil
 }

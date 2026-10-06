@@ -6,7 +6,8 @@
 # Security boundaries stay in compose.yaml: only ingress publishes a loopback
 # host port; API/runner publish none; Docker socket stays on runner; ingress
 # still has no secrets and does not join the control network. This overlay
-# only swaps images, entrypoints, and distroless healthchecks.
+# only swaps images, entrypoints, and distroless healthchecks. The overlay
+# executor image installs the Go harness-worker as worker-runner.sh.
 services:
   api:
     image: cloud-harness-api-go:local

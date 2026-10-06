@@ -2,6 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -138,6 +141,34 @@ func TestWorkerExecArgsAreUnprivilegedStdinOnly(t *testing.T) {
 	leaky = append(leaky, "--privileged")
 	if err := ValidateWorkerExecArgs(leaky); err == nil {
 		t.Fatal("privileged exec must be rejected")
+	}
+}
+
+func TestGoExecutorDockerfileOwnsWorkerBinary(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	if err := OverlayExecutorImageOwnsGoWorker(filepath.Join(root, "docker", "go-executor.Dockerfile")); err != nil {
+		t.Fatal(err)
+	}
+	script, err := os.ReadFile(filepath.Join(root, "worker", "worker-runner.go.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), "exec /opt/harness/harness-worker") {
+		t.Fatal("overlay runner must exec the Go worker")
+	}
+	if strings.Contains(string(script), "harness-worker.mjs") {
+		t.Fatal("overlay runner must not invoke the TypeScript worker")
+	}
+	shipped, err := os.ReadFile(filepath.Join(root, "worker", "worker-runner.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(shipped), "node /opt/harness/harness-worker.mjs") {
+		t.Fatal("shipped TypeScript worker-runner.sh must keep the Node entry")
 	}
 }
 
