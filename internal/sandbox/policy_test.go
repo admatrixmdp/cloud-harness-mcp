@@ -172,6 +172,17 @@ func TestGoExecutorDockerfileOwnsWorkerBinary(t *testing.T) {
 	}
 }
 
+func TestGoRunnerDockerfileOwnsDockerCLI(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	if err := ProductionRunnerImageOwnsDockerCLI(filepath.Join(root, "docker", "go-runner.Dockerfile")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestInteractiveAndTaskExecArgsStayUnprivileged(t *testing.T) {
 	shell := InteractiveExecArgs("cloud-harness-ws-test", "src", "sess_abcdefghijklmnopqrstuvwx")
 	if err := ValidateInteractiveExecArgs(shell); err != nil {

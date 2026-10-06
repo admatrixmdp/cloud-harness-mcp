@@ -7,6 +7,7 @@ const requireBoundary = (condition, message) => {
 const compose = readFileSync('compose.yaml', 'utf8');
 const overlay = readFileSync('compose.go.yaml', 'utf8');
 const production = readFileSync('compose.production.yaml', 'utf8');
+const runnerImage = readFileSync('docker/go-runner.Dockerfile', 'utf8');
 
 requireBoundary(compose.includes('dockerfile: docker/go-api.Dockerfile'), 'compose.yaml must ship the Go API image');
 requireBoundary(compose.includes('dockerfile: docker/go-runner.Dockerfile'), 'compose.yaml must ship the Go runner image');
@@ -18,7 +19,7 @@ requireBoundary(compose.includes('entrypoint: ["/ingress-proxy"]'), 'compose.yam
 requireBoundary(compose.includes('entrypoint: ["/provisioning-proxy"]'), 'compose.yaml must run the allowlisted Go provisioning-proxy binary');
 requireBoundary(compose.includes('test: ["CMD", "/cloud-harness-mcp", "--healthcheck"]'), 'compose.yaml API must use the distroless --healthcheck probe');
 requireBoundary(compose.includes('test: ["CMD", "/ingress-proxy", "--healthcheck"]'), 'compose.yaml ingress must use the distroless --healthcheck probe');
-requireBoundary(compose.includes('test: ["CMD", "/runner", "--healthcheck"]'), 'compose.yaml runner must use the distroless --healthcheck probe');
+requireBoundary(compose.includes('test: ["CMD", "/runner", "--healthcheck"]'), 'compose.yaml runner must use the binary --healthcheck probe');
 requireBoundary(compose.includes('test: ["CMD", "/model-gateway", "--healthcheck"]'), 'compose.yaml model-gateway must use the distroless --healthcheck probe');
 requireBoundary(compose.includes('test: ["CMD", "/provisioning-proxy", "--healthcheck"]'), 'compose.yaml provisioning-proxy must use the distroless --healthcheck probe');
 requireBoundary(!compose.includes('dockerfile: docker/api.Dockerfile'), 'compose.yaml must not ship the TypeScript API image');
@@ -40,6 +41,8 @@ requireBoundary(!/ports:/.test(overlay), 'Go overlay must not publish additional
 requireBoundary(!/docker\.sock/.test(overlay), 'Go overlay must not remount the Docker socket');
 requireBoundary(!/TOKEN|SECRET|PASSWORD|GITHUB_APP/.test(overlay), 'Go overlay must not inject secrets onto any service');
 
+requireBoundary(runnerImage.includes('docker-cli'), 'Go runner image must install docker-cli to talk to the host daemon');
+requireBoundary(!/^FROM .*(distroless)/m.test(runnerImage.split('\n').filter((line) => !line.trim().startsWith('#')).join('\n')), 'Go runner image must not be distroless');
 requireBoundary(production.includes('command: ["--hold"]'), 'production agent keepalive must use distroless --hold, not sleep');
 requireBoundary(!/agent-image-keepalive:[\s\S]*sleep/.test(production), 'agent keepalive must not require a distroless-missing sleep binary');
 requireBoundary(/executor-image-keepalive:[\s\S]*command: \["sleep", "infinity"\]/.test(production), 'executor keepalive may keep sleep because the executor image is not distroless');

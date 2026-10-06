@@ -315,6 +315,37 @@ func OverlayExecutorImageOwnsGoWorker(dockerfile string) error {
 	return nil
 }
 
+// ProductionRunnerImageOwnsDockerCLI reports whether the shipped Go runner
+// image can talk to the host daemon. Distroless/nonroot would make
+// workspace_open fail closed because Engine.cli execs the docker binary.
+func ProductionRunnerImageOwnsDockerCLI(dockerfile string) error {
+	raw, err := os.ReadFile(dockerfile)
+	if err != nil {
+		return err
+	}
+	text := string(raw)
+	if !strings.Contains(text, "go build -o /out/runner ./cmd/runner") {
+		return fmt.Errorf("Go runner image must build cmd/runner")
+	}
+	if !strings.Contains(text, "docker-cli") {
+		return fmt.Errorf("Go runner image must install docker-cli")
+	}
+	for _, line := range strings.Split(text, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") {
+			continue
+		}
+		upper := strings.ToUpper(trim)
+		if strings.HasPrefix(upper, "FROM ") && strings.Contains(trim, "distroless") {
+			return fmt.Errorf("Go runner image must not be distroless because it execs docker")
+		}
+		if strings.HasPrefix(upper, "USER ") && strings.Contains(trim, "nonroot") {
+			return fmt.Errorf("Go runner image must not force distroless nonroot; the host docker.sock is a root-owned unix socket")
+		}
+	}
+	return nil
+}
+
 func workspaceExecCwd(rel string) string {
 	rel = strings.ReplaceAll(strings.TrimSpace(rel), "\\", "/")
 	if rel == "" || rel == "." {
