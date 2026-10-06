@@ -17,6 +17,12 @@ func (s *Service) dashboard(ctx context.Context, req protocol.RunnerRequest) pro
 		return s.workspaceDetail(req)
 	case protocol.OpWorkspaceCloseFenced:
 		return s.closeFenced(ctx, req)
+	case protocol.OpMCPServerList, protocol.OpMCPServerGet, protocol.OpMCPServerUpdate, protocol.OpMCPServerDelete, protocol.OpMCPServerSetEnabled:
+		return s.mcpGateway(req)
+	case protocol.OpKnowledgeDashboardList, protocol.OpKnowledgeDashboardGet, protocol.OpKnowledgeDashboardCreate,
+		protocol.OpKnowledgeDashboardUpdate, protocol.OpKnowledgeDashboardDelete, protocol.OpKnowledgeDashboardSearch,
+		protocol.OpKnowledgeDashboardGraph, protocol.OpKnowledgeDashboardLinkCreate, protocol.OpKnowledgeDashboardLinkDelete:
+		return s.knowledgeDashboard(req)
 	case protocol.OpPrivilegeGrantList:
 		if s.grants == nil {
 			return protocol.Fail(protocol.ErrorUnavailable, "privilege grant store is unavailable", true)

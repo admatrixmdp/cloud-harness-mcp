@@ -127,6 +127,22 @@ const (
 	OpPrivilegeGrantReject  Operation = "privilege_grant_reject"
 	OpWorkspaceDetail       Operation = "workspace_detail"
 	OpWorkspaceCloseFenced  Operation = "workspace_close_fenced"
+
+	OpMCPServerList       Operation = "mcp_server_list"
+	OpMCPServerGet        Operation = "mcp_server_get"
+	OpMCPServerUpdate     Operation = "mcp_server_update"
+	OpMCPServerDelete     Operation = "mcp_server_delete"
+	OpMCPServerSetEnabled Operation = "mcp_server_set_enabled"
+
+	OpKnowledgeDashboardList       Operation = "knowledge_dashboard_list"
+	OpKnowledgeDashboardGet        Operation = "knowledge_dashboard_get"
+	OpKnowledgeDashboardCreate     Operation = "knowledge_dashboard_create"
+	OpKnowledgeDashboardUpdate     Operation = "knowledge_dashboard_update"
+	OpKnowledgeDashboardDelete     Operation = "knowledge_dashboard_delete"
+	OpKnowledgeDashboardSearch     Operation = "knowledge_dashboard_search"
+	OpKnowledgeDashboardGraph      Operation = "knowledge_dashboard_graph"
+	OpKnowledgeDashboardLinkCreate Operation = "knowledge_dashboard_link_create"
+	OpKnowledgeDashboardLinkDelete Operation = "knowledge_dashboard_link_delete"
 )
 
 // AllOperations is the ordered public MCP tool catalog from RunnerOperationSchema.
@@ -211,7 +227,11 @@ func (op Operation) Internal() bool {
 // Dashboard reports whether op is a runner-only dashboard-control RPC.
 func (op Operation) Dashboard() bool {
 	switch op {
-	case OpPrivilegeGrantList, OpPrivilegeGrantApprove, OpPrivilegeGrantReject, OpWorkspaceDetail, OpWorkspaceCloseFenced:
+	case OpPrivilegeGrantList, OpPrivilegeGrantApprove, OpPrivilegeGrantReject, OpWorkspaceDetail, OpWorkspaceCloseFenced,
+		OpMCPServerList, OpMCPServerGet, OpMCPServerUpdate, OpMCPServerDelete, OpMCPServerSetEnabled,
+		OpKnowledgeDashboardList, OpKnowledgeDashboardGet, OpKnowledgeDashboardCreate, OpKnowledgeDashboardUpdate,
+		OpKnowledgeDashboardDelete, OpKnowledgeDashboardSearch, OpKnowledgeDashboardGraph,
+		OpKnowledgeDashboardLinkCreate, OpKnowledgeDashboardLinkDelete:
 		return true
 	default:
 		return false

@@ -1116,6 +1116,51 @@ func TestKnowledgeCreateListReadDeleteOnRunner(t *testing.T) {
 	}
 }
 
+func TestKnowledgeDashboardAliasesSkipWorkspace(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "kn-dash.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	knStore, err := knowledge.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil).WithKnowledge(knStore)
+	created := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpKnowledgeDashboardCreate,
+		Input: json.RawMessage(`{"kind":"memory","scope":"owner","title":"Owner note","content":"no workspace required","expectedGeneration":0}`),
+	})
+	if !created.OK {
+		t.Fatalf("create: %+v", created)
+	}
+	id := created.Data.(map[string]any)["id"].(string)
+	listed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpKnowledgeDashboardList, Input: json.RawMessage(`{}`),
+	})
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	items, _ := listed.Data.(map[string]any)["items"].([]map[string]any)
+	if len(items) != 1 || items[0]["id"] != id {
+		t.Fatalf("list data %+v", listed.Data)
+	}
+	got := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpKnowledgeDashboardGet,
+		Input: json.RawMessage(`{"id":"` + id + `"}`),
+	})
+	if !got.OK {
+		t.Fatalf("get: %+v", got)
+	}
+	foreign := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "other", Operation: protocol.OpKnowledgeDashboardGet,
+		Input: json.RawMessage(`{"id":"` + id + `"}`),
+	})
+	if foreign.OK || foreign.Error == nil || foreign.Error.Code != protocol.ErrorNotFound {
+		t.Fatalf("foreign get: %+v", foreign)
+	}
+}
+
 func TestHooksActivateDeactivateOnRunner(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "hooks.sqlite"))
 	if err != nil {

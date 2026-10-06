@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -12,7 +13,9 @@ import (
 	"testing"
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcp"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/mcpgw"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/runner"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 
@@ -30,7 +33,16 @@ func dashboardFixture(t *testing.T) (http.Handler, *grants.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := runner.NewService(runner.Config{NetworkProfile: protocol.NetworkNone, JobsRoot: t.TempDir()}, nil, nil).WithGrants(store)
+	kn, err := knowledge.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw, err := mcpgw.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := runner.NewService(runner.Config{NetworkProfile: protocol.NetworkNone, JobsRoot: t.TempDir()}, nil, nil).
+		WithGrants(store).WithKnowledge(kn).WithMCPGateway(gw)
 	inner := httptest.NewServer(runner.Handler(runner.Options{Service: svc}))
 	t.Cleanup(inner.Close)
 	h := Handler(Options{
@@ -38,6 +50,9 @@ func dashboardFixture(t *testing.T) (http.Handler, *grants.Store) {
 		OwnerID:     "owner",
 		Runner:      &mcp.RunnerClient{BaseURL: inner.URL, OwnerID: "owner"},
 		Security:    SecurityConfig{PublicHosts: []string{"dashboard.example"}, AllowedOrigins: []string{"https://dashboard.example"}},
+		MCPGatewayResolve: func(string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
+		},
 	})
 	return h, store
 }
@@ -326,5 +341,149 @@ func TestDashboardWorkspacesAndFiles(t *testing.T) {
 	closed := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/workspaces/"+id+"/close", `{"expectedGeneration":1}`, auth)
 	if closed.Code != 200 {
 		t.Fatalf("close %d %s", closed.Code, closed.Body.String())
+	}
+}
+
+func TestDashboardMCPServersAndKnowledge(t *testing.T) {
+	h, _ := dashboardFixture(t)
+	csrf, cookie := dashboardCSRF(t, h)
+	auth := map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+	}
+
+	denied := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/mcp-servers", `{"name":"github","transport":"streamable-http","endpoint":"https://github.example.com/mcp","headers":[{"name":"Authorization","value":{"secretRef":"GITHUB_TOKEN"}}],"expectedGeneration":0}`, map[string]string{
+		"Authorization": "Bearer owner-secret",
+	})
+	if denied.Code != http.StatusUnauthorized {
+		t.Fatalf("missing csrf status %d %s", denied.Code, denied.Body.String())
+	}
+
+	private := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/mcp-servers", `{"name":"loop","transport":"streamable-http","endpoint":"https://127.0.0.1/mcp","expectedGeneration":0}`, auth)
+	if private.Code != http.StatusBadRequest || !strings.Contains(private.Body.String(), "private") {
+		t.Fatalf("private endpoint %d %s", private.Code, private.Body.String())
+	}
+
+	sse := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/mcp-servers", `{"name":"sse","transport":"sse","endpoint":"https://github.example.com/mcp","headers":[{"name":"Authorization","value":{"secretRef":"GITHUB_TOKEN"}}],"expectedGeneration":0}`, auth)
+	if sse.Code != http.StatusBadRequest || !strings.Contains(sse.Body.String(), "authenticated SSE") {
+		t.Fatalf("authenticated sse %d %s", sse.Code, sse.Body.String())
+	}
+
+	created := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/mcp-servers", `{"name":"github","transport":"streamable-http","endpoint":"https://github.example.com/mcp","headers":[{"name":"Authorization","value":{"secretRef":"GITHUB_TOKEN"}}],"permissionDefault":"allow","enabled":true,"expectedGeneration":0}`, auth)
+	if created.Code != 200 {
+		t.Fatalf("create %d %s", created.Code, created.Body.String())
+	}
+	if strings.Contains(created.Body.String(), "ghp_") || strings.Contains(created.Body.String(), `"value"`) && strings.Contains(created.Body.String(), "GITHUB_TOKEN") && strings.Contains(created.Body.String(), `"value":`) {
+		if strings.Contains(created.Body.String(), `"kind":"secret"`) && strings.Contains(created.Body.String(), `"value"`) {
+			t.Fatalf("secret header value leaked: %s", created.Body.String())
+		}
+	}
+	var createdBody struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &createdBody); err != nil {
+		t.Fatal(err)
+	}
+	serverID, _ := createdBody.Data["id"].(string)
+	if !protocol.ValidOpaqueID(protocol.PrefixMCPServer, serverID) {
+		t.Fatalf("id %q body %s", serverID, created.Body.String())
+	}
+	if createdBody.Data["principalId"] != nil {
+		t.Fatal("principalId must not reach the browser")
+	}
+	headers, _ := createdBody.Data["headers"].([]any)
+	if len(headers) != 1 {
+		t.Fatalf("headers %s", created.Body.String())
+	}
+	header, _ := headers[0].(map[string]any)
+	if header["kind"] != "secret" || header["secretRef"] != "GITHUB_TOKEN" {
+		t.Fatalf("header projection %v", header)
+	}
+	if _, ok := header["value"]; ok {
+		t.Fatal("secret header value must not be projected")
+	}
+
+	listed := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/mcp-servers", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if listed.Code != 200 || !strings.Contains(listed.Body.String(), serverID) {
+		t.Fatalf("list %d %s", listed.Code, listed.Body.String())
+	}
+
+	got := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/mcp-servers/"+serverID, "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if got.Code != 200 || !strings.Contains(got.Body.String(), `"tools"`) {
+		t.Fatalf("get %d %s", got.Code, got.Body.String())
+	}
+
+	short := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/mcp-servers/mcps_tooshort", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if short.Code != http.StatusBadRequest {
+		t.Fatalf("short id %d %s", short.Code, short.Body.String())
+	}
+
+	updated := dashboardDo(t, h, http.MethodPatch, "/dashboard/api/v1/mcp-servers/"+serverID, `{"name":"github-renamed","expectedGeneration":1}`, auth)
+	if updated.Code != 200 || !strings.Contains(updated.Body.String(), "github-renamed") {
+		t.Fatalf("update %d %s", updated.Code, updated.Body.String())
+	}
+
+	disabled := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/mcp-servers/"+serverID+"/enabled", `{"enabled":false,"expectedGeneration":2}`, auth)
+	if disabled.Code != 200 || !strings.Contains(disabled.Body.String(), `"enabled":false`) {
+		t.Fatalf("enabled %d %s", disabled.Code, disabled.Body.String())
+	}
+
+	deleted := dashboardDo(t, h, http.MethodDelete, "/dashboard/api/v1/mcp-servers/"+serverID, `{"expectedGeneration":3}`, auth)
+	if deleted.Code != 200 {
+		t.Fatalf("delete %d %s", deleted.Code, deleted.Body.String())
+	}
+
+	item := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/knowledge", `{"kind":"memory","scope":"owner","title":"Dashboard note","content":"owner knowledge","tags":["arch"],"expectedGeneration":0}`, auth)
+	if item.Code != 200 {
+		t.Fatalf("knowledge create %d %s", item.Code, item.Body.String())
+	}
+	var itemBody struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(item.Body.Bytes(), &itemBody); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := itemBody.Data["id"].(string)
+	if id == "" {
+		t.Fatalf("knowledge id missing %s", item.Body.String())
+	}
+	if itemBody.Data["principalId"] != nil {
+		t.Fatal("knowledge principalId must not reach the browser")
+	}
+
+	listedKn := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/knowledge?kind=memory", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if listedKn.Code != 200 || !strings.Contains(listedKn.Body.String(), id) {
+		t.Fatalf("knowledge list %d %s", listedKn.Code, listedKn.Body.String())
+	}
+
+	read := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/knowledge/"+id, "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if read.Code != 200 || !strings.Contains(read.Body.String(), "owner knowledge") {
+		t.Fatalf("knowledge get %d %s", read.Code, read.Body.String())
+	}
+
+	updatedKn := dashboardDo(t, h, http.MethodPut, "/dashboard/api/v1/knowledge/"+id, `{"title":"Dashboard note","content":"updated knowledge","expectedGeneration":1}`, auth)
+	if updatedKn.Code != 200 || !strings.Contains(updatedKn.Body.String(), "updated knowledge") {
+		t.Fatalf("knowledge update %d %s", updatedKn.Code, updatedKn.Body.String())
+	}
+
+	search := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/knowledge/search", `{"query":"updated"}`, auth)
+	if search.Code != 200 || !strings.Contains(search.Body.String(), `"results"`) {
+		t.Fatalf("knowledge search %d %s", search.Code, search.Body.String())
+	}
+
+	graph := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/knowledge-graph", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if graph.Code != 200 || !strings.Contains(graph.Body.String(), `"nodes"`) {
+		t.Fatalf("knowledge graph %d %s", graph.Code, graph.Body.String())
+	}
+
+	staleKn := dashboardDo(t, h, http.MethodDelete, "/dashboard/api/v1/knowledge/"+id, `{"expectedGeneration":99}`, auth)
+	if staleKn.Code != http.StatusConflict {
+		t.Fatalf("stale knowledge delete %d %s", staleKn.Code, staleKn.Body.String())
+	}
+
+	removed := dashboardDo(t, h, http.MethodDelete, "/dashboard/api/v1/knowledge/"+id, `{"expectedGeneration":2}`, auth)
+	if removed.Code != 200 || !strings.Contains(removed.Body.String(), `"deleted":true`) {
+		t.Fatalf("knowledge delete %d %s", removed.Code, removed.Body.String())
 	}
 }

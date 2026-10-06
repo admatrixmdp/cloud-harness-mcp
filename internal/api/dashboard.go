@@ -99,6 +99,140 @@ func dashboardHandler(opts Options, sessions *Sessions) http.Handler {
 		body["workspaceId"] = r.PathValue("workspaceId")
 		proxyDashboard(w, r, opts.Runner, protocol.OpWorkspaceCloseFenced, body)
 	})))))
+	mux.Handle("GET /api/v1/knowledge", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyDashboard(w, r, opts.Runner, protocol.OpKnowledgeDashboardList, knowledgeListQuery(r))
+	})))
+	mux.Handle("POST /api/v1/knowledge/search", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpKnowledgeDashboardSearch, body)
+	})))))
+	mux.Handle("POST /api/v1/knowledge/links", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpKnowledgeDashboardLinkCreate, body)
+	})))))
+	mux.Handle("DELETE /api/v1/knowledge/links", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpKnowledgeDashboardLinkDelete, body)
+	})))))
+	mux.Handle("GET /api/v1/knowledge-graph", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyDashboard(w, r, opts.Runner, protocol.OpKnowledgeDashboardGraph, knowledgeGraphQuery(r))
+	})))
+	mux.Handle("GET /api/v1/knowledge/{id}", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyDashboard(w, r, opts.Runner, protocol.OpKnowledgeDashboardGet, map[string]any{"id": r.PathValue("id")})
+	})))
+	mux.Handle("POST /api/v1/knowledge", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpKnowledgeDashboardCreate, body)
+	})))))
+	mux.Handle("PUT /api/v1/knowledge/{id}", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		body["id"] = r.PathValue("id")
+		proxyDashboard(w, r, opts.Runner, protocol.OpKnowledgeDashboardUpdate, body)
+	})))))
+	mux.Handle("DELETE /api/v1/knowledge/{id}", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		body["id"] = r.PathValue("id")
+		proxyDashboard(w, r, opts.Runner, protocol.OpKnowledgeDashboardDelete, body)
+	})))))
+	mux.Handle("GET /api/v1/mcp-servers", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyDashboard(w, r, opts.Runner, protocol.OpMCPServerList, map[string]any{})
+	})))
+	mux.Handle("POST /api/v1/mcp-servers", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		if rejectAuthenticatedSSE(w, body) || rejectUnsafeEndpoint(w, body, opts) {
+			return
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpMCPServerCreate, body)
+	})))))
+	mux.Handle("GET /api/v1/mcp-servers/{serverId}/logs", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverID, ok := requireServerID(w, r)
+		if !ok {
+			return
+		}
+		input := pageQuery(r)
+		input["serverId"] = serverID
+		if limit := queryInt(r, "limit"); limit > 0 {
+			input["limit"] = limit
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpMCPGatewayTraceList, input)
+	})))
+	mux.Handle("GET /api/v1/mcp-servers/{serverId}", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverID, ok := requireServerID(w, r)
+		if !ok {
+			return
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpMCPServerGet, map[string]any{"serverId": serverID})
+	})))
+	mux.Handle("PATCH /api/v1/mcp-servers/{serverId}", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverID, ok := requireServerID(w, r)
+		if !ok {
+			return
+		}
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		body = mergeServerID(body, serverID)
+		if rejectAuthenticatedSSE(w, body) || rejectUnsafeEndpoint(w, body, opts) {
+			return
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpMCPServerUpdate, body)
+	})))))
+	mux.Handle("DELETE /api/v1/mcp-servers/{serverId}", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverID, ok := requireServerID(w, r)
+		if !ok {
+			return
+		}
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpMCPServerDelete, mergeServerID(body, serverID))
+	})))))
+	mux.Handle("POST /api/v1/mcp-servers/{serverId}/enabled", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverID, ok := requireServerID(w, r)
+		if !ok {
+			return
+		}
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpMCPServerSetEnabled, mergeServerID(body, serverID))
+	})))))
+	mux.Handle("PUT /api/v1/mcp-servers/{serverId}/permissions", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverID, ok := requireServerID(w, r)
+		if !ok {
+			return
+		}
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		delete(body, "default")
+		proxyDashboard(w, r, opts.Runner, protocol.OpMCPServerSetPermissions, mergeServerID(body, serverID))
+	})))))
 	return dashboardSecurity(opts.Security, mux)
 }
 
@@ -174,7 +308,7 @@ func proxyDashboard(w http.ResponseWriter, r *http.Request, runner *mcp.RunnerCl
 		return
 	}
 	var result protocol.ToolResult
-	if op.Dashboard() {
+	if op.Dashboard() || op.Internal() {
 		result = runner.CallInternal(r.Context(), op, raw)
 	} else {
 		result = runner.Call(r.Context(), op, raw)
@@ -219,6 +353,35 @@ func projectDashboard(op protocol.Operation, data any) any {
 		return pickKeys(obj, "source", "destination")
 	case protocol.OpFilesMkdir:
 		return pickKeys(obj, "path")
+	case protocol.OpKnowledgeDashboardList:
+		return map[string]any{"items": projectKnowledgeItems(obj["items"])}
+	case protocol.OpKnowledgeDashboardGet, protocol.OpKnowledgeDashboardCreate, protocol.OpKnowledgeDashboardUpdate:
+		return projectKnowledgeItem(obj)
+	case protocol.OpKnowledgeDashboardDelete:
+		return pickKeys(obj, "deleted")
+	case protocol.OpKnowledgeDashboardSearch:
+		return map[string]any{"results": projectKnowledgeHits(obj["results"])}
+	case protocol.OpKnowledgeDashboardGraph:
+		return map[string]any{
+			"nodes":     projectObjects(obj["nodes"], "id", "kind", "scope", "title", "journalType", "tags", "updatedAt"),
+			"edges":     projectObjects(obj["edges"], "id", "sourceId", "targetId", "relation", "origin", "generation", "createdAt"),
+			"truncated": obj["truncated"] == true,
+		}
+	case protocol.OpKnowledgeDashboardLinkCreate:
+		return projectKnowledgeLink(obj)
+	case protocol.OpKnowledgeDashboardLinkDelete:
+		return pickKeys(obj, "unlinked")
+	case protocol.OpMCPServerList:
+		return map[string]any{"servers": projectMCPServers(obj["servers"])}
+	case protocol.OpMCPServerGet:
+		return map[string]any{
+			"server": projectMCPServer(obj["server"]),
+			"tools":  projectObjects(obj["tools"], "id", "serverId", "qualifiedName", "upstreamName", "description", "inputSchema", "annotations", "availability", "permission", "discoveredAt"),
+		}
+	case protocol.OpMCPServerCreate, protocol.OpMCPServerUpdate, protocol.OpMCPServerSetEnabled, protocol.OpMCPServerSetPermissions, protocol.OpMCPServerDelete:
+		return projectMCPServer(obj)
+	case protocol.OpMCPGatewayTraceList:
+		return map[string]any{"traces": projectObjects(obj["traces"], "id", "serverId", "serverName", "tool", "operation", "clientId", "durationMs", "status", "errorCode", "errorMessage", "requestBytes", "responseBytes", "createdAt")}
 	default:
 		return obj
 	}

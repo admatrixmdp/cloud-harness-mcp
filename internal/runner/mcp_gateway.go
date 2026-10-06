@@ -111,6 +111,16 @@ func (h *mcpGatewayHub) handle(req protocol.RunnerRequest) protocol.ToolResult {
 		return h.appendTrace(principal, req.Input)
 	case protocol.OpMCPGatewayTraceList:
 		return h.listTraces(principal, req.Input)
+	case protocol.OpMCPServerList:
+		return h.list(principal, req.Input)
+	case protocol.OpMCPServerGet:
+		return h.get(principal, req.Input)
+	case protocol.OpMCPServerUpdate:
+		return h.update(principal, req.Input)
+	case protocol.OpMCPServerDelete:
+		return h.delete(principal, req.Input)
+	case protocol.OpMCPServerSetEnabled:
+		return h.setEnabled(principal, req.Input)
 	default:
 		return protocol.Fail(protocol.ErrorInvalidInput, "unknown operation", false)
 	}
@@ -396,6 +406,207 @@ func (h *mcpGatewayHub) setPermissions(principal string, raw json.RawMessage) pr
 	rec.Generation++
 	rec.UpdatedAt = time.Now().UnixMilli()
 	return protocol.Success("MCP permissions updated", serverView(rec))
+}
+
+func (h *mcpGatewayHub) list(principal string, _ json.RawMessage) protocol.ToolResult {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	servers := make([]map[string]any, 0)
+	for _, rec := range h.byID {
+		if rec.PrincipalID != principal {
+			continue
+		}
+		servers = append(servers, serverView(rec))
+	}
+	return protocol.Success("MCP servers listed", map[string]any{"servers": servers})
+}
+
+func (h *mcpGatewayHub) get(principal string, raw json.RawMessage) protocol.ToolResult {
+	var in struct {
+		ServerID string `json:"serverId"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil || !protocol.ValidOpaqueID(protocol.PrefixMCPServer, in.ServerID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "serverId is required", false)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rec := h.byID[in.ServerID]
+	if rec == nil || rec.PrincipalID != principal {
+		return protocol.Fail(protocol.ErrorNotFound, "MCP server not found", false)
+	}
+	tools := make([]map[string]any, 0, len(rec.Tools))
+	for _, tool := range rec.Tools {
+		tools = append(tools, toolView(rec, tool))
+	}
+	return protocol.Success("MCP server retrieved", map[string]any{"server": serverView(rec), "tools": tools})
+}
+
+func (h *mcpGatewayHub) update(principal string, raw json.RawMessage) protocol.ToolResult {
+	var in struct {
+		ServerID           string         `json:"serverId"`
+		ExpectedGeneration int            `json:"expectedGeneration"`
+		Name               *string        `json:"name"`
+		Description        *string        `json:"description"`
+		Transport          *string        `json:"transport"`
+		Endpoint           *string        `json:"endpoint"`
+		Headers            []createHeader `json:"headers"`
+		PermissionDefault  *string        `json:"permissionDefault"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid MCP server update input", false)
+	}
+	if !protocol.ValidOpaqueID(protocol.PrefixMCPServer, in.ServerID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "serverId is required", false)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rec := h.byID[in.ServerID]
+	if rec == nil || rec.PrincipalID != principal || rec.Generation != in.ExpectedGeneration {
+		return protocol.Fail(protocol.ErrorConflict, "resource generation changed or resource is unavailable", false)
+	}
+	name := rec.Name
+	if in.Name != nil {
+		name = strings.TrimSpace(*in.Name)
+		if !validServerName(name) {
+			return protocol.Fail(protocol.ErrorInvalidInput, "server name must be 1-63 lowercase letters, numbers, or hyphens", false)
+		}
+		if name != rec.Name {
+			if existing, ok := h.byName[principal+"\x00"+name]; ok && existing != rec.ID {
+				return protocol.Fail(protocol.ErrorConflict, "MCP server name already exists", false)
+			}
+		}
+	}
+	description := rec.Description
+	if in.Description != nil {
+		description = *in.Description
+	}
+	transport := rec.Transport
+	if in.Transport != nil {
+		transport = strings.TrimSpace(*in.Transport)
+		if transport == "stdio" {
+			return protocol.Fail(protocol.ErrorInvalidInput, "stdio downstream transport is not supported; use streamable-http or sse", false)
+		}
+		if transport != string(protocol.GatewayTransportStreamableHTTP) && transport != string(protocol.GatewayTransportSSE) {
+			return protocol.Fail(protocol.ErrorInvalidInput, "transport must be 'streamable-http' or 'sse'", false)
+		}
+	}
+	endpoint := rec.Endpoint
+	if in.Endpoint != nil {
+		endpoint = strings.TrimSpace(*in.Endpoint)
+		if endpoint == "" {
+			return protocol.Fail(protocol.ErrorInvalidInput, "endpoint is required", false)
+		}
+	}
+	headers := rec.Headers
+	if in.Headers != nil {
+		parsed, errMsg := parseCreateHeaders(in.Headers)
+		if errMsg != "" {
+			return protocol.Fail(protocol.ErrorInvalidInput, errMsg, false)
+		}
+		headers = parsed
+	}
+	if transport == string(protocol.GatewayTransportSSE) {
+		for _, header := range headers {
+			if header.Kind == "secret" {
+				return protocol.Fail(protocol.ErrorInvalidInput, "authenticated SSE is not supported: credentials are attached only to the configured endpoint, so use transport streamable-http for a server that needs a secret header", false)
+			}
+		}
+	}
+	perm := rec.PermissionDefault
+	if in.PermissionDefault != nil {
+		next := protocol.GatewayPermission(strings.TrimSpace(*in.PermissionDefault))
+		if next != protocol.GatewayAllow && next != protocol.GatewayDeny {
+			return protocol.Fail(protocol.ErrorInvalidInput, "permissionDefault must be allow or deny", false)
+		}
+		perm = next
+	}
+	if name != rec.Name {
+		delete(h.byName, principal+"\x00"+rec.Name)
+		h.byName[principal+"\x00"+name] = rec.ID
+		for _, tool := range rec.Tools {
+			tool.QualifiedName = protocol.QualifiedToolName(name, tool.UpstreamName)
+		}
+	}
+	rec.Name = name
+	rec.Description = description
+	rec.Transport = transport
+	rec.Endpoint = endpoint
+	rec.Headers = headers
+	rec.PermissionDefault = perm
+	rec.Generation++
+	rec.UpdatedAt = time.Now().UnixMilli()
+	return protocol.Success("MCP server updated", serverView(rec))
+}
+
+func (h *mcpGatewayHub) setEnabled(principal string, raw json.RawMessage) protocol.ToolResult {
+	var in struct {
+		ServerID           string `json:"serverId"`
+		Enabled            bool   `json:"enabled"`
+		ExpectedGeneration int    `json:"expectedGeneration"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid MCP server enabled input", false)
+	}
+	if !protocol.ValidOpaqueID(protocol.PrefixMCPServer, in.ServerID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "serverId is required", false)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rec := h.byID[in.ServerID]
+	if rec == nil || rec.PrincipalID != principal || rec.Generation != in.ExpectedGeneration {
+		return protocol.Fail(protocol.ErrorConflict, "resource generation changed or resource is unavailable", false)
+	}
+	rec.Enabled = in.Enabled
+	if in.Enabled {
+		if rec.Status == "disabled" {
+			rec.Status = "unknown"
+		}
+	} else {
+		rec.Status = "disabled"
+	}
+	rec.Generation++
+	rec.UpdatedAt = time.Now().UnixMilli()
+	message := "MCP server disabled"
+	if in.Enabled {
+		message = "MCP server enabled"
+	}
+	return protocol.Success(message, serverView(rec))
+}
+
+func (h *mcpGatewayHub) delete(principal string, raw json.RawMessage) protocol.ToolResult {
+	var in struct {
+		ServerID           string `json:"serverId"`
+		ExpectedGeneration int    `json:"expectedGeneration"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid MCP server delete input", false)
+	}
+	if !protocol.ValidOpaqueID(protocol.PrefixMCPServer, in.ServerID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "serverId is required", false)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rec := h.byID[in.ServerID]
+	if rec == nil || rec.PrincipalID != principal || rec.Generation != in.ExpectedGeneration {
+		return protocol.Fail(protocol.ErrorConflict, "resource generation changed or resource is unavailable", false)
+	}
+	delete(h.byID, rec.ID)
+	delete(h.byName, principal+"\x00"+rec.Name)
+	kept := h.traces[:0]
+	for _, trace := range h.traces {
+		if sid, ok := trace.ServerID.(string); ok && sid == rec.ID && trace.PrincipalID == principal {
+			continue
+		}
+		kept = append(kept, trace)
+	}
+	h.traces = kept
+	rec.Enabled = false
+	rec.Status = "disabled"
+	rec.Tools = nil
+	rec.PermissionOverride = map[string]protocol.GatewayPermission{}
+	rec.Generation++
+	rec.UpdatedAt = time.Now().UnixMilli()
+	return protocol.Success("MCP server deleted", serverView(rec))
 }
 
 func (h *mcpGatewayHub) credentials(principal string, raw json.RawMessage) protocol.ToolResult {

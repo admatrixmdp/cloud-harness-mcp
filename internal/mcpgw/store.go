@@ -160,6 +160,16 @@ func (s *Store) Handle(req protocol.RunnerRequest) protocol.ToolResult {
 		return s.appendTrace(principal, req.Input)
 	case protocol.OpMCPGatewayTraceList:
 		return s.listTraces(principal, req.Input)
+	case protocol.OpMCPServerList:
+		return s.list(principal, req.Input)
+	case protocol.OpMCPServerGet:
+		return s.get(principal, req.Input)
+	case protocol.OpMCPServerUpdate:
+		return s.update(principal, req.Input)
+	case protocol.OpMCPServerDelete:
+		return s.delete(principal, req.Input)
+	case protocol.OpMCPServerSetEnabled:
+		return s.setEnabled(principal, req.Input)
 	default:
 		return protocol.Fail(protocol.ErrorInvalidInput, "unknown operation", false)
 	}

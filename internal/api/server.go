@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -24,6 +25,12 @@ type Options struct {
 	AccessVerifier *auth.AccessVerifier
 	Runner         *mcp.RunnerClient
 	Security       SecurityConfig
+	// MCPGatewayAllowInsecureHTTP permits cleartext http:// downstream endpoints.
+	MCPGatewayAllowInsecureHTTP bool
+	// MCPGatewayAllowPrivateEndpoints permits RFC1918/loopback destinations except link-local/metadata.
+	MCPGatewayAllowPrivateEndpoints bool
+	// MCPGatewayResolve is a test seam for hostname lookups during write-time SSRF checks.
+	MCPGatewayResolve func(host string) ([]net.IP, error)
 }
 
 // Handler is the API mux. It must not expose a Docker socket.

@@ -91,8 +91,75 @@ func TestInternalGatewayOpsStayOffPublicCatalog(t *testing.T) {
 	if protocol.OpMCPGatewayCatalog.Known() || protocol.OpMCPServerGetCredentials.Known() || protocol.OpMCPGatewayTraceAppend.Known() || protocol.OpMCPGatewayTraceList.Known() {
 		t.Fatal("internal MCP gateway ops must not be public /mcp tools")
 	}
+	if protocol.OpMCPServerList.Known() || protocol.OpMCPServerGet.Known() || protocol.OpMCPServerUpdate.Known() || protocol.OpMCPServerDelete.Known() || protocol.OpMCPServerSetEnabled.Known() {
+		t.Fatal("dashboard MCP server ops must not be public /mcp tools")
+	}
+	if protocol.OpKnowledgeDashboardList.Known() || protocol.OpKnowledgeDashboardCreate.Known() {
+		t.Fatal("knowledge_dashboard_* must not be public /mcp tools")
+	}
 	if len(protocol.AllOperations) != 92 {
 		t.Fatalf("AllOperations = %d", len(protocol.AllOperations))
+	}
+}
+
+func TestDashboardMCPServerLifecycle(t *testing.T) {
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)
+	id := seedGateway(t, svc, "owner-a", "github", "https://example.com/mcp", "allow", map[string]string{"authorization": "Bearer super-secret-token"})
+	listed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner-a", Operation: protocol.OpMCPServerList, Input: json.RawMessage(`{}`),
+	})
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	servers, _ := listed.Data.(map[string]any)["servers"].([]map[string]any)
+	if len(servers) != 1 || servers[0]["id"] != id {
+		t.Fatalf("list data %+v", listed.Data)
+	}
+	got := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner-a", Operation: protocol.OpMCPServerGet,
+		Input: json.RawMessage(`{"serverId":"` + id + `"}`),
+	})
+	if !got.OK {
+		t.Fatalf("get: %+v", got)
+	}
+	data := got.Data.(map[string]any)
+	if _, ok := data["tools"]; !ok {
+		t.Fatal("get must include tools")
+	}
+	updated := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner-a", Operation: protocol.OpMCPServerUpdate,
+		Input: json.RawMessage(`{"serverId":"` + id + `","expectedGeneration":1,"name":"github-renamed"}`),
+	})
+	if !updated.OK {
+		t.Fatalf("update: %+v", updated)
+	}
+	stale := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner-a", Operation: protocol.OpMCPServerSetEnabled,
+		Input: json.RawMessage(`{"serverId":"` + id + `","enabled":false,"expectedGeneration":1}`),
+	})
+	if stale.OK || stale.Error == nil || stale.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("stale enable: %+v", stale)
+	}
+	disabled := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner-a", Operation: protocol.OpMCPServerSetEnabled,
+		Input: json.RawMessage(`{"serverId":"` + id + `","enabled":false,"expectedGeneration":2}`),
+	})
+	if !disabled.OK {
+		t.Fatalf("disable: %+v", disabled)
+	}
+	deleted := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner-a", Operation: protocol.OpMCPServerDelete,
+		Input: json.RawMessage(`{"serverId":"` + id + `","expectedGeneration":3}`),
+	})
+	if !deleted.OK {
+		t.Fatalf("delete: %+v", deleted)
+	}
+	missing := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner-a", Operation: protocol.OpMCPServerGet,
+		Input: json.RawMessage(`{"serverId":"` + id + `"}`),
+	})
+	if missing.OK || missing.Error == nil || missing.Error.Code != protocol.ErrorNotFound {
+		t.Fatalf("deleted get: %+v", missing)
 	}
 }
 

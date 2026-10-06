@@ -43,6 +43,15 @@ func TestAllOperationsMatchCatalogCount(t *testing.T) {
 	if !OpWorkspaceCloseFenced.Dashboard() || OpWorkspaceCloseFenced.Known() {
 		t.Fatal("workspace_close_fenced must be dashboard-only")
 	}
+	if !OpMCPServerList.Dashboard() || OpMCPServerList.Known() || OpMCPServerList.Internal() {
+		t.Fatal("mcp_server_list must be dashboard-only, not a public /mcp tool")
+	}
+	if !OpMCPServerGet.Dashboard() || OpMCPServerUpdate.Known() || OpMCPServerDelete.Internal() || OpMCPServerSetEnabled.Known() {
+		t.Fatal("mcp_server_get/update/delete/set_enabled must be dashboard-only")
+	}
+	if !OpKnowledgeDashboardList.Dashboard() || OpKnowledgeDashboardList.Known() || OpKnowledgeDashboardCreate.Internal() {
+		t.Fatal("knowledge_dashboard_* must be dashboard-only, not public knowledge_* tools")
+	}
 }
 
 func TestOperationJSONIsBareString(t *testing.T) {
