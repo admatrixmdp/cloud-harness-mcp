@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,7 +19,13 @@ const (
 	agentLogContentLimit = 4_000
 	agentFanOutLimit     = 100
 	artifactChunkLimit   = 1_048_576
+	runtimeOutputLimit   = 8_000
 )
+
+var worktreeNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,80}$`)
+
+var taskKeys = []string{"id", "name", "status", "exitCode", "dependsOn", "startedAt", "finishedAt", "durationMs", "cwd", "outputBytes"}
+var sessionKeys = []string{"id", "name", "status", "cwd", "createdAt", "lastActivityAt", "closedAt", "cursor"}
 
 var artifactKeys = []string{
 	"artifactId", "logicalName", "sha256", "sizeBytes", "projectId", "environmentId", "workspaceId",
@@ -370,6 +377,178 @@ func joinBytes(chunks [][]byte) []byte {
 	out := make([]byte, 0, n)
 	for _, c := range chunks {
 		out = append(out, c...)
+	}
+	return out
+}
+
+func requireTaskID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := r.PathValue("taskId")
+	if !protocol.ValidOpaqueID(protocol.PrefixTask, id) {
+		writeDashboardFail(w, protocol.Fail(protocol.ErrorInvalidInput, "The request could not be processed.", false))
+		return "", false
+	}
+	return id, true
+}
+
+func requireSessionID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := r.PathValue("sessionId")
+	if !protocol.ValidOpaqueID(protocol.PrefixSession, id) {
+		writeDashboardFail(w, protocol.Fail(protocol.ErrorInvalidInput, "The request could not be processed.", false))
+		return "", false
+	}
+	return id, true
+}
+
+func validWorktreeName(name string) bool {
+	return worktreeNameRe.MatchString(name)
+}
+
+func boundedOutput(value any) any {
+	s, ok := value.(string)
+	if !ok {
+		return nil
+	}
+	if len(s) > runtimeOutputLimit {
+		return s[:runtimeOutputLimit] + "\n… truncated"
+	}
+	return s
+}
+
+func firstValue(values ...any) any {
+	for _, v := range values {
+		if v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+func projectTask(obj map[string]any) map[string]any {
+	out := pickKeys(obj, taskKeys...)
+	if output := boundedOutput(obj["output"]); output != nil {
+		out["output"] = output
+	}
+	return out
+}
+
+func projectSession(obj map[string]any) map[string]any {
+	out := pickKeys(obj, sessionKeys...)
+	if output := boundedOutput(obj["output"]); output != nil {
+		out["output"] = output
+	}
+	return out
+}
+
+func parseGitStatus(output string) map[string]any {
+	lines := strings.Split(output, "\n")
+	header := ""
+	for _, line := range lines {
+		if strings.HasPrefix(line, "## ") {
+			header = line
+			break
+		}
+	}
+	detail := strings.TrimSpace(strings.TrimPrefix(header, "## "))
+	ahead := 0
+	behind := 0
+	if start := strings.Index(detail, "["); start >= 0 {
+		end := strings.Index(detail[start:], "]")
+		if end >= 0 {
+			bracket := detail[start+1 : start+end]
+			ahead = extractCount(bracket, "ahead ")
+			behind = extractCount(bracket, "behind ")
+		}
+		detail = strings.TrimSpace(reBracket.ReplaceAllString(detail, ""))
+	}
+	left, right, _ := strings.Cut(detail, "...")
+	entries := make([]map[string]any, 0)
+	staged := 0
+	modified := 0
+	untracked := 0
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "## ") {
+			continue
+		}
+		xy := line
+		if len(xy) >= 2 {
+			xy = line[:2]
+		}
+		path := ""
+		if len(line) > 3 {
+			path = strings.TrimSpace(line[3:])
+		}
+		code := strings.TrimSpace(xy)
+		entries = append(entries, map[string]any{"code": code, "path": path})
+		if len(xy) > 0 && xy[0] != ' ' && xy[0] != '?' {
+			staged++
+		}
+		if len(xy) > 1 && xy[1] != ' ' && xy[1] != '?' {
+			modified++
+		}
+		if strings.TrimSpace(xy) == "??" {
+			untracked++
+		}
+	}
+	branch := left
+	if branch == "" {
+		branch = "detached"
+	}
+	out := map[string]any{
+		"branch":    branch,
+		"ahead":     ahead,
+		"behind":    behind,
+		"entries":   entries,
+		"staged":    staged,
+		"modified":  modified,
+		"untracked": untracked,
+	}
+	if right != "" {
+		out["upstream"] = right
+	}
+	return out
+}
+
+var reBracket = regexp.MustCompile(`\s*\[[^\]]+\]\s*`)
+
+func extractCount(text, prefix string) int {
+	idx := strings.Index(text, prefix)
+	if idx < 0 {
+		return 0
+	}
+	rest := text[idx+len(prefix):]
+	n := 0
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			break
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
+}
+
+func parseWorktrees(output string) []map[string]any {
+	lines := strings.Split(output, "\n")
+	out := make([]map[string]any, 0)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		item := map[string]any{"path": fields[0]}
+		if len(fields) > 1 {
+			item["head"] = fields[1]
+		}
+		if len(fields) > 2 {
+			branch := strings.Trim(strings.Join(fields[2:], " "), "[]")
+			if branch != "" {
+				item["branch"] = branch
+			}
+		}
+		out = append(out, item)
 	}
 	return out
 }

@@ -611,3 +611,113 @@ func TestDashboardArtifactsAndAgents(t *testing.T) {
 		t.Fatalf("workspace activity %d %s", wsActivity.Code, wsActivity.Body.String())
 	}
 }
+
+func TestParseGitStatusAndWorktrees(t *testing.T) {
+	got := parseGitStatus("## main...origin/main [ahead 2, behind 1]\nM  staged.txt\n M dirty.txt\n?? untracked.txt\n")
+	if got["branch"] != "main" || got["upstream"] != "origin/main" {
+		t.Fatalf("branch %+v", got)
+	}
+	if got["ahead"] != 2 || got["behind"] != 1 {
+		t.Fatalf("ahead/behind %+v", got)
+	}
+	if got["staged"] != 1 || got["modified"] != 1 || got["untracked"] != 1 {
+		t.Fatalf("counts %+v", got)
+	}
+	trees := parseWorktrees("/tmp/repo abcdef1 [main]\n/tmp/feature defabc2 [feature]\n")
+	if len(trees) != 2 || trees[0]["path"] != "/tmp/repo" || trees[1]["branch"] != "feature" {
+		t.Fatalf("worktrees %+v", trees)
+	}
+}
+
+func TestDashboardGitRuntimeAndAutomation(t *testing.T) {
+	h, _ := dashboardFixture(t)
+	csrf, cookie := dashboardCSRF(t, h)
+	auth := map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+	}
+
+	opened := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/workspaces", `{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-git-dash-1","networkProfile":"network-none"}`, auth)
+	if opened.Code != 200 {
+		t.Fatalf("open %d %s", opened.Code, opened.Body.String())
+	}
+	var openedBody struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(opened.Body.Bytes(), &openedBody); err != nil {
+		t.Fatal(err)
+	}
+	wsID, _ := openedBody.Data["workspaceId"].(string)
+	if wsID == "" {
+		t.Fatalf("open body %s", opened.Body.String())
+	}
+
+	status := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/workspaces/"+wsID+"/git/status", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if status.Code != 200 {
+		t.Fatalf("git status %d %s", status.Code, status.Body.String())
+	}
+	if !strings.Contains(status.Body.String(), `"branch"`) || !strings.Contains(status.Body.String(), `"output"`) {
+		t.Fatalf("git status body %s", status.Body.String())
+	}
+
+	diff := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/workspaces/"+wsID+"/git/diff", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if diff.Code != 200 {
+		t.Fatalf("git diff %d %s", diff.Code, diff.Body.String())
+	}
+
+	log := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/workspaces/"+wsID+"/git/log?limit=10", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if log.Code != 200 || !strings.Contains(log.Body.String(), `"commits"`) {
+		t.Fatalf("git log %d %s", log.Code, log.Body.String())
+	}
+
+	denied := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/workspaces/"+wsID+"/git/fetch", `{}`, map[string]string{
+		"Authorization": "Bearer owner-secret",
+	})
+	if denied.Code != http.StatusUnauthorized {
+		t.Fatalf("missing csrf %d %s", denied.Code, denied.Body.String())
+	}
+
+	worktrees := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/workspaces/"+wsID+"/worktrees", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if worktrees.Code != 200 || !strings.Contains(worktrees.Body.String(), `"worktrees"`) {
+		t.Fatalf("worktrees %d %s", worktrees.Code, worktrees.Body.String())
+	}
+
+	badName := dashboardDo(t, h, http.MethodDelete, "/dashboard/api/v1/workspaces/"+wsID+"/worktrees/bad@name", `{}`, auth)
+	if badName.Code != http.StatusBadRequest {
+		t.Fatalf("bad worktree name %d %s", badName.Code, badName.Body.String())
+	}
+
+	skills := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/workspaces/"+wsID+"/skills", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if skills.Code != 200 || !strings.Contains(skills.Body.String(), `"skills"`) {
+		t.Fatalf("skills %d %s", skills.Code, skills.Body.String())
+	}
+
+	hooks := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/workspaces/"+wsID+"/hooks", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if hooks.Code != 200 || !strings.Contains(hooks.Body.String(), `"hooks"`) {
+		t.Fatalf("hooks %d %s", hooks.Code, hooks.Body.String())
+	}
+
+	deployments := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/workspaces/"+wsID+"/deployments", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if deployments.Code != 200 || !strings.Contains(deployments.Body.String(), `"deployments"`) {
+		t.Fatalf("deployments %d %s", deployments.Code, deployments.Body.String())
+	}
+
+	graph := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/workspaces/"+wsID+"/tasks/graph", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if graph.Code != 200 || !strings.Contains(graph.Body.String(), `"nodes"`) {
+		t.Fatalf("tasks graph %d %s", graph.Code, graph.Body.String())
+	}
+
+	shortTask := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/workspaces/"+wsID+"/tasks/task_tooshort", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if shortTask.Code != http.StatusBadRequest {
+		t.Fatalf("short task id %d %s", shortTask.Code, shortTask.Body.String())
+	}
+
+	session := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/workspaces/"+wsID+"/sessions", `{"name":"cockpit"}`, auth)
+	if session.Code != 200 && session.Code != http.StatusServiceUnavailable && session.Code != http.StatusNotFound && session.Code != http.StatusBadRequest {
+		t.Fatalf("sessions open %d %s", session.Code, session.Body.String())
+	}
+	if session.Code == 200 && strings.Contains(session.Body.String(), `"stdin"`) {
+		t.Fatal("session stdin must not reach the browser")
+	}
+}

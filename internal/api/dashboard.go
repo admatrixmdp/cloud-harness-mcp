@@ -352,6 +352,121 @@ func dashboardHandler(opts Options, sessions *Sessions) http.Handler {
 	mux.Handle("GET /api/v1/workspaces/{workspaceId}/activity", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeActivity(w, r, opts.Runner, r.PathValue("workspaceId"))
 	})))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/skills", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspace(w, r, opts.Runner, protocol.OpSkillsList, nil)
+	})))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/skills/{name}/run", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpSkillsRun, map[string]any{"name": r.PathValue("name")})
+	})))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/hooks", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspace(w, r, opts.Runner, protocol.OpHooksList, map[string]any{"includeInactive": true})
+	})))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/hooks/run", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpHooksRun, nil)
+	})))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/hooks/activate", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpHooksActivate, nil)
+	})))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/hooks/deactivate", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpHooksDeactivate, nil)
+	})))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/deployments", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspace(w, r, opts.Runner, protocol.OpDeploymentsList, nil)
+	})))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/deployments/run", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpDeploymentsRun, nil)
+	})))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/git/status", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspace(w, r, opts.Runner, protocol.OpGitStatus, nil)
+	})))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/git/diff", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		input := map[string]any{"staged": r.URL.Query().Get("staged") == "true"}
+		if path := r.URL.Query().Get("path"); path != "" {
+			input["path"] = path
+		}
+		proxyWorkspace(w, r, opts.Runner, protocol.OpGitDiff, input)
+	})))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/git/log", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		input := map[string]any{}
+		if limit := queryInt(r, "limit"); limit > 0 {
+			input["limit"] = limit
+		}
+		proxyWorkspace(w, r, opts.Runner, protocol.OpGitLog, input)
+	})))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/git/fetch", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpGitFetch, nil)
+	})))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/git/pull", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpGitPull, nil)
+	})))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/git/checkout", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpGitCheckout, nil)
+	})))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/git/branch", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpGitBranch, nil)
+	})))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/git/merge", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpGitMerge, nil)
+	})))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/git/rebase", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpGitRebase, nil)
+	})))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/worktrees", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspace(w, r, opts.Runner, protocol.OpWorktreesList, nil)
+	})))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/worktrees", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpWorktreesCreate, nil)
+	})))))
+	mux.Handle("DELETE /api/v1/workspaces/{workspaceId}/worktrees/{name}", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if !validWorktreeName(name) {
+			writeDashboardFail(w, protocol.Fail(protocol.ErrorInvalidInput, "The request could not be processed.", false))
+			return
+		}
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpWorktreesRemove, map[string]any{"name": name})
+	})))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/tasks/graph", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspace(w, r, opts.Runner, protocol.OpTasksGraph, nil)
+	})))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/tasks/{taskId}", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		taskID, ok := requireTaskID(w, r)
+		if !ok {
+			return
+		}
+		input := map[string]any{"taskId": taskID}
+		if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+			input["cursor"] = cursor
+		}
+		proxyWorkspace(w, r, opts.Runner, protocol.OpTasksStatus, input)
+	})))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/tasks/{taskId}/cancel", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		taskID, ok := requireTaskID(w, r)
+		if !ok {
+			return
+		}
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpTasksCancel, map[string]any{"taskId": taskID})
+	})))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/sessions", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpSessionsOpen, nil)
+	})))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/sessions/{sessionId}/io", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sessionID, ok := requireSessionID(w, r)
+		if !ok {
+			return
+		}
+		input := map[string]any{"sessionId": sessionID, "waitMs": 0}
+		if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+			input["cursor"] = cursor
+		}
+		proxyWorkspace(w, r, opts.Runner, protocol.OpSessionsIO, input)
+	})))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/sessions/{sessionId}/close", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sessionID, ok := requireSessionID(w, r)
+		if !ok {
+			return
+		}
+		proxyWorkspaceMutation(w, r, opts.Runner, protocol.OpSessionsClose, map[string]any{"sessionId": sessionID})
+	})))))
 	return dashboardSecurity(opts.Security, mux)
 }
 
@@ -528,6 +643,115 @@ func projectDashboard(op protocol.Operation, data any) any {
 		}
 	case protocol.OpAgentMessage, protocol.OpAgentCancel:
 		return pickKeys(obj, "agentId", "status", "state", "replayed", "affectedAgentIds")
+	case protocol.OpGitStatus:
+		parsed := parseGitStatus(str(obj["output"]))
+		parsed["output"] = boundedOutput(obj["output"])
+		if parsed["output"] == nil {
+			parsed["output"] = ""
+		}
+		return parsed
+	case protocol.OpGitDiff:
+		diff := boundedOutput(firstValue(obj["output"], obj["diff"]))
+		out := map[string]any{"truncated": obj["truncated"] == true || strings.Contains(str(diff), "… truncated")}
+		if diff != nil {
+			out["diff"] = diff
+		}
+		if signature, _ := obj["signature"].(string); signature != "" {
+			out["signature"] = signature
+		}
+		return out
+	case protocol.OpGitLog:
+		out := map[string]any{"commits": projectObjects(obj["commits"], "oid", "sha", "subject", "message", "author", "authoredAt", "date", "branch", "refs")}
+		if output := boundedOutput(obj["output"]); output != nil {
+			out["output"] = output
+		}
+		if obj["cursor"] != nil {
+			out["cursor"] = obj["cursor"]
+		}
+		return out
+	case protocol.OpWorktreesList:
+		worktrees := projectObjects(obj["worktrees"], "path", "head", "branch", "name")
+		if len(worktrees) == 0 {
+			worktrees = parseWorktrees(str(obj["output"]))
+		}
+		output := boundedOutput(obj["output"])
+		if output == nil {
+			output = ""
+		}
+		return map[string]any{"worktrees": worktrees, "output": output}
+	case protocol.OpGitFetch, protocol.OpGitPull, protocol.OpGitCheckout, protocol.OpGitBranch, protocol.OpGitMerge, protocol.OpGitRebase, protocol.OpWorktreesCreate, protocol.OpWorktreesRemove:
+		out := pickKeys(obj, "name", "path", "head", "branch", "ref", "action")
+		if output := boundedOutput(obj["output"]); output != nil {
+			out["output"] = output
+		}
+		return out
+	case protocol.OpSkillsList:
+		out := map[string]any{"skills": projectObjects(obj["skills"], "name", "tier", "source", "kind", "state", "sha256", "description", "shadowed")}
+		if obj["cursor"] != nil {
+			out["cursor"] = obj["cursor"]
+		}
+		return out
+	case protocol.OpSkillsRead:
+		return pickKeys(obj, "name", "source", "content", "sha256", "bytes", "offset", "truncated")
+	case protocol.OpHooksList:
+		out := map[string]any{"hooks": projectObjects(obj["hooks"], "name", "path", "events", "active", "trigger", "description", "sha256")}
+		if sha, _ := obj["manifestSha256"].(string); sha != "" {
+			out["manifestSha256"] = sha
+		}
+		if obj["cursor"] != nil {
+			out["cursor"] = obj["cursor"]
+		}
+		return out
+	case protocol.OpDeploymentsList:
+		return map[string]any{"deployments": projectObjects(obj["deployments"], "name", "cwd", "status", "lastResult", "durationMs", "error")}
+	case protocol.OpSkillsRun, protocol.OpHooksRun, protocol.OpHooksActivate, protocol.OpHooksDeactivate, protocol.OpDeploymentsRun:
+		out := pickKeys(obj, "name", "event", "events", "status", "exitCode", "durationMs", "error", "manifestSha256")
+		if output := boundedOutput(obj["output"]); output != nil {
+			out["output"] = output
+		}
+		return out
+	case protocol.OpTasksStatus:
+		task := obj
+		if nested, ok := obj["task"].(map[string]any); ok {
+			task = nested
+		}
+		out := map[string]any{"task": projectTask(task), "truncated": obj["truncated"] == true}
+		if obj["cursor"] != nil {
+			out["cursor"] = obj["cursor"]
+		}
+		return out
+	case protocol.OpTasksCancel:
+		task := obj
+		if nested, ok := obj["task"].(map[string]any); ok {
+			task = nested
+		}
+		return map[string]any{"task": projectTask(task)}
+	case protocol.OpTasksGraph:
+		edges := make([]map[string]any, 0)
+		for _, edge := range asObjectList(obj["edges"]) {
+			edges = append(edges, pickKeys(edge, "from", "to"))
+		}
+		nodes := make([]map[string]any, 0)
+		for _, node := range asObjectList(obj["nodes"]) {
+			nodes = append(nodes, projectTask(node))
+		}
+		return map[string]any{"nodes": nodes, "edges": edges}
+	case protocol.OpSessionsOpen, protocol.OpSessionsClose:
+		session := obj
+		if nested, ok := obj["session"].(map[string]any); ok {
+			session = nested
+		}
+		return map[string]any{"session": projectSession(session)}
+	case protocol.OpSessionsIO:
+		session := obj
+		if nested, ok := obj["session"].(map[string]any); ok {
+			session = nested
+		}
+		out := map[string]any{"session": projectSession(session), "truncated": obj["truncated"] == true}
+		if obj["cursor"] != nil {
+			out["cursor"] = obj["cursor"]
+		}
+		return out
 	default:
 		return obj
 	}
@@ -540,6 +764,26 @@ func proxyFileMutation(w http.ResponseWriter, r *http.Request, runner *mcp.Runne
 		return
 	}
 	body["workspaceId"] = r.PathValue("workspaceId")
+	proxyDashboard(w, r, runner, op, body)
+}
+
+func proxyWorkspace(w http.ResponseWriter, r *http.Request, runner *mcp.RunnerClient, op protocol.Operation, extra map[string]any) {
+	input := map[string]any{"workspaceId": r.PathValue("workspaceId")}
+	for k, v := range extra {
+		input[k] = v
+	}
+	proxyDashboard(w, r, runner, op, input)
+}
+
+func proxyWorkspaceMutation(w http.ResponseWriter, r *http.Request, runner *mcp.RunnerClient, op protocol.Operation, extra map[string]any) {
+	body, ok := decodeMutation(w, r)
+	if !ok {
+		return
+	}
+	body["workspaceId"] = r.PathValue("workspaceId")
+	for k, v := range extra {
+		body[k] = v
+	}
 	proxyDashboard(w, r, runner, op, body)
 }
 
