@@ -2,10 +2,12 @@ package runner
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/mcpgw"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
 
@@ -49,10 +51,30 @@ type mcpServerRec struct {
 	PermissionOverride map[string]protocol.GatewayPermission
 }
 
+type mcpTraceRec struct {
+	ID            string
+	PrincipalID   string
+	ServerID      any
+	ServerName    string
+	Tool          any
+	Operation     string
+	ClientID      any
+	DurationMs    int
+	Status        string
+	ErrorCode     any
+	ErrorMessage  any
+	RequestBytes  any
+	ResponseBytes any
+	CreatedAt     int64
+	rowID         int
+}
+
 type mcpGatewayHub struct {
 	mu     sync.Mutex
 	byID   map[string]*mcpServerRec
 	byName map[string]string
+	traces []mcpTraceRec
+	seq    int
 }
 
 func newMCPGatewayHub() *mcpGatewayHub {
@@ -85,6 +107,10 @@ func (h *mcpGatewayHub) handle(req protocol.RunnerRequest) protocol.ToolResult {
 		return h.replaceTools(principal, req.Input)
 	case protocol.OpMCPServerSetPermissions:
 		return h.setPermissions(principal, req.Input)
+	case protocol.OpMCPGatewayTraceAppend:
+		return h.appendTrace(principal, req.Input)
+	case protocol.OpMCPGatewayTraceList:
+		return h.listTraces(principal, req.Input)
 	default:
 		return protocol.Fail(protocol.ErrorInvalidInput, "unknown operation", false)
 	}
@@ -421,6 +447,219 @@ func (h *mcpGatewayHub) credentials(principal string, raw json.RawMessage) proto
 		"endpoint":  rec.Endpoint,
 		"headers":   headers,
 	})
+}
+
+func (h *mcpGatewayHub) appendTrace(principal string, raw json.RawMessage) protocol.ToolResult {
+	var in struct {
+		ServerID      *string  `json:"serverId"`
+		ServerName    string   `json:"serverName"`
+		Tool          *string  `json:"tool"`
+		Operation     string   `json:"operation"`
+		ClientID      *string  `json:"clientId"`
+		DurationMs    int      `json:"durationMs"`
+		Status        string   `json:"status"`
+		ErrorCode     *string  `json:"errorCode"`
+		ErrorMessage  *string  `json:"errorMessage"`
+		RequestBytes  *int     `json:"requestBytes"`
+		ResponseBytes *int     `json:"responseBytes"`
+		Secrets       []string `json:"secrets"`
+		MaxRows       int      `json:"maxRows"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid trace append input", false)
+	}
+	name := strings.TrimSpace(in.ServerName)
+	if name == "" || len(name) > 63 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "serverName is required", false)
+	}
+	op := strings.TrimSpace(in.Operation)
+	if op == "" || len(op) > 32 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "operation is required", false)
+	}
+	if in.DurationMs < 0 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "durationMs must be >= 0", false)
+	}
+	status := strings.TrimSpace(in.Status)
+	if status != "success" && status != "error" && status != "denied" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "status must be success, error, or denied", false)
+	}
+	if in.ServerID != nil && *in.ServerID != "" && !protocol.ValidOpaqueID(protocol.PrefixMCPServer, *in.ServerID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "serverId is invalid", false)
+	}
+	if len(in.Secrets) > 8 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "too many secrets", false)
+	}
+	maxRows := in.MaxRows
+	if maxRows == 0 {
+		maxRows = 20_000
+	}
+	if maxRows < 100 {
+		maxRows = 100
+	}
+	if maxRows > 1_000_000 {
+		maxRows = 1_000_000
+	}
+	var message any
+	if in.ErrorMessage != nil && strings.TrimSpace(*in.ErrorMessage) != "" {
+		out := mcpgw.ScrubCredentialText(*in.ErrorMessage, in.Secrets)
+		if len(out) > 500 {
+			out = out[:500]
+		}
+		message = out
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.seq++
+	rec := mcpTraceRec{
+		ID:            protocol.NewOpaqueID(protocol.PrefixMCPTrace),
+		PrincipalID:   principal,
+		ServerID:      nilIfEmptyPtr(in.ServerID),
+		ServerName:    name,
+		Tool:          nilIfEmptyPtr(in.Tool),
+		Operation:     op,
+		ClientID:      nilIfEmptyPtr(in.ClientID),
+		DurationMs:    in.DurationMs,
+		Status:        status,
+		ErrorCode:     nilIfEmptyPtr(in.ErrorCode),
+		ErrorMessage:  message,
+		RequestBytes:  nilIfInt(in.RequestBytes),
+		ResponseBytes: nilIfInt(in.ResponseBytes),
+		CreatedAt:     time.Now().UnixMilli(),
+		rowID:         h.seq,
+	}
+	h.traces = append(h.traces, rec)
+	kept := make([]mcpTraceRec, 0, len(h.traces))
+	n := 0
+	for i := len(h.traces) - 1; i >= 0; i-- {
+		if h.traces[i].PrincipalID != principal {
+			kept = append(kept, h.traces[i])
+			continue
+		}
+		n++
+		if n <= maxRows {
+			kept = append(kept, h.traces[i])
+		}
+	}
+	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
+		kept[i], kept[j] = kept[j], kept[i]
+	}
+	h.traces = kept
+	return protocol.Success("MCP trace recorded", map[string]any{"trace": memoryTraceView(rec)})
+}
+
+func (h *mcpGatewayHub) listTraces(principal string, raw json.RawMessage) protocol.ToolResult {
+	var in struct {
+		ServerID string `json:"serverId"`
+		Limit    int    `json:"limit"`
+		Cursor   string `json:"cursor"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &in); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid trace list input", false)
+		}
+	}
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	cursorCreated, cursorID, hasCursor := parseMemoryTraceCursor(in.Cursor)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	matches := make([]mcpTraceRec, 0)
+	for i := len(h.traces) - 1; i >= 0; i-- {
+		rec := h.traces[i]
+		if rec.PrincipalID != principal {
+			continue
+		}
+		if in.ServerID != "" {
+			id, _ := rec.ServerID.(string)
+			if id != in.ServerID {
+				continue
+			}
+		}
+		if hasCursor && (rec.CreatedAt > cursorCreated || (rec.CreatedAt == cursorCreated && rec.ID >= cursorID)) {
+			continue
+		}
+		matches = append(matches, rec)
+	}
+	if len(matches) > 1 {
+		for i := 0; i < len(matches); i++ {
+			for j := i + 1; j < len(matches); j++ {
+				if matches[i].CreatedAt < matches[j].CreatedAt || (matches[i].CreatedAt == matches[j].CreatedAt && matches[i].ID < matches[j].ID) {
+					matches[i], matches[j] = matches[j], matches[i]
+				}
+			}
+		}
+	}
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	traces := make([]map[string]any, 0, len(matches))
+	for _, rec := range matches {
+		traces = append(traces, memoryTraceView(rec))
+	}
+	res := protocol.Success("MCP traces listed", map[string]any{"traces": traces})
+	if len(traces) == limit && limit > 0 {
+		last := traces[len(traces)-1]
+		res.Cursor = strconv.FormatInt(last["createdAt"].(int64), 10) + "." + last["id"].(string)
+	}
+	return res
+}
+
+func memoryTraceView(rec mcpTraceRec) map[string]any {
+	return map[string]any{
+		"id":            rec.ID,
+		"principalId":   rec.PrincipalID,
+		"serverId":      rec.ServerID,
+		"serverName":    rec.ServerName,
+		"tool":          rec.Tool,
+		"operation":     rec.Operation,
+		"clientId":      rec.ClientID,
+		"durationMs":    rec.DurationMs,
+		"status":        rec.Status,
+		"errorCode":     rec.ErrorCode,
+		"errorMessage":  rec.ErrorMessage,
+		"requestBytes":  rec.RequestBytes,
+		"responseBytes": rec.ResponseBytes,
+		"createdAt":     rec.CreatedAt,
+	}
+}
+
+func nilIfEmptyPtr(v *string) any {
+	if v == nil {
+		return nil
+	}
+	s := strings.TrimSpace(*v)
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func nilIfInt(v *int) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+func parseMemoryTraceCursor(cursor string) (int64, string, bool) {
+	sep := strings.IndexByte(cursor, '.')
+	if sep <= 0 {
+		return 0, "", false
+	}
+	created, err := strconv.ParseInt(cursor[:sep], 10, 64)
+	if err != nil || created <= 0 {
+		return 0, "", false
+	}
+	id := cursor[sep+1:]
+	if id == "" {
+		return 0, "", false
+	}
+	return created, id, true
 }
 
 func parseCreateHeaders(in []createHeader) ([]mcpHeader, string) {

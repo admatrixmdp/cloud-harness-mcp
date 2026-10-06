@@ -88,7 +88,7 @@ func replaceTool(t *testing.T, svc *Service, owner, serverID, upstream, perm str
 }
 
 func TestInternalGatewayOpsStayOffPublicCatalog(t *testing.T) {
-	if protocol.OpMCPGatewayCatalog.Known() || protocol.OpMCPServerGetCredentials.Known() {
+	if protocol.OpMCPGatewayCatalog.Known() || protocol.OpMCPServerGetCredentials.Known() || protocol.OpMCPGatewayTraceAppend.Known() || protocol.OpMCPGatewayTraceList.Known() {
 		t.Fatal("internal MCP gateway ops must not be public /mcp tools")
 	}
 	if len(protocol.AllOperations) != 92 {
@@ -214,6 +214,45 @@ func TestInternalGatewayHTTP(t *testing.T) {
 	}
 	if !got.OK {
 		t.Fatalf("%+v", got)
+	}
+}
+
+func TestMCPGatewayTracesScrubSecrets(t *testing.T) {
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)
+	id := seedGateway(t, svc, "owner", "github", "https://example.com/mcp", "allow", nil)
+	secret := "s3cr3t/value+token"
+	appendRaw, _ := json.Marshal(map[string]any{
+		"serverId": id, "serverName": "github", "tool": "first", "operation": "execute",
+		"durationMs": 15, "status": "error", "errorCode": "EXECUTION_FAILED",
+		"errorMessage": "upstream rejected request\nAuthorization: Bearer " + secret + "\nbody: " + secret,
+		"secrets":      []string{secret},
+	})
+	appended := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpMCPGatewayTraceAppend, Input: appendRaw,
+	})
+	if !appended.OK {
+		t.Fatalf("append: %+v", appended)
+	}
+	listed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpMCPGatewayTraceList,
+		Input: json.RawMessage(`{"serverId":"` + id + `","limit":50}`),
+	})
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	raw, _ := json.Marshal(listed)
+	if strings.Contains(string(raw), secret) {
+		t.Fatal("memory hub leaked secret")
+	}
+	if !strings.Contains(string(raw), "Authorization: [REDACTED]") {
+		t.Fatalf("header not redacted: %s", raw)
+	}
+	foreign := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "other", Operation: protocol.OpMCPGatewayTraceList, Input: json.RawMessage(`{"limit":50}`),
+	})
+	traces, _ := foreign.Data.(map[string]any)["traces"].([]map[string]any)
+	if len(traces) != 0 {
+		t.Fatal("principal isolation failed for memory traces")
 	}
 }
 

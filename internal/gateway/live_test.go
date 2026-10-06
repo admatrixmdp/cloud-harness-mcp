@@ -17,11 +17,21 @@ type fakeRunner struct {
 	catalog     catalogView
 	credentials credentialsView
 	calls       []protocol.Operation
+	inputs      []json.RawMessage
 }
 
 func (f *fakeRunner) Call(_ context.Context, op protocol.Operation, input json.RawMessage) protocol.ToolResult {
 	f.calls = append(f.calls, op)
+	f.inputs = append(f.inputs, append(json.RawMessage(nil), input...))
 	switch op {
+	case protocol.OpMCPGatewayTraceAppend:
+		var entry map[string]any
+		_ = json.Unmarshal(input, &entry)
+		secrets, _ := entry["secrets"].([]any)
+		if len(secrets) != 0 {
+			return protocol.Fail(protocol.ErrorInvalidInput, "live traces must send empty secrets", false)
+		}
+		return protocol.Success("MCP trace recorded", map[string]any{"trace": map[string]any{"id": "mcpg_abcdefghijklmnopqrstuvwx"}})
 	case protocol.OpMCPGatewayCatalog:
 		var filter struct {
 			QualifiedName string `json:"qualifiedName"`
@@ -148,6 +158,22 @@ func TestLiveExecuteAllowPostsToolsCall(t *testing.T) {
 	}
 	if strings.Contains(got.Message, "super-secret-token") {
 		t.Fatal("secret leaked")
+	}
+	found := false
+	for i, op := range runner.calls {
+		if op != protocol.OpMCPGatewayTraceAppend {
+			continue
+		}
+		found = true
+		if strings.Contains(string(runner.inputs[i]), "super-secret-token") {
+			t.Fatal("trace append leaked credential")
+		}
+		if !strings.Contains(string(runner.inputs[i]), `"secrets":[]`) {
+			t.Fatalf("trace append secrets: %s", runner.inputs[i])
+		}
+	}
+	if !found {
+		t.Fatal("execute must append a metadata-only trace")
 	}
 }
 

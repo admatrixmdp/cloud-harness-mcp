@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
@@ -80,5 +81,67 @@ func TestStorePersistsCatalogAndPermissions(t *testing.T) {
 	headers := creds.Data.(map[string]any)["headers"].(map[string]string)
 	if headers["authorization"] != "Bearer persist-token" {
 		t.Fatalf("headers %+v", headers)
+	}
+}
+
+func TestStorePersistsTracesAndScrubsSecrets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcpgw.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "s3cr3t/value+token"
+	appendRaw, _ := json.Marshal(map[string]any{
+		"serverId": "mcps_abcdefghijklmnopqrstuvwx", "serverName": "github", "tool": "github.issue_create",
+		"operation": "execute", "clientId": "client-1", "durationMs": 15, "status": "error",
+		"errorCode":    "EXECUTION_FAILED",
+		"errorMessage": "upstream rejected request\nAuthorization: Bearer " + secret + "\nbody: " + secret,
+		"requestBytes": 12, "responseBytes": 34, "secrets": []string{secret},
+	})
+	appended := store.Handle(protocol.RunnerRequest{Version: 2, OwnerID: "owner-a", Operation: protocol.OpMCPGatewayTraceAppend, Input: appendRaw})
+	if !appended.OK {
+		t.Fatalf("append: %+v", appended)
+	}
+	trace := appended.Data.(map[string]any)["trace"].(map[string]any)
+	id := trace["id"].(string)
+	if !protocol.ValidOpaqueID(protocol.PrefixMCPTrace, id) {
+		t.Fatalf("trace id %s", id)
+	}
+	_ = db.Close()
+
+	reopen, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopen.Close() })
+	again, err := Open(reopen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := again.Handle(protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner-a", Operation: protocol.OpMCPGatewayTraceList,
+		Input: json.RawMessage(`{"serverId":"mcps_abcdefghijklmnopqrstuvwx","limit":50}`),
+	})
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	raw, _ := json.Marshal(listed)
+	if strings.Contains(string(raw), secret) {
+		t.Fatal("persisted trace leaked secret")
+	}
+	if !strings.Contains(string(raw), "Authorization: [REDACTED]") {
+		t.Fatalf("header not redacted: %s", raw)
+	}
+	if !strings.Contains(string(raw), "[REDACTED_SECRET]") {
+		t.Fatalf("secret form not redacted: %s", raw)
+	}
+	other := again.Handle(protocol.RunnerRequest{Version: 2, OwnerID: "owner-b", Operation: protocol.OpMCPGatewayTraceList, Input: json.RawMessage(`{"limit":50}`)})
+	otherTraces, _ := other.Data.(map[string]any)["traces"].([]map[string]any)
+	if len(otherTraces) != 0 {
+		t.Fatal("principal isolation failed for traces")
 	}
 }

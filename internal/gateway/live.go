@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
+
+const deniedTraceMessage = "the MCP tool is not permitted for this principal"
 
 const unknownToolMessage = "unknown or inaccessible MCP tool"
 
@@ -88,11 +91,17 @@ func (l *Live) Dispatch(ctx context.Context, name string, input map[string]any) 
 }
 
 func (l *Live) search(ctx context.Context, query, server string, limit int) protocol.ToolResult {
+	started := time.Now()
 	if strings.TrimSpace(query) == "" {
 		return protocol.Fail(protocol.ErrorInvalidInput, "query is required", false)
 	}
 	catalog, errRes, ok := l.loadCatalog(ctx, nil)
 	if !ok {
+		l.trace(ctx, map[string]any{
+			"serverId": nil, "serverName": "*", "tool": nil, "operation": "search",
+			"durationMs": elapsedMs(started), "status": "error",
+			"errorCode": codeOf(errRes), "errorMessage": errRes.Message, "requestBytes": jsonBytes(query),
+		})
 		return errRes
 	}
 	if limit <= 0 {
@@ -120,19 +129,31 @@ func (l *Live) search(ctx context.Context, query, server string, limit int) prot
 			break
 		}
 	}
-	return protocol.Success("search results", map[string]any{"results": matches, "tools": matches})
+	out := map[string]any{"results": matches, "tools": matches}
+	l.trace(ctx, map[string]any{
+		"serverId": nil, "serverName": "*", "tool": nil, "operation": "search",
+		"durationMs": elapsedMs(started), "status": "success",
+		"requestBytes": jsonBytes(query), "responseBytes": jsonBytes(matches),
+	})
+	return protocol.Success("search results", out)
 }
 
 func (l *Live) inspect(ctx context.Context, qualified string) protocol.ToolResult {
+	started := time.Now()
 	tool, _, errRes, ok := l.resolveTool(ctx, qualified)
 	if !ok {
+		l.trace(ctx, map[string]any{
+			"serverId": nil, "serverName": "*", "tool": qualified, "operation": "inspect",
+			"durationMs": elapsedMs(started), "status": "error",
+			"errorCode": codeOf(errRes), "errorMessage": errRes.Message, "requestBytes": jsonBytes(qualified),
+		})
 		return errRes
 	}
 	schema := tool.InputSchema
 	if schema == nil {
 		schema = map[string]any{"type": "object"}
 	}
-	return protocol.Success("tool schema", map[string]any{
+	data := map[string]any{
 		"name":         tool.QualifiedName,
 		"tool":         tool.QualifiedName,
 		"server":       tool.ServerName,
@@ -141,19 +162,42 @@ func (l *Live) inspect(ctx context.Context, qualified string) protocol.ToolResul
 		"annotations":  tool.Annotations,
 		"permission":   tool.Permission,
 		"availability": tool.Availability,
+	}
+	l.trace(ctx, map[string]any{
+		"serverId": tool.ServerID, "serverName": tool.ServerName, "tool": tool.QualifiedName, "operation": "inspect",
+		"durationMs": elapsedMs(started), "status": "success",
+		"requestBytes": jsonBytes(qualified), "responseBytes": jsonBytes(data),
 	})
+	return protocol.Success("tool schema", data)
 }
 
 func (l *Live) execute(ctx context.Context, qualified string, arguments map[string]any) protocol.ToolResult {
+	started := time.Now()
 	tool, server, errRes, ok := l.resolveTool(ctx, qualified)
 	if !ok {
+		l.trace(ctx, map[string]any{
+			"serverId": nil, "serverName": "*", "tool": qualified, "operation": "execute",
+			"durationMs": elapsedMs(started), "status": "error",
+			"errorCode": codeOf(errRes), "errorMessage": errRes.Message, "requestBytes": jsonBytes(arguments),
+		})
 		return errRes
 	}
 	if tool.Availability == "unavailable" {
-		return protocol.Fail(protocol.ErrorInvalidInput, "tool is unavailable", false)
+		fail := protocol.Fail(protocol.ErrorInvalidInput, "tool is unavailable", false)
+		l.trace(ctx, map[string]any{
+			"serverId": server.ID, "serverName": server.Name, "tool": qualified, "operation": "execute",
+			"durationMs": elapsedMs(started), "status": "error",
+			"errorCode": protocol.ErrorInvalidInput, "errorMessage": fail.Message, "requestBytes": jsonBytes(arguments),
+		})
+		return fail
 	}
 	creds, errRes, ok := l.credentials(ctx, server.ID, tool.UpstreamName, "execute")
 	if !ok {
+		l.trace(ctx, map[string]any{
+			"serverId": server.ID, "serverName": server.Name, "tool": tool.QualifiedName, "operation": "execute",
+			"durationMs": elapsedMs(started), "status": "error",
+			"errorCode": codeOf(errRes), "errorMessage": errRes.Message, "requestBytes": jsonBytes(arguments),
+		})
 		return errRes
 	}
 	if !creds.Allowed {
@@ -161,6 +205,11 @@ func (l *Live) execute(ctx context.Context, qualified string, arguments map[stri
 		if reason == "" {
 			reason = "tool_denied"
 		}
+		l.trace(ctx, map[string]any{
+			"serverId": server.ID, "serverName": server.Name, "tool": tool.QualifiedName, "operation": "execute",
+			"durationMs": elapsedMs(started), "status": "denied",
+			"errorCode": "FORBIDDEN", "errorMessage": deniedTraceMessage, "requestBytes": jsonBytes(arguments),
+		})
 		return protocol.Success("MCP tool access denied", map[string]any{
 			"tool":    tool.QualifiedName,
 			"server":  server.Name,
@@ -174,15 +223,34 @@ func (l *Live) execute(ctx context.Context, qualified string, arguments map[stri
 	}
 	validated, err := ValidateEndpoint(endpoint, l.Endpoint)
 	if err != nil {
-		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+		fail := protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+		l.trace(ctx, map[string]any{
+			"serverId": server.ID, "serverName": server.Name, "tool": tool.QualifiedName, "operation": "execute",
+			"durationMs": elapsedMs(started), "status": "error",
+			"errorCode": protocol.ErrorInvalidInput, "errorMessage": fail.Message, "requestBytes": jsonBytes(arguments),
+		})
+		return fail
 	}
 	client := DownstreamClient{
 		Endpoint:  validated.URL,
 		Addresses: validated.Addresses,
 		Headers:   creds.Headers,
 	}
-	result := client.Call(ctx, tool.UpstreamName, arguments)
-	return redactResult(result, secretsFrom(creds.Headers))
+	result := redactResult(client.Call(ctx, tool.UpstreamName, arguments), secretsFrom(creds.Headers))
+	status := "success"
+	var errorCode, errorMessage any
+	if !result.OK {
+		status = "error"
+		errorCode = "EXECUTION_FAILED"
+		errorMessage = "the downstream MCP tool reported an error"
+	}
+	l.trace(ctx, map[string]any{
+		"serverId": server.ID, "serverName": server.Name, "tool": tool.QualifiedName, "operation": "execute",
+		"durationMs": elapsedMs(started), "status": status,
+		"errorCode": errorCode, "errorMessage": errorMessage,
+		"requestBytes": jsonBytes(arguments), "responseBytes": jsonBytes(result.Data),
+	})
+	return result
 }
 
 func (l *Live) permissions(ctx context.Context, qualified, server string) protocol.ToolResult {
@@ -318,6 +386,45 @@ func searchable(catalog catalogView) []catalogTool {
 		}
 	}
 	return out
+}
+
+func (l *Live) trace(ctx context.Context, entry map[string]any) {
+	if l == nil || l.Runner == nil {
+		return
+	}
+	// Resolved credential values must never be sent to the runner.
+	entry["secrets"] = []string{}
+	if _, ok := entry["maxRows"]; !ok {
+		entry["maxRows"] = 20_000
+	}
+	raw, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	_ = l.Runner.Call(ctx, protocol.OpMCPGatewayTraceAppend, raw)
+}
+
+func elapsedMs(started time.Time) int {
+	n := int(time.Since(started).Milliseconds())
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+func jsonBytes(value any) int {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return 0
+	}
+	return len(raw)
+}
+
+func codeOf(result protocol.ToolResult) any {
+	if result.Error == nil {
+		return nil
+	}
+	return result.Error.Code
 }
 
 func redactResult(result protocol.ToolResult, secrets []string) protocol.ToolResult {

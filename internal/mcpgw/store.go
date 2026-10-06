@@ -13,7 +13,8 @@ import (
 )
 
 // Store is the durable MCP-gateway registry (today apps/runner mcp-gateway-store).
-// Traces stay unwired in this slice. secretRef is stored but never resolved here.
+// secretRef is stored but never resolved here. Trace writes scrub secrets and
+// never persist arguments, results, or credential values.
 type Store struct {
 	db *sql.DB
 }
@@ -113,6 +114,25 @@ CREATE TABLE IF NOT EXISTS mcp_gateway_tool_permissions (
   permission TEXT NOT NULL CHECK (permission IN ('allow', 'deny')),
   PRIMARY KEY(principal_id, server_id, tool_name)
 );
+
+CREATE TABLE IF NOT EXISTS mcp_gateway_traces (
+  id TEXT PRIMARY KEY,
+  principal_id TEXT NOT NULL,
+  server_id TEXT,
+  server_name TEXT NOT NULL,
+  tool TEXT,
+  operation TEXT NOT NULL,
+  client_id TEXT,
+  duration_ms INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('success', 'error', 'denied')),
+  error_code TEXT,
+  error_message TEXT,
+  request_bytes INTEGER,
+  response_bytes INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS mcp_traces_principal_created ON mcp_gateway_traces(principal_id, created_at DESC, id);
+CREATE INDEX IF NOT EXISTS mcp_traces_principal_server ON mcp_gateway_traces(principal_id, server_id, created_at DESC);
 `); err != nil {
 		return nil, err
 	}
@@ -136,6 +156,10 @@ func (s *Store) Handle(req protocol.RunnerRequest) protocol.ToolResult {
 		return s.replaceTools(principal, req.Input)
 	case protocol.OpMCPServerSetPermissions:
 		return s.setPermissions(principal, req.Input)
+	case protocol.OpMCPGatewayTraceAppend:
+		return s.appendTrace(principal, req.Input)
+	case protocol.OpMCPGatewayTraceList:
+		return s.listTraces(principal, req.Input)
 	default:
 		return protocol.Fail(protocol.ErrorInvalidInput, "unknown operation", false)
 	}
