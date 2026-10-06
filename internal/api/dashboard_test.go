@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	apiembed "github.com/bestagentkits/cloud-harness-mcp/apps/api"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
@@ -719,5 +720,158 @@ func TestDashboardGitRuntimeAndAutomation(t *testing.T) {
 	}
 	if session.Code == 200 && strings.Contains(session.Body.String(), `"stdin"`) {
 		t.Fatal("session stdin must not reach the browser")
+	}
+}
+
+func TestNormalizeServerVersion(t *testing.T) {
+	for _, accepted := range []string{"0.62.8", "0.39.0", "0.40.0-beta.12", "1.2.3+build.7", "1.0.0-rc.1+build.9", "1.2.3+" + strings.Repeat("a", 80)} {
+		if got := apiembed.NormalizeServerVersion(accepted); got != accepted {
+			t.Fatalf("accepted %q got %q", accepted, got)
+		}
+	}
+	for _, rejected := range []string{"</script>", `0.39.0" onload="x`, "", " ", "1.0.0 ", "1.0.0/../x", "<b>"} {
+		if got := apiembed.NormalizeServerVersion(rejected); got != "unknown" {
+			t.Fatalf("rejected %q got %q", rejected, got)
+		}
+	}
+	if apiembed.ServerVersion() != "0.62.8" {
+		t.Fatalf("server version %s", apiembed.ServerVersion())
+	}
+}
+
+func TestDashboardShellAndAssets(t *testing.T) {
+	h, _ := dashboardFixture(t)
+	auth := map[string]string{"Authorization": "Bearer owner-secret"}
+	version := apiembed.ServerVersion()
+
+	shell := dashboardDo(t, h, http.MethodGet, "/dashboard", "", auth)
+	if shell.Code != 200 {
+		t.Fatalf("shell %d %s", shell.Code, shell.Body.String())
+	}
+	body := shell.Body.String()
+	if !strings.Contains(body, "<title>Overview | Cloud Harness</title>") {
+		t.Fatal("missing title")
+	}
+	if strings.Contains(body, "__CH_VERSION__") || strings.Contains(body, "__CH_ASSET_VERSION__") {
+		t.Fatal("placeholders leaked")
+	}
+	if !strings.Contains(body, "v"+version) {
+		t.Fatalf("missing version %s", body[:200])
+	}
+	if !strings.Contains(body, "/dashboard/assets/"+version+"/dashboard.css") {
+		t.Fatal("missing versioned css")
+	}
+	if shell.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("shell cache %s", shell.Header().Get("Cache-Control"))
+	}
+
+	dark := dashboardDo(t, h, http.MethodGet, "/dashboard/overview", "", map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        "ch-dashboard-theme=dark",
+	})
+	if dark.Code != http.StatusFound || dark.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("overview redirect %d %s", dark.Code, dark.Header().Get("Location"))
+	}
+
+	themed := dashboardDo(t, h, http.MethodGet, "/dashboard/workspaces", "", map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        "ch-dashboard-theme=dark",
+	})
+	if !strings.Contains(themed.Body.String(), `<html lang="en" data-theme="dark">`) {
+		t.Fatalf("theme %s", themed.Body.String()[:80])
+	}
+	ignored := dashboardDo(t, h, http.MethodGet, "/dashboard/workspaces", "", map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        "ch-dashboard-theme=neon",
+	})
+	if !strings.Contains(ignored.Body.String(), `<html lang="en">`) || strings.Contains(ignored.Body.String(), `data-theme="`) {
+		t.Fatalf("invalid theme %s", ignored.Body.String()[:80])
+	}
+
+	github := dashboardDo(t, h, http.MethodGet, "/dashboard/github", "", auth)
+	if github.Code != http.StatusFound || github.Header().Get("Location") != "/dashboard/integrations/github" {
+		t.Fatalf("github redirect %d %s", github.Code, github.Header().Get("Location"))
+	}
+	mcpServers := dashboardDo(t, h, http.MethodGet, "/dashboard/integrations/mcp-servers", "", auth)
+	if mcpServers.Code != http.StatusFound || mcpServers.Header().Get("Location") != "/dashboard/mcp-servers" {
+		t.Fatalf("mcp redirect %d %s", mcpServers.Code, mcpServers.Header().Get("Location"))
+	}
+
+	asset := dashboardDo(t, h, http.MethodGet, "/dashboard/assets/"+version+"/dashboard-pages.js", "", auth)
+	if asset.Code != 200 {
+		t.Fatalf("asset %d %s", asset.Code, asset.Body.String())
+	}
+	if !strings.Contains(asset.Header().Get("Content-Type"), "javascript") {
+		t.Fatalf("content-type %s", asset.Header().Get("Content-Type"))
+	}
+	if asset.Header().Get("Cache-Control") != "private, max-age=31536000, immutable" {
+		t.Fatalf("asset cache %s", asset.Header().Get("Cache-Control"))
+	}
+	if !strings.Contains(asset.Body.String(), "DASHBOARD_PAGES") {
+		t.Fatal("pages missing")
+	}
+
+	legacy := dashboardDo(t, h, http.MethodGet, "/dashboard/assets/dashboard-pages.js", "", auth)
+	if legacy.Code != 200 || legacy.Header().Get("Cache-Control") != "private, no-cache" {
+		t.Fatalf("legacy %d %s", legacy.Code, legacy.Header().Get("Cache-Control"))
+	}
+
+	wrong := dashboardDo(t, h, http.MethodGet, "/dashboard/assets/not-"+version+"/dashboard-pages.js", "", auth)
+	if wrong.Code != 404 {
+		t.Fatalf("wrong version %d", wrong.Code)
+	}
+	secret := dashboardDo(t, h, http.MethodGet, "/dashboard/assets/"+version+"/package.json", "", auth)
+	if secret.Code != 404 {
+		t.Fatalf("package.json %d", secret.Code)
+	}
+
+	nested := dashboardDo(t, h, http.MethodGet, "/dashboard/workspaces/ws_abcdefghijklmnopqrstuvwx/git", "", auth)
+	if nested.Code != 200 || !strings.Contains(nested.Body.String(), "<title>Overview | Cloud Harness</title>") {
+		t.Fatalf("nested shell %d", nested.Code)
+	}
+}
+
+func TestDashboardProfileAndPreferences(t *testing.T) {
+	h, _ := dashboardFixture(t)
+	csrf, cookie := dashboardCSRF(t, h)
+	auth := map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+	}
+
+	profile := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/profile", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if profile.Code != 200 {
+		t.Fatalf("profile %d %s", profile.Code, profile.Body.String())
+	}
+	if !strings.Contains(profile.Body.String(), `"preferences"`) || strings.Contains(profile.Body.String(), "owner-secret") {
+		t.Fatalf("profile body %s", profile.Body.String())
+	}
+
+	server := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/server", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if server.Code != 200 || !strings.Contains(server.Body.String(), `"version":"`+apiembed.ServerVersion()+`"`) {
+		t.Fatalf("server %d %s", server.Code, server.Body.String())
+	}
+
+	denied := dashboardDo(t, h, http.MethodPut, "/dashboard/api/v1/preferences", `{"theme":"dark"}`, map[string]string{"Authorization": "Bearer owner-secret"})
+	if denied.Code != http.StatusUnauthorized {
+		t.Fatalf("missing csrf %d %s", denied.Code, denied.Body.String())
+	}
+
+	ok := dashboardDo(t, h, http.MethodPut, "/dashboard/api/v1/preferences", `{"theme":"dark","displayName":"Ada"}`, auth)
+	if ok.Code != 200 {
+		t.Fatalf("preferences %d %s", ok.Code, ok.Body.String())
+	}
+	setCookie := strings.Join(ok.Result().Header.Values("Set-Cookie"), "\n")
+	if !strings.Contains(setCookie, "ch-dashboard-theme=dark") || !strings.Contains(setCookie, "HttpOnly") || !strings.Contains(setCookie, "Secure") {
+		t.Fatalf("set-cookie %s", setCookie)
+	}
+	if !strings.Contains(ok.Body.String(), `"theme":"dark"`) || !strings.Contains(ok.Body.String(), `"displayName":"Ada"`) {
+		t.Fatalf("pref body %s", ok.Body.String())
+	}
+
+	badName := dashboardDo(t, h, http.MethodPut, "/dashboard/api/v1/preferences", `{"displayName":"<script>"}`, auth)
+	if badName.Code != http.StatusBadRequest {
+		t.Fatalf("bad name %d %s", badName.Code, badName.Body.String())
 	}
 }

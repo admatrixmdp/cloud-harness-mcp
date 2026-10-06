@@ -20,7 +20,13 @@ var mutationMethods = map[string]struct{}{
 
 func dashboardHandler(opts Options, sessions *Sessions) http.Handler {
 	mux := http.NewServeMux()
+	registerDashboardAssets(mux)
 	mux.HandleFunc("GET /api/v1/session", sessions.bootstrap)
+	mux.Handle("GET /api/v1/profile", requirePrincipal(http.HandlerFunc(writeProfile)))
+	mux.Handle("GET /api/v1/server", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeServer(w, r, opts)
+	})))
+	mux.Handle("PUT /api/v1/preferences", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(writePreferences)))))
 	mux.Handle("GET /api/v1/privilege-grants", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxyDashboard(w, r, opts.Runner, protocol.OpPrivilegeGrantList, map[string]any{
 			"workspaceId": r.URL.Query().Get("workspaceId"),

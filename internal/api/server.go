@@ -25,6 +25,11 @@ type Options struct {
 	AccessVerifier *auth.AccessVerifier
 	Runner         *mcp.RunnerClient
 	Security       SecurityConfig
+	// APIKeyAuthEnabled and APIKeyGatewayPublicURL project GET /api/v1/server.
+	APIKeyAuthEnabled      bool
+	APIKeyGatewayPublicURL string
+	MaxBodyBytes           int
+	RequestTimeoutMs       int
 	// MCPGatewayAllowInsecureHTTP permits cleartext http:// downstream endpoints.
 	MCPGatewayAllowInsecureHTTP bool
 	// MCPGatewayAllowPrivateEndpoints permits RFC1918/loopback destinations except link-local/metadata.
@@ -53,7 +58,9 @@ func Handler(opts Options) http.Handler {
 	mux.Handle("/mcp", authenticate(opts, mcp.HandlerWith(mcp.HandlerOptions{Runner: opts.Runner})))
 	mux.Handle("/mcp-gateway", authenticate(opts, mcp.GatewayHandlerWith(mcp.HandlerOptions{Runner: opts.Runner})))
 	sessions := newSessions()
-	mux.Handle("/dashboard/", http.StripPrefix("/dashboard", authenticate(opts, dashboardHandler(opts, sessions))))
+	dash := authenticate(opts, stripDashboard(dashboardHandler(opts, sessions)))
+	mux.Handle("/dashboard", dash)
+	mux.Handle("/dashboard/", dash)
 	inner := securityHeaders(mux)
 	if len(opts.Security.PublicHosts) > 0 {
 		return RequestSecurity(opts.Security, inner)
@@ -101,11 +108,12 @@ func withAccess(verifier *auth.AccessVerifier, next http.Handler) http.Handler {
 			return
 		}
 		ctx := auth.WithIdentity(r.Context(), auth.RequestIdentity{
-			Mode:    auth.ModeCloudflareAccess,
-			Issuer:  id.Principal.Issuer,
-			Subject: id.Principal.Subject,
-			Email:   id.Email,
-			Name:    id.Name,
+			Mode:      auth.ModeCloudflareAccess,
+			Issuer:    id.Principal.Issuer,
+			Subject:   id.Principal.Subject,
+			Email:     id.Email,
+			Name:      id.Name,
+			ExpiresAt: id.ExpiresAt,
 		})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

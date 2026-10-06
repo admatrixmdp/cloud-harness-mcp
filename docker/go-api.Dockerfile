@@ -6,6 +6,9 @@ COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
 COPY pkg ./pkg
+COPY apps/api/package.json apps/api/package.json
+COPY apps/api/embed.go apps/api/embed.go
+COPY apps/api/dashboard apps/api/dashboard
 RUN CGO_ENABLED=0 go build -o /out/cloud-harness-mcp ./cmd/cloud-harness-mcp \
  && CGO_ENABLED=0 go build -o /out/ingress-proxy ./cmd/ingress-proxy
 

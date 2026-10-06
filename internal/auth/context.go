@@ -7,12 +7,13 @@ type identityCtxKey struct{}
 // RequestIdentity is the verified caller attached to an HTTP request.
 // The raw Access JWT is never stored here.
 type RequestIdentity struct {
-	Mode    Mode
-	OwnerID string
-	Issuer  string
-	Subject string
-	Email   string
-	Name    string
+	Mode      Mode
+	OwnerID   string
+	Issuer    string
+	Subject   string
+	Email     string
+	Name      string
+	ExpiresAt int64
 }
 
 // WithIdentity stores a verified identity on ctx.

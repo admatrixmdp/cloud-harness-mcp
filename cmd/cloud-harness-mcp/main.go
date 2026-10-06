@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	apiembed "github.com/bestagentkits/cloud-harness-mcp/apps/api"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/api"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/config"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/healthcheck"
@@ -44,7 +45,7 @@ Local stdio executes confined file/search/exec tools in --workspace.
 Cloudflare Access never treats an opaque client bearer as identity.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if showVersion {
-			fmt.Fprintln(cmd.OutOrStdout(), "cloud-harness-mcp (go-port)")
+			fmt.Fprintln(cmd.OutOrStdout(), apiembed.ServerVersion())
 			return nil
 		}
 		healthcheck.MaybeExit(healthcheckURL, listen, "/healthz")
