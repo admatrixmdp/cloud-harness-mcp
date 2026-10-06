@@ -17,7 +17,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | Concern | TypeScript owner | Go package |
 | --- | --- | --- |
 | CLI flags | `apps/api/src/cli-options.ts` | `internal/config`, `cmd/cloud-harness-mcp` |
-| Owner bearer / Access JWT | `apps/api/src/auth.ts`, `access-jwt-verifier.ts` | `internal/auth` (RS256 Access JWT + JWKS; Access mode ignores opaque client bearer) |
+| Owner bearer / Access JWT | `apps/api/src/auth.ts`, `access-jwt-verifier.ts` | `cmd/cloud-harness-mcp` `ProductionOptions` + `internal/auth`. `AUTH_MODE=cloudflare-access` verifies `Cf-Access-Jwt-Assertion` against team JWKS (https only), ignores opaque client bearer / `chm_key_`, and forwards `principal: {kind:external,issuer,subject}` on each runner RPC. Owner-bearer requires `MCP_BEARER_TOKEN` and forbids Access settings. The raw JWT never appears in logs or runner envelopes. |
 | Request security | `apps/api/src/request-security.ts` | `internal/api` (Host/Origin allowlist, `no-store`/`nosniff`/`X-Accel-Buffering`, pre-auth 429) |
 | Dashboard BFF | `apps/api/src/dashboard-*.ts` | `internal/api` (later) |
 | Ingress proxy | `deploy/ingress-proxy.mjs` | `cmd/ingress-proxy` + `internal/ingress` (raw TCP byte pipe, no secrets, SIGINT/SIGTERM). Opt-in overlay `compose.go.yaml`; TS `compose.yaml` stays shipped |

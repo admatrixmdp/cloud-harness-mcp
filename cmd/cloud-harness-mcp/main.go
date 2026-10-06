@@ -40,7 +40,8 @@ var rootCmd = &cobra.Command{
 
 This binary must not hold a Docker socket or host job mounts.
 Runner RPC is the only path to workspace execution in HTTP mode.
-Local stdio executes confined file/search/exec tools in --workspace.`,
+Local stdio executes confined file/search/exec tools in --workspace.
+Cloudflare Access never treats an opaque client bearer as identity.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if showVersion {
 			fmt.Fprintln(cmd.OutOrStdout(), "cloud-harness-mcp (go-port)")
@@ -75,18 +76,11 @@ Local stdio executes confined file/search/exec tools in --workspace.`,
 				Local: mcp.NewLocalBackend(root, opts.GitNetwork, opts.GitPush),
 			})
 		}
-		var runner *mcp.RunnerClient
-		if url := os.Getenv("RUNNER_URL"); url != "" {
-			runner = &mcp.RunnerClient{
-				BaseURL:      url,
-				ServiceToken: os.Getenv("RUNNER_SERVICE_TOKEN"),
-				OwnerID:      os.Getenv("OWNER_ID"),
-			}
+		httpOpts, err := api.ProductionOptions(os.Getenv)
+		if err != nil {
+			return err
 		}
-		handler := api.Handler(api.Options{
-			BearerToken: os.Getenv("MCP_BEARER_TOKEN"),
-			Runner:      runner,
-		})
+		handler := api.Handler(httpOpts)
 		slog.Info("api listening", "addr", listen)
 		return http.ListenAndServe(listen, handler)
 	},

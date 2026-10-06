@@ -11,6 +11,33 @@ type RunnerRequest struct {
 	Input     json.RawMessage `json:"input"`
 }
 
+// PrincipalOwnerID is the durable owner key for a runner request.
+// Version 1 uses ownerId; version 2 prefers principal. Access identities
+// are keyed as issuer + NUL + subject so they cannot collide with owner-bearer.
+func PrincipalOwnerID(req RunnerRequest) string {
+	if len(req.Principal) > 0 {
+		var p struct {
+			Kind    PrincipalKind `json:"kind"`
+			OwnerID string        `json:"ownerId"`
+			Issuer  string        `json:"issuer"`
+			Subject string        `json:"subject"`
+		}
+		if json.Unmarshal(req.Principal, &p) == nil {
+			switch p.Kind {
+			case PrincipalExternal:
+				if p.Issuer != "" && p.Subject != "" {
+					return p.Issuer + "\x00" + p.Subject
+				}
+			case PrincipalOwner:
+				if p.OwnerID != "" {
+					return p.OwnerID
+				}
+			}
+		}
+	}
+	return req.OwnerID
+}
+
 // PrincipalKind is the runner principal discriminator.
 type PrincipalKind string
 
@@ -36,12 +63,12 @@ type ExternalPrincipal struct {
 
 // RepositoryCapabilities is the GitHub-facing grant summary.
 type RepositoryCapabilities struct {
-	Read               bool `json:"read"`
-	Push               bool `json:"push"`
-	IssuesRead         bool `json:"issuesRead"`
-	IssuesWrite        bool `json:"issuesWrite"`
-	PullRequestsRead   bool `json:"pullRequestsRead"`
-	PullRequestsWrite  bool `json:"pullRequestsWrite"`
+	Read              bool `json:"read"`
+	Push              bool `json:"push"`
+	IssuesRead        bool `json:"issuesRead"`
+	IssuesWrite       bool `json:"issuesWrite"`
+	PullRequestsRead  bool `json:"pullRequestsRead"`
+	PullRequestsWrite bool `json:"pullRequestsWrite"`
 }
 
 // WorkspaceNetworkExposure includes the local-stdio host profile.

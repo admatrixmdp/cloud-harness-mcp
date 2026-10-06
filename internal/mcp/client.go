@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/auth"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
 
@@ -60,9 +61,11 @@ func (c *RunnerClient) Call(ctx context.Context, op protocol.Operation, input js
 	if input == nil {
 		input = json.RawMessage(`{}`)
 	}
+	ownerID, principal := c.identity(ctx)
 	body, err := json.Marshal(protocol.RunnerRequest{
 		Version:   2,
-		OwnerID:   c.OwnerID,
+		OwnerID:   ownerID,
+		Principal: principal,
 		Operation: op,
 		Input:     input,
 	})
@@ -96,4 +99,24 @@ func (c *RunnerClient) Call(ctx context.Context, op protocol.Operation, input js
 		return protocol.Fail(protocol.ErrorUnavailable, fmt.Sprintf("Runner returned invalid envelope (HTTP %d)", res.StatusCode), true)
 	}
 	return result
+}
+
+func (c *RunnerClient) identity(ctx context.Context) (string, json.RawMessage) {
+	if id, ok := auth.IdentityFrom(ctx); ok {
+		switch id.Mode {
+		case auth.ModeCloudflareAccess:
+			raw, _ := json.Marshal(protocol.ExternalPrincipal{
+				Kind: protocol.PrincipalExternal, Issuer: id.Issuer, Subject: id.Subject, Email: id.Email, Name: id.Name,
+			})
+			return id.Issuer + "\x00" + id.Subject, raw
+		case auth.ModeOwnerBearer:
+			owner := id.OwnerID
+			if owner == "" {
+				owner = c.OwnerID
+			}
+			raw, _ := json.Marshal(protocol.OwnerPrincipal{Kind: protocol.PrincipalOwner, OwnerID: owner})
+			return owner, raw
+		}
+	}
+	return c.OwnerID, nil
 }

@@ -193,6 +193,9 @@ type openInput struct {
 
 // Execute runs one public runner operation.
 func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
+	if owner := protocol.PrincipalOwnerID(req); owner != "" {
+		req.OwnerID = owner
+	}
 	if req.Operation.Internal() {
 		return s.mcpGateway(req)
 	}
