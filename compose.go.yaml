@@ -68,3 +68,9 @@ services:
     build:
       context: .
       dockerfile: docker/go-executor.Dockerfile
+
+  agent-image:
+    image: cloud-harness-agent:local
+    build:
+      context: .
+      dockerfile: docker/go-agent.Dockerfile
