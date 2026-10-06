@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -101,6 +103,175 @@ func TestServeRuntimeDeadlineTimesOut(t *testing.T) {
 		t.Fatalf("expected deadline terminal, got %s", out.String())
 	}
 }
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *lockedBuffer) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *lockedBuffer) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+func waitFor(t *testing.T, w *lockedBuffer, needle string, d time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		got := w.String()
+		if strings.Contains(got, needle) {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s, got %s", needle, w.String())
+	return ""
+}
+
+func TestServeRuntimeProxiesGrantedToolCall(t *testing.T) {
+	var calls atomicInt
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.add()
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_files","type":"function","function":{"name":"files_read","arguments":"{\"path\":\"README.md\"}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done lease_secret_token_value_xxxxxxxxxxxx"}}],"usage":{"prompt_tokens":2,"completion_tokens":1}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	start := StartRecord{
+		Type: "start", RequestID: "req-1", AgentID: "agent_" + strings.Repeat("p", 24),
+		Prompt: "read it", Tools: []string{"files_read"},
+		Gateway: StartGateway{Profile: "coding-fast", Lease: "lease_secret_token_value_xxxxxxxxxxxx"},
+		Model:   StartModel{ID: "gpt", Name: "gpt", API: "openai-completions", ContextWindow: 8_000, MaxTokens: 1_024},
+		Limits:  StartLimits{DeadlineMs: 5_000, MaxEvents: 100, MaxOutputBytes: 65_536, MaxEventBytes: 4_096, MaxToolResultBytes: 4_096},
+	}
+	raw, _ := json.Marshal(start)
+	pr, pw := io.Pipe()
+	var out lockedBuffer
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeRuntimeWith(ctx, pr, &out, upstream.URL+"/v1", upstream.Client())
+	}()
+	if _, err := pw.Write(append(raw, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := waitFor(t, &out, `"type":"tool_request"`, 2*time.Second)
+	if !strings.Contains(snapshot, `"operation":"files_read"`) || !strings.Contains(snapshot, `"requestId":"call_files"`) {
+		t.Fatalf("missing tool_request %s", snapshot)
+	}
+	if strings.Contains(snapshot, "lease_secret_token_value_xxxxxxxxxxxx") {
+		t.Fatalf("lease leaked before result: %s", snapshot)
+	}
+	if _, err := pw.Write([]byte(`{"type":"tool_result","requestId":"call_files","final":true,"isError":false,"content":[{"type":"text","text":"ok"}]}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runtime did not settle after tool_result")
+	}
+	got := out.String()
+	if !strings.Contains(got, `"SUCCEEDED"`) {
+		t.Fatalf("missing terminal %s", got)
+	}
+	if strings.Contains(got, "lease_secret_token_value_xxxxxxxxxxxx") {
+		t.Fatalf("lease leaked: %s", got)
+	}
+	if calls.value() != 2 {
+		t.Fatalf("gateway calls = %d", calls.value())
+	}
+}
+
+func TestServeRuntimeUnknownToolResultFailsClosed(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_files","type":"function","function":{"name":"files_read","arguments":"{}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	t.Cleanup(upstream.Close)
+	start := StartRecord{
+		Type: "start", RequestID: "req-1", AgentID: "agent_" + strings.Repeat("u", 24),
+		Prompt: "read it", Tools: []string{"files_read"},
+		Gateway: StartGateway{Profile: "coding-fast", Lease: "lease_secret_token_value_xxxxxxxxxxxx"},
+		Model:   StartModel{ID: "gpt", Name: "gpt", API: "openai-completions", ContextWindow: 100, MaxTokens: 10},
+		Limits:  StartLimits{DeadlineMs: 5_000, MaxEvents: 20, MaxOutputBytes: 8192, MaxEventBytes: 1024, MaxToolResultBytes: 1024},
+	}
+	raw, _ := json.Marshal(start)
+	pr, pw := io.Pipe()
+	var out lockedBuffer
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeRuntimeWith(ctx, pr, &out, upstream.URL+"/v1", upstream.Client())
+	}()
+	_, _ = pw.Write(append(raw, '\n'))
+	waitFor(t, &out, `"type":"tool_request"`, 2*time.Second)
+	_, _ = pw.Write([]byte(`{"type":"tool_result","requestId":"call_other","final":true,"isError":false,"content":[{"type":"text","text":"nope"}]}` + "\n"))
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runtime did not fail closed")
+	}
+	got := out.String()
+	if !strings.Contains(got, `"FAILED"`) || !strings.Contains(got, "unknown request") {
+		t.Fatalf("%s", got)
+	}
+}
+
+func TestServeRuntimeRejectsUngrantedToolName(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_write","type":"function","function":{"name":"files_write","arguments":"{}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	t.Cleanup(upstream.Close)
+	start := StartRecord{
+		Type: "start", RequestID: "req-1", AgentID: "agent_" + strings.Repeat("g", 24),
+		Prompt: "write", Tools: []string{"files_read"},
+		Gateway: StartGateway{Profile: "coding-fast", Lease: "lease_secret_token_value_xxxxxxxxxxxx"},
+		Model:   StartModel{ID: "gpt", Name: "gpt", API: "openai-completions", ContextWindow: 100, MaxTokens: 10},
+		Limits:  StartLimits{DeadlineMs: 5_000, MaxEvents: 20, MaxOutputBytes: 8192, MaxEventBytes: 1024, MaxToolResultBytes: 1024},
+	}
+	raw, _ := json.Marshal(start)
+	pr, pw := io.Pipe()
+	var out lockedBuffer
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go func() { _, _ = pw.Write(append(raw, '\n')) }()
+	if err := ServeRuntimeWith(ctx, pr, &out, upstream.URL+"/v1", upstream.Client()); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if strings.Contains(got, `"type":"tool_request"`) {
+		t.Fatalf("ungranted tool must not emit tool_request: %s", got)
+	}
+	if !strings.Contains(got, `"FAILED"`) || !strings.Contains(got, "not granted") {
+		t.Fatalf("%s", got)
+	}
+}
+
+type atomicInt struct{ v atomic.Int32 }
+
+func (a *atomicInt) add() int { return int(a.v.Add(1)) }
+
+func (a *atomicInt) value() int { return int(a.v.Load()) }
 
 func TestValidateGatewayURLRejectsSecrets(t *testing.T) {
 	if err := validateGatewayURL("http://x/sk-live"); err == nil {

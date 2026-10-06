@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,19 +38,21 @@ type Runtime struct {
 	out     io.Writer
 	gateway string
 	client  *http.Client
+	ctx     context.Context
 
-	mu         sync.Mutex
-	started    bool
-	finalizing bool
-	sequence   int
-	emitted    int
-	outBytes   int
-	start      StartRecord
-	secrets    []string
-	pending    []MessageRecord
-	pendingN   int
-	finished   chan struct{}
-	finishOnce sync.Once
+	mu           sync.Mutex
+	started      bool
+	finalizing   bool
+	sequence     int
+	emitted      int
+	outBytes     int
+	start        StartRecord
+	secrets      []string
+	pending      []MessageRecord
+	pendingN     int
+	pendingTools map[string]chan ToolResultRecord
+	finished     chan struct{}
+	finishOnce   sync.Once
 }
 
 // ServeRuntime reads JSONL from stdin until a terminal record is written.
@@ -58,12 +62,17 @@ func ServeRuntime(ctx context.Context, in io.Reader, out io.Writer) error {
 
 // ServeRuntimeWith is the testable entry. Prompt/lease never log.
 func ServeRuntimeWith(ctx context.Context, in io.Reader, out io.Writer, gateway string, client *http.Client) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	rt := &Runtime{
-		in:       in,
-		out:      out,
-		gateway:  gateway,
-		client:   client,
-		finished: make(chan struct{}),
+		in:           in,
+		out:          out,
+		gateway:      gateway,
+		client:       client,
+		ctx:          ctx,
+		pendingTools: map[string]chan ToolResultRecord{},
+		finished:     make(chan struct{}),
 	}
 	if rt.gateway == "" {
 		rt.gateway = defaultGatewayURL
@@ -190,10 +199,44 @@ func (rt *Runtime) receive(line []byte) error {
 		rt.pendingN += bytesN
 		rt.mu.Unlock()
 		return nil
-	case "tool_result", "tool_cancel":
-		// Overlay runtime currently completes without issuing tool_request;
-		// extra results after start are ignored so a TS runner can still fence.
+	case "tool_result":
+		var rec ToolResultRecord
+		if err := json.Unmarshal(line, &rec); err != nil || rec.RequestID == "" {
+			rt.mu.Unlock()
+			return rt.failClosed("FAILED", "protocol record is invalid")
+		}
+		if len(line) > rt.start.Limits.MaxToolResultBytes && rt.start.Limits.MaxToolResultBytes > 0 {
+			rt.mu.Unlock()
+			return rt.failClosed("LIMIT_EXCEEDED", "tool result exceeds job byte limit")
+		}
+		ch, ok := rt.pendingTools[rec.RequestID]
+		if !ok {
+			rt.mu.Unlock()
+			return rt.failClosed("FAILED", "tool result references an unknown request")
+		}
+		delete(rt.pendingTools, rec.RequestID)
 		rt.mu.Unlock()
+		ch <- rec
+		return nil
+	case "tool_cancel":
+		var rec CancelRecord
+		_ = json.Unmarshal(line, &rec)
+		ch, ok := rt.pendingTools[rec.RequestID]
+		if !ok {
+			rt.mu.Unlock()
+			return rt.failClosed("FAILED", "tool cancellation references an unknown request")
+		}
+		delete(rt.pendingTools, rec.RequestID)
+		reason := rec.Reason
+		if reason == "" {
+			reason = "tool request cancelled"
+		}
+		reason = rt.redact(reason, 1024)
+		rt.mu.Unlock()
+		ch <- ToolResultRecord{
+			Type: "tool_result", RequestID: rec.RequestID, Final: true, IsError: true,
+			Content: []ToolResultText{{Type: "text", Text: reason}},
+		}
 		return nil
 	default:
 		rt.mu.Unlock()
@@ -206,47 +249,97 @@ func (rt *Runtime) run(start StartRecord) {
 	if deadline < time.Second {
 		deadline = time.Second
 	}
-	timer := time.NewTimer(deadline)
-	defer timer.Stop()
-	done := make(chan string, 1)
-	go func() {
-		err := rt.callGateway(start)
+	parent := rt.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, deadline)
+	defer cancel()
+	err := rt.session(ctx, start)
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.finalizing {
+		return
+	}
+	if err != nil {
+		state := "FAILED"
+		msg := err.Error()
+		if ctx.Err() == context.DeadlineExceeded {
+			state = "TIMED_OUT"
+			msg = "agent deadline exceeded"
+		} else if ctx.Err() != nil {
+			state = "INTERRUPTED"
+			msg = "runtime received termination signal"
+		} else if isLimitExceeded(msg) {
+			state = "LIMIT_EXCEEDED"
+		}
+		_ = rt.finishLocked(state, rt.redact(msg, 4096))
+		return
+	}
+	_ = rt.finishLocked("SUCCEEDED", "")
+}
+
+type chatMessage struct {
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
+}
+
+type toolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+func (rt *Runtime) session(ctx context.Context, start StartRecord) error {
+	messages := []chatMessage{{Role: "user", Content: start.Prompt}}
+	for {
+		rt.mu.Lock()
+		done := rt.finalizing
+		rt.mu.Unlock()
+		if done {
+			return fmt.Errorf("runtime already terminal")
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		raw, err := rt.callGateway(ctx, start, messages)
 		if err != nil {
-			done <- err.Error()
-			return
+			return err
 		}
-		done <- ""
-	}()
-	select {
-	case <-timer.C:
-		rt.mu.Lock()
-		defer rt.mu.Unlock()
-		if rt.finalizing {
-			return
+		assistant, err := parseAssistant(raw)
+		if err != nil {
+			return err
 		}
-		_ = rt.finishLocked("TIMED_OUT", "agent deadline exceeded")
-	case msg := <-done:
-		rt.mu.Lock()
-		defer rt.mu.Unlock()
-		if rt.finalizing {
-			return
+		if err := rt.emitAssistant(start, assistant, raw); err != nil {
+			return err
 		}
-		if msg != "" {
-			state := "FAILED"
-			if isLimitExceeded(msg) {
-				state = "LIMIT_EXCEEDED"
+		if len(assistant.ToolCalls) == 0 {
+			return nil
+		}
+		messages = append(messages, assistant)
+		for _, call := range assistant.ToolCalls {
+			result, err := rt.proxyTool(ctx, start, call)
+			if err != nil {
+				return err
 			}
-			_ = rt.finishLocked(state, rt.redact(msg, 4096))
-			return
+			messages = append(messages, chatMessage{
+				Role:       "tool",
+				ToolCallID: call.ID,
+				Content:    toolResultText(result),
+			})
 		}
-		_ = rt.finishLocked("SUCCEEDED", "")
 	}
 }
 
-func (rt *Runtime) callGateway(start StartRecord) error {
+func (rt *Runtime) callGateway(ctx context.Context, start StartRecord, messages []chatMessage) ([]byte, error) {
 	base, err := url.Parse(strings.TrimRight(rt.gateway, "/"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	path := "/chat/completions"
 	if start.Model.API == "openai-responses" {
@@ -255,14 +348,13 @@ func (rt *Runtime) callGateway(start StartRecord) error {
 	target := *base
 	target.Path = strings.TrimRight(base.Path, "/") + path
 	body, _ := json.Marshal(map[string]any{
-		"model": start.Model.ID,
-		"messages": []map[string]string{
-			{"role": "user", "content": start.Prompt},
-		},
+		"model":    start.Model.ID,
+		"messages": messages,
+		"tools":    openaiTools(start.Tools),
 	})
-	req, err := http.NewRequest(http.MethodPost, target.String(), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(body))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+start.Gateway.Lease)
 	req.Header.Set("Content-Type", "application/json")
@@ -270,28 +362,33 @@ func (rt *Runtime) callGateway(start StartRecord) error {
 	req.Header.Set("X-Model-Profile", start.Gateway.Profile)
 	res, err := rt.client.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer res.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusRequestEntityTooLarge {
-		return fmt.Errorf("model budget exceeded (%d)", res.StatusCode)
+		return nil, fmt.Errorf("model budget exceeded (%d)", res.StatusCode)
 	}
 	if res.StatusCode >= 400 {
-		return fmt.Errorf("model provider request failed (%d)", res.StatusCode)
+		return nil, fmt.Errorf("model provider request failed (%d)", res.StatusCode)
 	}
-	text := assistantText(raw)
+	return raw, nil
+}
+
+func (rt *Runtime) emitAssistant(start StartRecord, assistant chatMessage, raw []byte) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if rt.finalizing {
-		return nil
+		return fmt.Errorf("runtime already terminal")
 	}
-	event, _ := json.Marshal(map[string]any{"kind": "text_delta", "text": rt.redact(text, start.Limits.MaxEventBytes)})
-	if err := rt.emitLocked(OutputRecord{Type: "event", Sequence: rt.nextSeq(), Event: event}); err != nil {
-		return err
+	if assistant.Content != "" {
+		event, _ := json.Marshal(map[string]any{"kind": "text_delta", "text": rt.redact(assistant.Content, start.Limits.MaxEventBytes)})
+		if err := rt.emitLocked(OutputRecord{Type: "event", Sequence: rt.nextSeq(), Event: event}); err != nil {
+			return err
+		}
 	}
 	usage := Usage{}
 	if prov := usageFromProvider(raw, Profile{
@@ -304,6 +401,84 @@ func (rt *Runtime) callGateway(start StartRecord) error {
 		usage.Cost = float64(prov.CostMicros) / 1_000_000
 	}
 	return rt.emitLocked(OutputRecord{Type: "usage", Sequence: rt.nextSeq(), Usage: &usage})
+}
+
+func (rt *Runtime) proxyTool(ctx context.Context, start StartRecord, call toolCall) (ToolResultRecord, error) {
+	op := call.Function.Name
+	if _, ok := allowedProxyOpsRuntime[op]; !ok {
+		return ToolResultRecord{}, fmt.Errorf("proxy operation is not granted")
+	}
+	granted := false
+	for _, name := range start.Tools {
+		if name == op {
+			granted = true
+			break
+		}
+	}
+	if !granted {
+		return ToolResultRecord{}, fmt.Errorf("proxy operation is not granted")
+	}
+	var input json.RawMessage
+	if strings.TrimSpace(call.Function.Arguments) == "" {
+		input = json.RawMessage(`{}`)
+	} else if json.Valid([]byte(call.Function.Arguments)) {
+		input = json.RawMessage(call.Function.Arguments)
+	} else {
+		return ToolResultRecord{}, fmt.Errorf("tool arguments are invalid")
+	}
+	requestID := boundedRequestID(call.ID)
+	wait := make(chan ToolResultRecord, 1)
+	rt.mu.Lock()
+	if rt.finalizing {
+		rt.mu.Unlock()
+		return ToolResultRecord{}, fmt.Errorf("runtime already terminal")
+	}
+	started, _ := json.Marshal(map[string]any{"kind": "tool", "phase": "started", "toolCallId": requestID, "name": op})
+	if err := rt.emitLocked(OutputRecord{Type: "event", Sequence: rt.nextSeq(), Event: started}); err != nil {
+		rt.mu.Unlock()
+		return ToolResultRecord{}, err
+	}
+	rt.pendingTools[requestID] = wait
+	if err := rt.emitLocked(OutputRecord{
+		Type: "tool_request", RequestID: requestID, ToolCallID: requestID, Operation: op, Input: input,
+	}); err != nil {
+		delete(rt.pendingTools, requestID)
+		rt.mu.Unlock()
+		return ToolResultRecord{}, err
+	}
+	rt.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		rt.mu.Lock()
+		delete(rt.pendingTools, requestID)
+		rt.mu.Unlock()
+		return ToolResultRecord{}, ctx.Err()
+	case result := <-wait:
+		rt.mu.Lock()
+		if !rt.finalizing {
+			ended, _ := json.Marshal(map[string]any{"kind": "tool", "phase": "ended", "toolCallId": requestID, "name": op, "isError": result.IsError})
+			_ = rt.emitLocked(OutputRecord{Type: "event", Sequence: rt.nextSeq(), Event: ended})
+		}
+		rt.mu.Unlock()
+		return result, nil
+	}
+}
+
+func (rt *Runtime) cancelPendingLocked(reason string) {
+	if reason == "" {
+		reason = "agent session ended"
+	}
+	for id, ch := range rt.pendingTools {
+		_ = rt.emitLocked(OutputRecord{Type: "tool_cancel", RequestID: id, Reason: rt.redact(reason, 1024)})
+		select {
+		case ch <- ToolResultRecord{
+			Type: "tool_result", RequestID: id, Final: true, IsError: true,
+			Content: []ToolResultText{{Type: "text", Text: rt.redact(reason, 1024)}},
+		}:
+		default:
+		}
+		delete(rt.pendingTools, id)
+	}
 }
 
 func (rt *Runtime) interrupt(reason string) {
@@ -331,6 +506,7 @@ func (rt *Runtime) finishLocked(state, errMsg string) error {
 		return nil
 	}
 	rt.finalizing = true
+	rt.cancelPendingLocked(errMsg)
 	usage := Usage{}
 	rec := OutputRecord{Type: "terminal", State: state, Usage: &usage}
 	if errMsg != "" {
@@ -439,27 +615,61 @@ func validateGatewayURL(raw string) error {
 	return nil
 }
 
-func assistantText(raw []byte) string {
-	var obj map[string]any
-	if err := json.Unmarshal(raw, &obj); err != nil {
+func parseAssistant(raw []byte) (chatMessage, error) {
+	var envelope struct {
+		Choices []struct {
+			Message chatMessage `json:"message"`
+		} `json:"choices"`
+		OutputText string `json:"output_text"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return chatMessage{}, fmt.Errorf("model provider request failed")
+	}
+	if len(envelope.Choices) > 0 {
+		msg := envelope.Choices[0].Message
+		msg.Role = "assistant"
+		return msg, nil
+	}
+	if envelope.OutputText != "" {
+		return chatMessage{Role: "assistant", Content: envelope.OutputText}, nil
+	}
+	return chatMessage{Role: "assistant"}, nil
+}
+
+func openaiTools(names []string) []map[string]any {
+	out := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		out = append(out, map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        name,
+				"description": "Execute the bounded " + name + " operation in the validated workspace.",
+				"parameters":  map[string]any{"type": "object", "additionalProperties": true},
+			},
+		})
+	}
+	return out
+}
+
+func toolResultText(rec ToolResultRecord) string {
+	if len(rec.Content) == 0 {
 		return ""
 	}
-	if choices, ok := obj["choices"].([]any); ok && len(choices) > 0 {
-		if c, ok := choices[0].(map[string]any); ok {
-			if msg, ok := c["message"].(map[string]any); ok {
-				if t, ok := msg["content"].(string); ok {
-					return t
-				}
-			}
-			if t, ok := c["text"].(string); ok {
-				return t
-			}
-		}
+	parts := make([]string, 0, len(rec.Content))
+	for _, item := range rec.Content {
+		parts = append(parts, item.Text)
 	}
-	if t, ok := obj["output_text"].(string); ok {
-		return t
+	return strings.Join(parts, "\n")
+}
+
+var requestIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+
+func boundedRequestID(value string) string {
+	if requestIDRe.MatchString(value) {
+		return value
 	}
-	return ""
+	sum := sha256.Sum256([]byte(value))
+	return "call_" + hex.EncodeToString(sum[:16])
 }
 
 func isLimitExceeded(msg string) bool {
