@@ -190,6 +190,10 @@ func (rt *Runtime) receive(line []byte) error {
 			rt.mu.Unlock()
 			return rt.failClosed("FAILED", "protocol record is invalid")
 		}
+		if rec.Behavior != "steer" && rec.Behavior != "followUp" {
+			rt.mu.Unlock()
+			return rt.failClosed("FAILED", "protocol record is invalid")
+		}
 		bytesN := len(rec.Text)
 		if len(rt.pending) >= maxQueuedRecords || rt.pendingN+bytesN > maxPendingMsgBytes {
 			rt.mu.Unlock()
@@ -197,6 +201,9 @@ func (rt *Runtime) receive(line []byte) error {
 		}
 		rt.pending = append(rt.pending, rec)
 		rt.pendingN += bytesN
+		steering, followUp := pendingCounts(rt.pending)
+		queue, _ := json.Marshal(map[string]any{"kind": "queue", "steering": steering, "followUp": followUp})
+		_ = rt.emitLocked(OutputRecord{Type: "event", Sequence: rt.nextSeq(), Event: queue})
 		rt.mu.Unlock()
 		return nil
 	case "tool_result":
@@ -297,14 +304,26 @@ type toolCall struct {
 
 func (rt *Runtime) session(ctx context.Context, start StartRecord) error {
 	messages := []chatMessage{{Role: "user", Content: start.Prompt}}
+	if err := rt.emitLifecycle("started"); err != nil {
+		return err
+	}
 	for {
 		rt.mu.Lock()
 		done := rt.finalizing
+		queued := append([]MessageRecord(nil), rt.pending...)
+		rt.pending = nil
+		rt.pendingN = 0
 		rt.mu.Unlock()
 		if done {
 			return fmt.Errorf("runtime already terminal")
 		}
 		if err := ctx.Err(); err != nil {
+			return err
+		}
+		for _, rec := range queued {
+			messages = append(messages, chatMessage{Role: "user", Content: rec.Text})
+		}
+		if err := rt.emitLifecycle("turn_started"); err != nil {
 			return err
 		}
 		raw, err := rt.callGateway(ctx, start, messages)
@@ -318,7 +337,20 @@ func (rt *Runtime) session(ctx context.Context, start StartRecord) error {
 		if err := rt.emitAssistant(start, assistant, raw); err != nil {
 			return err
 		}
+		if err := rt.emitLifecycle("turn_ended"); err != nil {
+			return err
+		}
 		if len(assistant.ToolCalls) == 0 {
+			rt.mu.Lock()
+			more := len(rt.pending) > 0
+			rt.mu.Unlock()
+			if more {
+				messages = append(messages, assistant)
+				continue
+			}
+			if err := rt.emitLifecycle("settled"); err != nil {
+				return err
+			}
 			return nil
 		}
 		messages = append(messages, assistant)
@@ -334,6 +366,28 @@ func (rt *Runtime) session(ctx context.Context, start StartRecord) error {
 			})
 		}
 	}
+}
+
+func (rt *Runtime) emitLifecycle(phase string) error {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.finalizing {
+		return fmt.Errorf("runtime already terminal")
+	}
+	event, _ := json.Marshal(map[string]any{"kind": "lifecycle", "phase": phase})
+	return rt.emitLocked(OutputRecord{Type: "event", Sequence: rt.nextSeq(), Event: event})
+}
+
+func pendingCounts(recs []MessageRecord) (steering, followUp int) {
+	for _, rec := range recs {
+		switch rec.Behavior {
+		case "steer":
+			steering++
+		default:
+			followUp++
+		}
+	}
+	return
 }
 
 func (rt *Runtime) callGateway(ctx context.Context, start StartRecord, messages []chatMessage) ([]byte, error) {
