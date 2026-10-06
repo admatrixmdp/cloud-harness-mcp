@@ -157,6 +157,27 @@ const (
 	OpGitHubSetupComplete Operation = "github_setup_complete"
 	OpGitHubReconcile     Operation = "github_reconcile"
 	OpGitHubDisconnect    Operation = "github_disconnect"
+
+	OpProjectList           Operation = "project_list"
+	OpProjectCreate         Operation = "project_create"
+	OpProjectUpdate         Operation = "project_update"
+	OpProjectDelete         Operation = "project_delete"
+	OpEnvironmentList       Operation = "environment_list"
+	OpEnvironmentCreate     Operation = "environment_create"
+	OpEnvironmentUpdate     Operation = "environment_update"
+	OpEnvironmentDelete     Operation = "environment_delete"
+	OpSecretList            Operation = "secret_list"
+	OpSecretCreate          Operation = "secret_create"
+	OpSecretRotate          Operation = "secret_rotate"
+	OpSecretUpdate          Operation = "secret_update"
+	OpSecretDelete          Operation = "secret_delete"
+	OpSecretBulkApply       Operation = "secret_bulk_apply"
+	OpGlobalSecretList      Operation = "global_secret_list"
+	OpGlobalSecretCreate    Operation = "global_secret_create"
+	OpGlobalSecretRotate    Operation = "global_secret_rotate"
+	OpGlobalSecretUpdate    Operation = "global_secret_update"
+	OpGlobalSecretDelete    Operation = "global_secret_delete"
+	OpGlobalSecretBulkApply Operation = "global_secret_bulk_apply"
 )
 
 // AllOperations is the ordered public MCP tool catalog from RunnerOperationSchema.
@@ -248,7 +269,11 @@ func (op Operation) Dashboard() bool {
 		OpKnowledgeDashboardLinkCreate, OpKnowledgeDashboardLinkDelete,
 		OpArtifactList, OpArtifactSnapshot, OpArtifactRead, OpArtifactRestore, OpArtifactDelete,
 		OpAuditList,
-		OpGitHubStatus, OpGitHubSetupBegin, OpGitHubSetupComplete, OpGitHubReconcile, OpGitHubDisconnect:
+		OpGitHubStatus, OpGitHubSetupBegin, OpGitHubSetupComplete, OpGitHubReconcile, OpGitHubDisconnect,
+		OpProjectList, OpProjectCreate, OpProjectUpdate, OpProjectDelete,
+		OpEnvironmentList, OpEnvironmentCreate, OpEnvironmentUpdate, OpEnvironmentDelete,
+		OpSecretList, OpSecretCreate, OpSecretRotate, OpSecretUpdate, OpSecretDelete, OpSecretBulkApply,
+		OpGlobalSecretList, OpGlobalSecretCreate, OpGlobalSecretRotate, OpGlobalSecretUpdate, OpGlobalSecretDelete, OpGlobalSecretBulkApply:
 		return true
 	default:
 		return false

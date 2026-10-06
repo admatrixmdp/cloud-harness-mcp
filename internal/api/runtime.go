@@ -28,6 +28,10 @@ var worktreeNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,80}$`)
 var taskKeys = []string{"id", "name", "status", "exitCode", "dependsOn", "startedAt", "finishedAt", "durationMs", "cwd", "outputBytes"}
 var sessionKeys = []string{"id", "name", "status", "cwd", "createdAt", "lastActivityAt", "closedAt", "cursor"}
 
+var metadataKeys = []string{"id", "name", "state", "generation", "createdAt", "updatedAt", "deletedAt"}
+var environmentKeys = []string{"id", "name", "state", "generation", "createdAt", "updatedAt", "deletedAt", "projectId"}
+var secretKeys = []string{"id", "environmentId", "name", "description", "state", "version", "generation", "createdAt", "updatedAt", "deletedAt"}
+
 var artifactKeys = []string{
 	"artifactId", "logicalName", "sha256", "sizeBytes", "projectId", "environmentId", "workspaceId",
 	"createdAt", "updatedAt", "expiresAt", "retentionMs", "generation",

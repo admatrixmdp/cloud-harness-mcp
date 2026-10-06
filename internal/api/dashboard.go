@@ -243,6 +243,7 @@ func dashboardHandler(opts Options, sessions *Sessions) http.Handler {
 		proxyDashboard(w, r, opts.Runner, protocol.OpAuditList, pageQuery(r))
 	})))
 	registerDashboardGitHub(mux, opts, sessions)
+	registerDashboardProjects(mux, opts, sessions)
 	mux.Handle("GET /api/v1/overview", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeOverview(w, r, opts.Runner)
 	})))
@@ -641,6 +642,21 @@ func projectDashboard(op protocol.Operation, data any) any {
 		return pickKeys(obj, "url", "state", "expiresAt")
 	case protocol.OpGitHubStatus, protocol.OpGitHubSetupComplete, protocol.OpGitHubReconcile, protocol.OpGitHubDisconnect:
 		return projectGitHubStatus(obj)
+	case protocol.OpProjectList:
+		return map[string]any{"projects": projectObjects(obj["projects"], metadataKeys...)}
+	case protocol.OpProjectCreate, protocol.OpProjectUpdate, protocol.OpProjectDelete:
+		return pickKeys(obj, metadataKeys...)
+	case protocol.OpEnvironmentList:
+		return map[string]any{"environments": projectObjects(obj["environments"], environmentKeys...)}
+	case protocol.OpEnvironmentCreate, protocol.OpEnvironmentUpdate, protocol.OpEnvironmentDelete:
+		return pickKeys(obj, environmentKeys...)
+	case protocol.OpSecretList, protocol.OpGlobalSecretList:
+		return projectSecretList(obj)
+	case protocol.OpSecretBulkApply, protocol.OpGlobalSecretBulkApply:
+		return map[string]any{"secrets": projectObjects(obj["secrets"], secretKeys...)}
+	case protocol.OpSecretCreate, protocol.OpSecretRotate, protocol.OpSecretUpdate, protocol.OpSecretDelete,
+		protocol.OpGlobalSecretCreate, protocol.OpGlobalSecretRotate, protocol.OpGlobalSecretUpdate, protocol.OpGlobalSecretDelete:
+		return pickKeys(obj, secretKeys...)
 	case protocol.OpArtifactList:
 		return map[string]any{"artifacts": projectObjects(obj["artifacts"], artifactKeys...)}
 	case protocol.OpArtifactSnapshot, protocol.OpArtifactDelete:

@@ -37,6 +37,11 @@ func (s *Service) dashboard(ctx context.Context, req protocol.RunnerRequest) pro
 		return s.auditList(req)
 	case protocol.OpGitHubStatus, protocol.OpGitHubSetupBegin, protocol.OpGitHubSetupComplete, protocol.OpGitHubReconcile, protocol.OpGitHubDisconnect:
 		return s.githubDashboard(req)
+	case protocol.OpProjectList, protocol.OpProjectCreate, protocol.OpProjectUpdate, protocol.OpProjectDelete,
+		protocol.OpEnvironmentList, protocol.OpEnvironmentCreate, protocol.OpEnvironmentUpdate, protocol.OpEnvironmentDelete,
+		protocol.OpSecretList, protocol.OpSecretCreate, protocol.OpSecretRotate, protocol.OpSecretUpdate, protocol.OpSecretDelete, protocol.OpSecretBulkApply,
+		protocol.OpGlobalSecretList, protocol.OpGlobalSecretCreate, protocol.OpGlobalSecretRotate, protocol.OpGlobalSecretUpdate, protocol.OpGlobalSecretDelete, protocol.OpGlobalSecretBulkApply:
+		return s.projectsDashboard(req)
 	case protocol.OpPrivilegeGrantList:
 		if s.grants == nil {
 			return protocol.Fail(protocol.ErrorUnavailable, "privilege grant store is unavailable", true)

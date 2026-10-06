@@ -26,6 +26,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcpgw"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/memories"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/metadata"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
@@ -95,6 +96,7 @@ type Service struct {
 	engine       Engine
 	cloner       *git.Cloner
 	secrets      *secrets.Store
+	metadata     *metadata.Store
 	artifacts    *artifacts.Store
 	audit        *audit.Store
 	memories     *memories.Store
@@ -130,6 +132,25 @@ func (s *Service) WithCloner(c *git.Cloner) *Service {
 // decrypts or returns plaintext.
 func (s *Service) WithSecrets(sec *secrets.Store) *Service {
 	s.secrets = sec
+	if s.metadata != nil {
+		s.secrets.WithEnvironments(s.metadata)
+	}
+	if s.audit != nil {
+		s.secrets.WithAudit(s.audit)
+	}
+	return s
+}
+
+// WithMetadata attaches project/environment records. Dashboard secret mutations
+// require an ACTIVE environment under an ACTIVE project.
+func (s *Service) WithMetadata(store *metadata.Store) *Service {
+	s.metadata = store
+	if s.audit != nil {
+		s.metadata.WithAudit(s.audit)
+	}
+	if s.secrets != nil {
+		s.secrets.WithEnvironments(s.metadata)
+	}
 	return s
 }
 
@@ -142,6 +163,12 @@ func (s *Service) WithArtifacts(store *artifacts.Store) *Service {
 // WithAudit attaches retained dashboard audit events. Local stdio never hosts this.
 func (s *Service) WithAudit(store *audit.Store) *Service {
 	s.audit = store
+	if s.metadata != nil {
+		s.metadata.WithAudit(store)
+	}
+	if s.secrets != nil {
+		s.secrets.WithAudit(store)
+	}
 	return s
 }
 
@@ -2044,7 +2071,12 @@ func (s *Service) secretsList(req protocol.RunnerRequest) protocol.ToolResult {
 		}
 	}
 	if s.secrets != nil {
-		globals, err := s.secrets.List(ownerID, globalSecretEnvironment)
+		legacyGlobals, err := s.secrets.List(ownerID, globalSecretEnvironment)
+		if err != nil {
+			return protocol.Fail(protocol.ErrorInternal, "secret metadata is unavailable", true)
+		}
+		appendViews(legacyGlobals, "global")
+		globals, err := s.secrets.ListGlobal(ownerID)
 		if err != nil {
 			return protocol.Fail(protocol.ErrorInternal, "secret metadata is unavailable", true)
 		}

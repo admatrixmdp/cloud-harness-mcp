@@ -64,6 +64,9 @@ func TestAllOperationsMatchCatalogCount(t *testing.T) {
 	if !OpGitHubStatus.Dashboard() || OpGitHubStatus.Known() || OpGitHubSetupBegin.Internal() || OpGitHubDisconnect.Known() {
 		t.Fatal("github_* dashboard ops must be dashboard-only, not public /mcp tools")
 	}
+	if !OpProjectList.Dashboard() || OpProjectList.Known() || OpSecretCreate.Internal() || OpGlobalSecretList.Known() {
+		t.Fatal("project/environment/secret dashboard ops must be dashboard-only, not public /mcp tools")
+	}
 }
 
 func TestOperationJSONIsBareString(t *testing.T) {

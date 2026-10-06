@@ -60,6 +60,21 @@ func TestSecretMetadataNeverStoresPlaintext(t *testing.T) {
 	if err == nil || wrong != "" {
 		t.Fatal("cross-principal decrypt")
 	}
+	rotated, err := store.Rotate("principal-a", "env-a", "API_TOKEN", "rotated-secret-value", 1, nil, now.Add(time.Second))
+	if err != nil || rotated.Version != 2 || rotated.Generation != 2 {
+		t.Fatalf("%+v %v", rotated, err)
+	}
+	got, err = store.Decrypt("principal-a", "env-a", "API_TOKEN")
+	if err != nil || got != "rotated-secret-value" {
+		t.Fatalf("%q %v", got, err)
+	}
+	global, err := store.CreateGlobal("principal-a", "GLOBAL_TOKEN", "global-secret-value", 0, "", "runtime", now)
+	if err != nil || global.EnvironmentID != "global" {
+		t.Fatalf("%+v %v", global, err)
+	}
+	if strings.Contains(global.Name, "global-secret") {
+		t.Fatal("name leaked value")
+	}
 }
 
 func TestSecretCreateRejectsReservedNames(t *testing.T) {

@@ -18,6 +18,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcpgw"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/memories"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/metadata"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
@@ -194,6 +195,9 @@ func ProductionService(getenv Env) (*Service, error) {
 		}
 		if knowledgeStore, err := knowledge.Open(db); err == nil {
 			svc = svc.WithKnowledge(knowledgeStore)
+		}
+		if meta, err := metadata.Open(db); err == nil {
+			svc = svc.WithMetadata(meta)
 		}
 		if ring, err := keyringFromEnv(getenv); err != nil {
 			return nil, err

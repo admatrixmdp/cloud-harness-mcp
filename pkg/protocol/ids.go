@@ -22,8 +22,10 @@ const (
 	PrefixSkillSet              = "skset"
 	PrefixSkillImportJob        = "skjob"
 	PrefixIntegrationCredential = "icr"
+	PrefixProject               = "prj"
 	PrefixEnvironment           = "env"
 	PrefixSecret                = "sec"
+	PrefixGlobalSecret          = "gsec"
 	PrefixArtifact              = "art"
 	PrefixAudit                 = "aud"
 )

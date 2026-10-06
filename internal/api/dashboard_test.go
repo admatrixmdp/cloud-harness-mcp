@@ -23,7 +23,9 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcp"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcpgw"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/metadata"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/runner"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 
 	_ "modernc.org/sqlite"
@@ -81,13 +83,26 @@ func dashboardGitHubStores(t *testing.T) (http.Handler, *grants.Store, *audit.St
 	if err != nil {
 		t.Fatal(err)
 	}
+	meta, err := metadata.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring, err := secrets.NewKeyring(1, []secrets.KeyConfig{{Version: 1, Key: bytes.Repeat([]byte{7}, 32)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(ring.Close)
+	sec, err := secrets.OpenMetadata(db, ring)
+	if err != nil {
+		t.Fatal(err)
+	}
 	svc := runner.NewService(runner.Config{
 		NetworkProfile: protocol.NetworkNone,
 		JobsRoot:       t.TempDir(),
 		GitHubApp:      git.AppConfig{AppID: "1", AppSlug: "test-app"},
 	}, nil, nil).
 		WithGrants(store).WithKnowledge(kn).WithMCPGateway(gw).WithArtifacts(art).WithAudit(aud).
-		WithGitHub(gh, stubGitHubVerifier{})
+		WithGitHub(gh, stubGitHubVerifier{}).WithMetadata(meta).WithSecrets(sec)
 	inner := httptest.NewServer(runner.Handler(runner.Options{Service: svc}))
 	t.Cleanup(inner.Close)
 	h := Handler(Options{
@@ -1183,5 +1198,85 @@ func TestDashboardGitHubErrorWording(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "appId") {
 		t.Fatalf("runner text leaked %s", rec.Body.String())
+	}
+}
+
+func TestDashboardProjectsEnvironmentsSecrets(t *testing.T) {
+	h, _, _, _ := dashboardGitHubStores(t)
+	auth := map[string]string{"Authorization": "Bearer owner-secret"}
+	csrf, cookie := dashboardCSRF(t, h)
+	mut := map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+	}
+
+	denied := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/projects", `{"name":"Harness","expectedGeneration":0}`, map[string]string{
+		"Authorization": "Bearer owner-secret",
+	})
+	if denied.Code != http.StatusUnauthorized && denied.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf %d %s", denied.Code, denied.Body.String())
+	}
+
+	created := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/projects", `{"name":"Harness","expectedGeneration":0}`, mut)
+	if created.Code != 200 {
+		t.Fatalf("create %d %s", created.Code, created.Body.String())
+	}
+	var createdBody struct {
+		Data struct {
+			ID         string `json:"id"`
+			Name       string `json:"name"`
+			Generation int    `json:"generation"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &createdBody); err != nil || createdBody.Data.ID == "" {
+		t.Fatalf("create parse %s", created.Body.String())
+	}
+	if strings.Contains(created.Body.String(), "owner-secret") {
+		t.Fatal("bearer leaked")
+	}
+
+	listed := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/projects", "", auth)
+	if listed.Code != 200 || !strings.Contains(listed.Body.String(), `"name":"Harness"`) {
+		t.Fatalf("list %d %s", listed.Code, listed.Body.String())
+	}
+
+	env := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/projects/"+createdBody.Data.ID+"/environments", `{"name":"prod","expectedGeneration":0}`, mut)
+	if env.Code != 200 {
+		t.Fatalf("env %d %s", env.Code, env.Body.String())
+	}
+	var envBody struct {
+		Data struct {
+			ID        string `json:"id"`
+			ProjectID string `json:"projectId"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(env.Body.Bytes(), &envBody); err != nil || envBody.Data.ID == "" {
+		t.Fatalf("env parse %s", env.Body.String())
+	}
+
+	secret := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/environments/"+envBody.Data.ID+"/secrets", `{"name":"API_TOKEN","value":"super-secret-value","description":"stripe","expectedGeneration":0}`, mut)
+	if secret.Code != 200 {
+		t.Fatalf("secret %d %s", secret.Code, secret.Body.String())
+	}
+	if strings.Contains(secret.Body.String(), "super-secret-value") || strings.Contains(secret.Body.String(), `"value"`) {
+		t.Fatalf("plaintext leaked %s", secret.Body.String())
+	}
+
+	secretsList := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/environments/"+envBody.Data.ID+"/secrets", "", auth)
+	if secretsList.Code != 200 || !strings.Contains(secretsList.Body.String(), `"name":"API_TOKEN"`) || !strings.Contains(secretsList.Body.String(), `"ready":true`) {
+		t.Fatalf("secrets list %d %s", secretsList.Code, secretsList.Body.String())
+	}
+	if strings.Contains(secretsList.Body.String(), "super-secret-value") || strings.Contains(secretsList.Body.String(), `"value":`) {
+		t.Fatalf("list leaked %s", secretsList.Body.String())
+	}
+
+	global := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/secrets", `{"name":"GLOBAL_TOKEN","value":"global-secret-value","expectedGeneration":0}`, mut)
+	if global.Code != 200 || strings.Contains(global.Body.String(), "global-secret-value") {
+		t.Fatalf("global %d %s", global.Code, global.Body.String())
+	}
+
+	if protocol.OpProjectList.Known() || protocol.OpSecretCreate.Known() || !protocol.OpProjectList.Dashboard() {
+		t.Fatal("project/secret dashboard ops must stay dashboard-only")
 	}
 }

@@ -23,9 +23,9 @@ var forbiddenSecretPrefixes = []string{
 }
 
 const (
-	MinSecretValueBytes         = 4
-	MaxSecretValueBytes         = 65536
-	MaxSecretDescriptionChars   = 500
+	MinSecretValueBytes       = 4
+	MaxSecretValueBytes       = 65536
+	MaxSecretDescriptionChars = 500
 )
 
 // ValidateSecretName rejects reserved control-plane and toolchain names.
@@ -44,6 +44,26 @@ func ValidateSecretName(name string) error {
 		}
 	}
 	return nil
+}
+
+// ValidateSecretNameShape allows delete of a stored name that later became reserved.
+func ValidateSecretNameShape(name string) error {
+	return validateSecretNameShape(strings.TrimSpace(name))
+}
+
+// ValidateSecretDescription trims empty to nil and rejects null bytes / oversize.
+func ValidateSecretDescription(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	if strings.ContainsRune(trimmed, 0) {
+		return "", errSecretDescriptionNull
+	}
+	if len([]rune(trimmed)) > MaxSecretDescriptionChars {
+		return "", errSecretDescriptionTooLong
+	}
+	return trimmed, nil
 }
 
 func validateSecretNameShape(name string) error {
@@ -67,12 +87,14 @@ type secretError string
 func (e secretError) Error() string { return string(e) }
 
 const (
-	errInvalidSecretName     secretError = "secret name must be 1-100 characters and contain only letters, numbers, and underscores (starting with letter or underscore)"
-	errReservedSecretName    secretError = "secret name is reserved for the control plane or system toolchains"
-	errReservedSecretPrefix  secretError = "secret name uses reserved prefix"
-	errSecretValueTooShort   secretError = "secret value must be at least 4 bytes to ensure reliable output redaction"
-	errSecretValueTooLong    secretError = "secret value must not exceed 65536 bytes"
-	errSecretValueBadChars   secretError = "secret value must not contain null or newline characters"
+	errInvalidSecretName        secretError = "secret name must be 1-100 characters and contain only letters, numbers, and underscores (starting with letter or underscore)"
+	errReservedSecretName       secretError = "secret name is reserved for the control plane or system toolchains"
+	errReservedSecretPrefix     secretError = "secret name uses reserved prefix"
+	errSecretValueTooShort      secretError = "secret value must be at least 4 bytes to ensure reliable output redaction"
+	errSecretValueTooLong       secretError = "secret value must not exceed 65536 bytes"
+	errSecretValueBadChars      secretError = "secret value must not contain null or newline characters"
+	errSecretDescriptionNull    secretError = "secret description must not contain null bytes"
+	errSecretDescriptionTooLong secretError = "secret description must not exceed 500 characters"
 )
 
 // ValidateSecretValue enforces size and character bounds without logging the value.
