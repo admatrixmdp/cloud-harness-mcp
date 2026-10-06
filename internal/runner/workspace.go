@@ -458,12 +458,14 @@ func (s *Service) open(ctx context.Context, req protocol.RunnerRequest) protocol
 	_ = s.store.Put(rec)
 	if err := s.cloneIntoJob(ctx, rec, parsed, git.CloneHistorySpec(input.FetchDepth, input.ShallowSince)); err != nil {
 		rec.Status = store.StatusFailed
+		rec.Error = err.Error()
 		_ = s.store.Put(rec)
 		return failFrom(err)
 	}
 	if s.cfg.JobsRoot != "" {
 		if err := os.MkdirAll(filepath.Join(s.cfg.JobsRoot, rec.ID, "repo"), 0o700); err != nil {
 			rec.Status = store.StatusFailed
+			rec.Error = "job path is unavailable"
 			_ = s.store.Put(rec)
 			return protocol.Fail(protocol.ErrorUnavailable, "job path is unavailable", true)
 		}
@@ -471,6 +473,7 @@ func (s *Service) open(ctx context.Context, req protocol.RunnerRequest) protocol
 	name, err := s.engine.Create(ctx, rec)
 	if err != nil {
 		rec.Status = store.StatusFailed
+		rec.Error = err.Error()
 		_ = s.store.Put(rec)
 		return protocol.Fail(protocol.ErrorUnavailable, "executor creation failed", true)
 	}

@@ -33,7 +33,7 @@ func (c *RunnerClient) timeout() time.Duration {
 	if c.Timeout > 0 {
 		return c.Timeout
 	}
-	return 15 * time.Second
+	return 60 * time.Second
 }
 
 // Ready probes runner /healthz.

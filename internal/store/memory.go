@@ -38,6 +38,7 @@ type Record struct {
 	LastActivityAt time.Time
 	ExpiresAt      time.Time
 	HardExpiresAt  time.Time
+	Error          string
 }
 
 // Store is the workspace metadata surface used by the runner.

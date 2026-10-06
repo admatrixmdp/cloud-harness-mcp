@@ -32,11 +32,7 @@ func (c Cloner) Run(ctx context.Context, req CloneRequest) (sandbox.Result, erro
 	if ArgsContainSecret(args, req.Token) {
 		return sandbox.Result{}, fmt.Errorf("%s: clone helper argv must not contain the token", protocol.ErrorInternal)
 	}
-	run := c.Engine.Run
-	if run == nil {
-		return sandbox.Result{}, fmt.Errorf("%s: docker runner is not configured", protocol.ErrorUnavailable)
-	}
-	res, err := run(ctx, args, sandbox.HelperStdin(req.Token))
+	res, err := c.Engine.Invoke(ctx, args, sandbox.HelperStdin(req.Token))
 	if err != nil {
 		return res, err
 	}
@@ -45,7 +41,14 @@ func (c Cloner) Run(ctx context.Context, req CloneRequest) (sandbox.Result, erro
 		res.Stderr = RedactToken(res.Stderr, req.Token)
 	}
 	if res.ExitCode != 0 {
-		return res, fmt.Errorf("%s: clone helper failed", protocol.ErrorUnavailable)
+		msg := strings.TrimSpace(res.Stderr)
+		if msg == "" {
+			msg = strings.TrimSpace(res.Stdout)
+		}
+		if msg == "" {
+			msg = "clone helper failed"
+		}
+		return res, fmt.Errorf("%s: %s", protocol.ErrorUnavailable, msg)
 	}
 	return res, nil
 }
@@ -59,11 +62,7 @@ func (c Cloner) Transfer(ctx context.Context, mode TransferMode, spec HelperSpec
 	if ArgsContainSecret(args, token) {
 		return sandbox.Result{}, fmt.Errorf("%s: transfer helper argv must not contain the token", protocol.ErrorInternal)
 	}
-	run := c.Engine.Run
-	if run == nil {
-		return sandbox.Result{}, fmt.Errorf("%s: docker runner is not configured", protocol.ErrorUnavailable)
-	}
-	res, err := run(ctx, args, sandbox.HelperStdin(token))
+	res, err := c.Engine.Invoke(ctx, args, sandbox.HelperStdin(token))
 	if err != nil {
 		return res, err
 	}
@@ -86,11 +85,7 @@ func (c Cloner) GH(ctx context.Context, spec HelperSpec, token string) (sandbox.
 	if ArgsContainSecret(args, token) {
 		return sandbox.Result{}, fmt.Errorf("%s: gh helper argv must not contain the token", protocol.ErrorInternal)
 	}
-	run := c.Engine.Run
-	if run == nil {
-		return sandbox.Result{}, fmt.Errorf("%s: docker runner is not configured", protocol.ErrorUnavailable)
-	}
-	res, err := run(ctx, args, sandbox.HelperStdin(token))
+	res, err := c.Engine.Invoke(ctx, args, sandbox.HelperStdin(token))
 	if err != nil {
 		return res, err
 	}

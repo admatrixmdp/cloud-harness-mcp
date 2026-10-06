@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS workspaces (
   created_at INTEGER NOT NULL,
   last_activity_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
-  hard_expires_at INTEGER NOT NULL
+  hard_expires_at INTEGER NOT NULL,
+  error TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS workspaces_owner_idempotency ON workspaces(owner_id, idempotency_key);
 CREATE TABLE IF NOT EXISTS owner_state (
@@ -107,6 +108,11 @@ func migrateWorkspaceColumns(db *sql.DB) error {
 			return err
 		}
 	}
+	if _, ok := cols["error"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE workspaces ADD COLUMN error TEXT`); err != nil {
+			return err
+		}
+	}
 	if _, ok := cols["request_fingerprint"]; !ok {
 		if _, ok := cols["fingerprint"]; ok {
 			if _, err := db.Exec(`ALTER TABLE workspaces RENAME COLUMN fingerprint TO request_fingerprint`); err != nil {
@@ -132,11 +138,12 @@ func (s *SQLite) Put(rec Record) error {
 		workspacePath = rec.ID
 	}
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO workspaces
-		(id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, status, network_profile, request_fingerprint, environment_id, generation, created_at, last_activity_at, expires_at, hard_expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, status, network_profile, request_fingerprint, environment_id, generation, created_at, last_activity_at, expires_at, hard_expires_at, error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.ID, rec.OwnerID, rec.IdempotencyKey, rec.RepositoryURL, nullString(rec.Ref), nullString(rec.ContainerName),
 		workspacePath, string(rec.Status), string(rec.NetworkProfile), rec.Fingerprint, nullString(rec.EnvironmentID), rec.Generation,
 		rec.CreatedAt.UnixMilli(), rec.LastActivityAt.UnixMilli(), rec.ExpiresAt.UnixMilli(), rec.HardExpiresAt.UnixMilli(),
+		nullString(rec.Error),
 	)
 	return err
 }

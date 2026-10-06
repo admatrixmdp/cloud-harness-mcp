@@ -44,6 +44,22 @@ func TestClonePassesTokenOnStdinOnly(t *testing.T) {
 	}
 }
 
+func TestCloneDoesNotFailClosedWhenEngineRunIsNil(t *testing.T) {
+	_, err := (Cloner{Engine: sandbox.Engine{}}).Run(context.Background(), CloneRequest{
+		Spec: HelperSpec{
+			Name: "chm-clone", Image: "cloud-harness-executor:local",
+			WorkspaceID: "ws_abcdefghijklmnopqrstuvwx", JobPath: "/jobs/ws",
+			RepositoryURL: "https://github.com/bestagentkits/cloud-harness-mcp",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected docker CLI invoke to fail in unit tests without a daemon-backed Run")
+	}
+	if strings.Contains(err.Error(), "docker runner is not configured") {
+		t.Fatal("production Engine copies must fall back to the docker CLI, not fail closed")
+	}
+}
+
 func TestCloneRejectsUserinfoURL(t *testing.T) {
 	_, err := (Cloner{Engine: sandbox.Engine{Run: func(context.Context, []string, string) (sandbox.Result, error) {
 		t.Fatal("must not run docker")
