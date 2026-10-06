@@ -189,6 +189,7 @@ func ProductionService(getenv Env) (*Service, error) {
 		WithDocker(docker).
 		WithCloner(&git.Cloner{Engine: *docker})
 	if sqlite != nil {
+		svc = svc.WithAPIKeys(sqlite)
 		db := sqlite.DB()
 		gw, err := mcpgw.Open(db)
 		if err != nil {

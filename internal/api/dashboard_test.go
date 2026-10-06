@@ -30,6 +30,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/skillarchive"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/skillsreg"
+	harnessstore "github.com/bestagentkits/cloud-harness-mcp/internal/store"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 
 	_ "modernc.org/sqlite"
@@ -116,20 +117,28 @@ func dashboardGitHubStoresWith(t *testing.T, tweak func(*Options)) (http.Handler
 	if err != nil {
 		t.Fatal(err)
 	}
+	state, err := harnessstore.OpenSQLite(filepath.Join(t.TempDir(), "state.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = state.Close() })
 	svc := runner.NewService(runner.Config{
 		NetworkProfile: protocol.NetworkNone,
 		JobsRoot:       t.TempDir(),
 		GitHubApp:      git.AppConfig{AppID: "1", AppSlug: "test-app"},
 	}, nil, nil).
 		WithGrants(store).WithKnowledge(kn).WithMCPGateway(gw).WithArtifacts(art).WithAudit(aud).
-		WithGitHub(gh, stubGitHubVerifier{}).WithMetadata(meta).WithSecrets(sec).WithModels(modelStore).WithSkills(skillStore).WithIntegrations(intStore)
+		WithGitHub(gh, stubGitHubVerifier{}).WithMetadata(meta).WithSecrets(sec).WithModels(modelStore).WithSkills(skillStore).WithIntegrations(intStore).
+		WithAPIKeys(state)
 	inner := httptest.NewServer(runner.Handler(runner.Options{Service: svc}))
 	t.Cleanup(inner.Close)
 	opts := Options{
-		BearerToken: "owner-secret",
-		OwnerID:     "owner",
-		Runner:      &mcp.RunnerClient{BaseURL: inner.URL, OwnerID: "owner"},
-		Security:    SecurityConfig{PublicHosts: []string{"dashboard.example"}, AllowedOrigins: []string{"https://dashboard.example"}},
+		BearerToken:            "owner-secret",
+		OwnerID:                "owner",
+		Runner:                 &mcp.RunnerClient{BaseURL: inner.URL, OwnerID: "owner"},
+		Security:               SecurityConfig{PublicHosts: []string{"dashboard.example"}, AllowedOrigins: []string{"https://dashboard.example"}},
+		APIKeyAuthEnabled:      true,
+		APIKeyGatewayPublicURL: "https://api.example/mcp",
 		MCPGatewayResolve: func(string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP("93.184.216.34")}, nil
 		},
@@ -1690,5 +1699,92 @@ func TestDashboardMCPProbeTestAndRefresh(t *testing.T) {
 
 	if protocol.OpMCPServerConnectionResult.Known() || !protocol.OpMCPServerConnectionResult.Internal() {
 		t.Fatal("mcp_server_connection_result must stay runner-internal")
+	}
+}
+
+func TestDashboardAPIKeysCSRFAndOneTimePlaintext(t *testing.T) {
+	h, _, aud, _ := dashboardGitHubStores(t)
+	auth := map[string]string{"Authorization": "Bearer owner-secret"}
+	csrf, cookie := dashboardCSRF(t, h)
+	mut := map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+	}
+
+	listed := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/api-keys", "", auth)
+	if listed.Code != 200 || !strings.Contains(listed.Body.String(), `"ready":true`) || !strings.Contains(listed.Body.String(), "https://api.example/mcp") {
+		t.Fatalf("list %d %s", listed.Code, listed.Body.String())
+	}
+	if strings.Contains(listed.Body.String(), "chm_key_apk_") && strings.Contains(listed.Body.String(), ".") {
+		t.Fatalf("list leaked secret %s", listed.Body.String())
+	}
+
+	denied := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/api-keys", `{"name":"CLI","expiresInDays":30}`, map[string]string{
+		"Authorization": "Bearer owner-secret",
+	})
+	if denied.Code != http.StatusUnauthorized && denied.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf %d %s", denied.Code, denied.Body.String())
+	}
+
+	overLimit := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/api-keys", `{"name":"CLI","expiresInDays":3651}`, mut)
+	if overLimit.Code != http.StatusBadRequest {
+		t.Fatalf("over-limit %d %s", overLimit.Code, overLimit.Body.String())
+	}
+
+	created := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/api-keys", `{"name":"CLI","expiresInDays":3650}`, mut)
+	if created.Code != 200 {
+		t.Fatalf("create %d %s", created.Code, created.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			Key struct {
+				ID         string `json:"id"`
+				Generation int    `json:"generation"`
+			} `json:"key"`
+			APIKey string `json:"apiKey"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !protocol.ValidAPIKeyValue(envelope.Data.APIKey) || envelope.Data.Key.ID == "" {
+		t.Fatalf("create body %s", created.Body.String())
+	}
+	secretHalf := strings.Split(envelope.Data.APIKey, ".")[1]
+	if strings.Contains(created.Body.String(), `"secret"`) {
+		t.Fatalf("create leaked hash field %s", created.Body.String())
+	}
+
+	after := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/api-keys", "", auth)
+	if after.Code != 200 || strings.Contains(after.Body.String(), envelope.Data.APIKey) || strings.Contains(after.Body.String(), secretHalf) {
+		t.Fatalf("after list leaked secret %d %s", after.Code, after.Body.String())
+	}
+	if !strings.Contains(after.Body.String(), envelope.Data.Key.ID) {
+		t.Fatalf("after list missing id %s", after.Body.String())
+	}
+
+	revoked := dashboardDo(t, h, http.MethodDelete, "/dashboard/api/v1/api-keys/"+envelope.Data.Key.ID, `{"expectedGeneration":1}`, mut)
+	if revoked.Code != 200 || strings.Contains(revoked.Body.String(), envelope.Data.APIKey) || strings.Contains(revoked.Body.String(), secretHalf) {
+		t.Fatalf("revoke %d %s", revoked.Code, revoked.Body.String())
+	}
+	if !strings.Contains(revoked.Body.String(), `"state":"REVOKED"`) {
+		t.Fatalf("revoke state %s", revoked.Body.String())
+	}
+
+	events, err := aud.List("owner", "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := map[string]bool{}
+	for _, ev := range events {
+		actions[ev.Action] = true
+		raw, _ := json.Marshal(ev.Details)
+		if strings.Contains(string(raw), envelope.Data.APIKey) || strings.Contains(string(raw), secretHalf) {
+			t.Fatalf("audit leaked secret %+v", ev)
+		}
+	}
+	if !actions["api_key.created"] || !actions["api_key.revoked"] {
+		t.Fatalf("audit actions %v", actions)
 	}
 }

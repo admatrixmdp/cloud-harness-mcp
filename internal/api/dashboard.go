@@ -250,6 +250,7 @@ func dashboardHandler(opts Options, sessions *Sessions) http.Handler {
 	registerDashboardSettings(mux, opts, sessions)
 	registerDashboardToolkitRegistry(mux, opts, sessions)
 	registerDashboardIntegrations(mux, opts, sessions)
+	registerDashboardAPIKeys(mux, opts, sessions)
 	mux.Handle("GET /api/v1/overview", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeOverview(w, r, opts.Runner)
 	})))

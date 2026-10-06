@@ -31,6 +31,9 @@ func Handler(opts Options) http.Handler {
 	mux.Handle("/v1/internal/dashboard-operations", withServiceToken(opts.ServiceToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handleDashboard(w, r, svc)
 	})))
+	mux.Handle("/v1/internal/api-keys", withServiceToken(opts.ServiceToken, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleAPIKeys(w, r, svc)
+	})))
 	return mux
 }
 
@@ -95,6 +98,8 @@ func statusFor(result protocol.ToolResult) int {
 		return http.StatusConflict
 	case protocol.ErrorUnavailable, protocol.ErrorDependencyEgressUnavailable:
 		return http.StatusServiceUnavailable
+	case protocol.ErrorLimitExceeded:
+		return http.StatusTooManyRequests
 	case protocol.ErrorTimeout:
 		return http.StatusGatewayTimeout
 	default:

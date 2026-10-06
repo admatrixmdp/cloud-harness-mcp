@@ -149,6 +149,54 @@ func (c *RunnerClient) CallInternal(ctx context.Context, op protocol.Operation, 
 	return result
 }
 
+// CallApiKeys posts /v1/internal/api-keys for dashboard list/create/revoke.
+// Plaintext apiKey is returned only on create and must not be logged.
+func (c *RunnerClient) CallApiKeys(ctx context.Context, operation string, input json.RawMessage) protocol.ToolResult {
+	if c.BaseURL == "" {
+		return protocol.Fail(protocol.ErrorUnavailable, "API key authentication is not enabled.", true)
+	}
+	if input == nil {
+		input = json.RawMessage(`{}`)
+	}
+	_, principal := c.identity(ctx)
+	body, err := json.Marshal(struct {
+		Version   int             `json:"version"`
+		Principal json.RawMessage `json:"principal,omitempty"`
+		Operation string          `json:"operation"`
+		Input     json.RawMessage `json:"input"`
+	}{Version: 1, Principal: principal, Operation: operation, Input: input})
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInternal, "failed to encode runner request", false)
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/internal/api-keys", bytes.NewReader(body))
+	if err != nil {
+		return protocol.Fail(protocol.ErrorUnavailable, "Runner is unavailable", true)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.ServiceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.ServiceToken)
+	}
+	res, err := c.http().Do(req)
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return protocol.Fail(protocol.ErrorTimeout, "Runner request timed out", true)
+		}
+		return protocol.Fail(protocol.ErrorUnavailable, "Runner is unavailable", true)
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return protocol.Fail(protocol.ErrorUnavailable, "Runner is unavailable", true)
+	}
+	var result protocol.ToolResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return protocol.Fail(protocol.ErrorUnavailable, fmt.Sprintf("Runner returned invalid envelope (HTTP %d)", res.StatusCode), true)
+	}
+	return result
+}
+
 func (c *RunnerClient) identity(ctx context.Context) (string, json.RawMessage) {
 	if id, ok := auth.IdentityFrom(ctx); ok {
 		switch id.Mode {

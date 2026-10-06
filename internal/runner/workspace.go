@@ -121,6 +121,7 @@ type Service struct {
 	typesafe     *typesafe.Suggester
 	gitOps       store.GitOpStore
 	tasks        store.TaskStore
+	apiKeys      *store.SQLite
 	bootID       string
 }
 
@@ -242,6 +243,13 @@ func (s *Service) WithMCPGateway(store *mcpgw.Store) *Service {
 	return s
 }
 
+// WithAPIKeys attaches the durable hashed API-key store. Plaintext is returned
+// once on create and never stored.
+func (s *Service) WithAPIKeys(keys *store.SQLite) *Service {
+	s.apiKeys = keys
+	return s
+}
+
 // WithTypeSafe attaches the HTTPS skill suggester. Without a key the runner
 // stays fail-closed with zero outbound calls.
 func (s *Service) WithTypeSafe(engine *typesafe.Suggester) *Service {
@@ -262,6 +270,7 @@ func NewService(cfg Config, st store.Store, engine Engine) *Service {
 	if sqlite, ok := st.(*store.SQLite); ok {
 		svc.gitOps = sqlite
 		svc.tasks = sqlite
+		svc.apiKeys = sqlite
 		svc.bootID = svc.cfg.InstanceID
 		_ = sqlite.ReconcileStaleTasks(svc.bootID, 0)
 	} else {

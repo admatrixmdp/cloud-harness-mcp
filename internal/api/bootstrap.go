@@ -104,5 +104,8 @@ func ProductionOptions(getenv Env) (Options, error) {
 			return Options{}, fmt.Errorf("MCP_BEARER_TOKEN is required in owner-bearer mode")
 		}
 	}
+	enabled := strings.TrimSpace(strings.ToLower(getenv("API_KEY_AUTH_ENABLED")))
+	opts.APIKeyAuthEnabled = enabled == "true" || enabled == "1"
+	opts.APIKeyGatewayPublicURL = strings.TrimSpace(getenv("API_KEY_GATEWAY_PUBLIC_URL"))
 	return opts, nil
 }
