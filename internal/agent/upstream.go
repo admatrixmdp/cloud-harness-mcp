@@ -2,12 +2,15 @@ package agent
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -28,6 +31,7 @@ type Upstream struct {
 	AllowPrivate     bool
 	MaxRequestBytes  int
 	Timeout          time.Duration
+	TLSCAFile        string
 	Transport        http.RoundTripper
 }
 
@@ -97,7 +101,28 @@ func validateUpstreamURL(raw string, allowPrivate bool) (*url.URL, error) {
 	return parsed, nil
 }
 
-func proxyUpstream(w http.ResponseWriter, r *http.Request, profile Profile) {
+func tlsTransport(caFile string, base http.RoundTripper) (http.RoundTripper, error) {
+	if caFile == "" {
+		return base, nil
+	}
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("tls ca file is not a PEM certificate")
+	}
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool}
+	if t, ok := base.(*http.Transport); ok && t != nil {
+		clone := t.Clone()
+		clone.TLSClientConfig = tlsCfg
+		return clone, nil
+	}
+	return &http.Transport{TLSClientConfig: tlsCfg, Proxy: http.ProxyFromEnvironment}, nil
+}
+
+func proxyUpstream(w http.ResponseWriter, r *http.Request, profile Profile, grant Grant, reg *Registry, path string) {
 	up := profile.Upstream
 	target, err := validateUpstreamURL(up.URL, up.AllowPrivate)
 	if err != nil {
@@ -118,6 +143,24 @@ func proxyUpstream(w http.ResponseWriter, r *http.Request, profile Profile) {
 		writeErr(w, http.StatusBadRequest, "invalid_request_body")
 		return
 	}
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_request_body")
+		return
+	}
+	resv, err := grant.reserve(obj, len(body), profile, path)
+	if err != nil {
+		writeErr(w, http.StatusTooManyRequests, "budget_exceeded")
+		return
+	}
+	if reg != nil {
+		reg.ApplyReservation(grant)
+	}
+	body, err = json.Marshal(obj)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_request_body")
+		return
+	}
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target.String(), bytes.NewReader(body))
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "upstream_unavailable")
@@ -130,10 +173,17 @@ func proxyUpstream(w http.ResponseWriter, r *http.Request, profile Profile) {
 	if sid := r.Header.Get("x-agent-id"); sid != "" {
 		req.Header.Set("x-opencode-session", sid)
 	}
-	client := &http.Client{Timeout: up.timeout(), Transport: up.Transport}
-	if client.Transport == nil {
-		client.Transport = http.DefaultTransport
+	transport := up.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
 	}
+	if pinned, err := tlsTransport(up.TLSCAFile, transport); err != nil {
+		writeErr(w, http.StatusBadGateway, "unsafe_upstream")
+		return
+	} else {
+		transport = pinned
+	}
+	client := &http.Client{Timeout: up.timeout(), Transport: transport}
 	res, err := client.Do(req)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "upstream_unavailable")
@@ -148,6 +198,11 @@ func proxyUpstream(w http.ResponseWriter, r *http.Request, profile Profile) {
 	if up.Credential != "" && bytes.Contains(raw, []byte(up.Credential)) {
 		writeErr(w, http.StatusBadGateway, "provider_attempted_credential_disclosure")
 		return
+	}
+	actual := usageFromProvider(raw, profile)
+	grant.reconcile(resv, actual)
+	if reg != nil {
+		reg.ApplyReservation(grant)
 	}
 	ct := res.Header.Get("Content-Type")
 	if ct == "" {

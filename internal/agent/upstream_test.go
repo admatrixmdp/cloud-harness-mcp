@@ -16,7 +16,7 @@ func TestProxyRejectsPrivateUpstream(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"x"}`))
-	proxyUpstream(rec, req, profile)
+	proxyUpstream(rec, req, profile, Grant{RemainingInputTokens: 10_000, RemainingOutputTokens: 10_000, RemainingCostMicros: 1_000_000}, nil, "/v1/chat/completions")
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
 	}
@@ -50,13 +50,13 @@ func TestProxyStripsRoutingFieldsAndDoesNotLogCredential(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"x","api_key":"steal-me"}`))
-	proxyUpstream(rec, req, profile)
+	proxyUpstream(rec, req, profile, Grant{RemainingInputTokens: 10_000, RemainingOutputTokens: 10_000, RemainingCostMicros: 1_000_000}, nil, "/v1/chat/completions")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("forbidden field status %d %s", rec.Code, rec.Body.String())
 	}
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"x"}`))
-	proxyUpstream(rec, req, profile)
+	proxyUpstream(rec, req, profile, Grant{RemainingInputTokens: 10_000, RemainingOutputTokens: 10_000, RemainingCostMicros: 1_000_000}, nil, "/v1/chat/completions")
 	if rec.Code != 200 {
 		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
 	}
@@ -87,7 +87,7 @@ func TestProxyBlocksCredentialDisclosure(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"x"}`))
-	proxyUpstream(rec, req, profile)
+	proxyUpstream(rec, req, profile, Grant{RemainingInputTokens: 10_000, RemainingOutputTokens: 10_000, RemainingCostMicros: 1_000_000}, nil, "/v1/chat/completions")
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status %d", rec.Code)
 	}

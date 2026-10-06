@@ -35,12 +35,22 @@ lease token and a per-agent internal network. The Unix control socket (mode
 			profiles := map[string]agent.Profile{}
 			if url := os.Getenv("MODEL_UPSTREAM_URL"); url != "" {
 				profiles["default"] = agent.Profile{
-					ID: "default",
+					ID:                     "default",
+					Model:                  os.Getenv("MODEL_UPSTREAM_MODEL"),
+					DownstreamPath:         "/v1/chat/completions",
+					InputMicrosPerMillion:  0,
+					OutputMicrosPerMillion: 0,
+					Limits: agent.ProfileLimits{
+						MaxInputTokens:  10_000_000,
+						MaxOutputTokens: 2_000_000,
+						MaxCostMicros:   1_000_000_000_000,
+					},
 					Upstream: agent.Upstream{
 						URL:              url,
 						Credential:       os.Getenv("MODEL_UPSTREAM_CREDENTIAL"),
 						CredentialHeader: "Authorization",
 						CredentialScheme: "Bearer",
+						TLSCAFile:        os.Getenv("MODEL_UPSTREAM_TLS_CA_FILE"),
 					},
 				}
 			}

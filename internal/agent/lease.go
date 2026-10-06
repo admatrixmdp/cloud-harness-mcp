@@ -27,9 +27,13 @@ type ProfileLimits struct {
 
 // Profile is the subset of a gateway profile the lease layer needs.
 type Profile struct {
-	ID       string
-	Limits   ProfileLimits
-	Upstream Upstream
+	ID                     string
+	Model                  string
+	DownstreamPath         string
+	InputMicrosPerMillion  int64
+	OutputMicrosPerMillion int64
+	Limits                 ProfileLimits
+	Upstream               Upstream
 }
 
 // IssueInput is the control-plane request that mints a one-time lease token.
@@ -51,6 +55,7 @@ type Grant struct {
 	RemainingInputTokens  int
 	RemainingOutputTokens int
 	RemainingCostMicros   int64
+	key                   string
 }
 
 // Registry stores opaque lease tokens hashed at rest.
@@ -112,9 +117,10 @@ func (r *Registry) Issue(input IssueInput, profile Profile) (string, error) {
 		AgentID:               input.AgentID,
 		ProfileID:             input.ProfileID,
 		ExpiresAt:             r.now().Add(ttl),
-		RemainingInputTokens:  minInt(boundInt(input.MaxInputTokens, 1, 10_000_000), profile.Limits.MaxInputTokens),
-		RemainingOutputTokens: minInt(boundInt(input.MaxOutputTokens, 1, 2_000_000), profile.Limits.MaxOutputTokens),
-		RemainingCostMicros:   minInt64(boundInt64(input.MaxCostMicros, 0, 1_000_000_000_000), profile.Limits.MaxCostMicros),
+		RemainingInputTokens:  clampLimit(boundInt(input.MaxInputTokens, 1, 10_000_000), profile.Limits.MaxInputTokens),
+		RemainingOutputTokens: clampLimit(boundInt(input.MaxOutputTokens, 1, 2_000_000), profile.Limits.MaxOutputTokens),
+		RemainingCostMicros:   clampLimit64(boundInt64(input.MaxCostMicros, 0, 1_000_000_000_000), profile.Limits.MaxCostMicros),
+		key:                   key,
 	}
 	r.pending[key] = grant
 	r.keyByID[input.LeaseID] = key
@@ -154,7 +160,23 @@ func (r *Registry) Consume(token, agentID, profileID string) (Grant, error) {
 		delete(r.pending, key)
 		r.active[key] = grant
 	}
+	grant.key = key
 	return grant, nil
+}
+
+// ApplyReservation writes remaining budgets back onto the active lease.
+func (r *Registry) ApplyReservation(grant Grant) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if grant.key == "" {
+		return
+	}
+	if cur, ok := r.active[grant.key]; ok {
+		cur.RemainingInputTokens = grant.RemainingInputTokens
+		cur.RemainingOutputTokens = grant.RemainingOutputTokens
+		cur.RemainingCostMicros = grant.RemainingCostMicros
+		r.active[grant.key] = cur
+	}
 }
 
 // Revoke marks a lease unusable. Replay of the hashed token is rejected.
@@ -278,6 +300,20 @@ func minInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+func clampLimit(v, cap int) int {
+	if cap <= 0 {
+		return v
+	}
+	return minInt(v, cap)
+}
+
+func clampLimit64(v, cap int64) int64 {
+	if cap <= 0 {
+		return v
+	}
+	return minInt64(v, cap)
 }
 
 // ValidAgentID reports whether id matches the opaque agent_ prefix.

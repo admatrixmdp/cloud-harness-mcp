@@ -62,7 +62,7 @@ func TestHandlerProxiesAfterLease(t *testing.T) {
 	reg := NewRegistry()
 	profile := Profile{
 		ID:     "gpt-test",
-		Limits: ProfileLimits{MaxInputTokens: 10, MaxOutputTokens: 10, MaxCostMicros: 10},
+		Limits: ProfileLimits{MaxInputTokens: 10_000, MaxOutputTokens: 10_000, MaxCostMicros: 1_000_000},
 		Upstream: Upstream{
 			URL:              upstream.URL,
 			Credential:       "sk-not-a-real-key",
@@ -76,7 +76,7 @@ func TestHandlerProxiesAfterLease(t *testing.T) {
 	agentID := "agent_" + strings.Repeat("c", 24)
 	token, err := reg.Issue(IssueInput{
 		LeaseID: "lease-proxy", AgentID: agentID, ProfileID: "gpt-test",
-		TTL: time.Minute, MaxInputTokens: 10, MaxOutputTokens: 10, MaxCostMicros: 10,
+		TTL: time.Minute, MaxInputTokens: 10_000, MaxOutputTokens: 10_000, MaxCostMicros: 1_000_000,
 	}, profile)
 	if err != nil {
 		t.Fatal(err)

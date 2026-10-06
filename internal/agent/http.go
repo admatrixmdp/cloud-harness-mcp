@@ -41,7 +41,8 @@ func serveLease(w http.ResponseWriter, r *http.Request, reg *Registry, profiles 
 		writeErr(w, http.StatusUnauthorized, "invalid_gateway_lease")
 		return
 	}
-	if _, err := reg.Consume(token, agentID, profileID); err != nil {
+	grant, err := reg.Consume(token, agentID, profileID)
+	if err != nil {
 		slog.Info("model_gateway_denied", "reason", err.Error(), "agentId", agentID, "profileId", profileID)
 		writeErr(w, http.StatusUnauthorized, "invalid_gateway_lease")
 		return
@@ -51,8 +52,7 @@ func serveLease(w http.ResponseWriter, r *http.Request, reg *Registry, profiles 
 		writeErr(w, http.StatusServiceUnavailable, "upstream_not_wired")
 		return
 	}
-	proxyUpstream(w, r, profile)
-	_ = path
+	proxyUpstream(w, r, profile, grant, reg, path)
 }
 
 func writeErr(w http.ResponseWriter, status int, code string) {
