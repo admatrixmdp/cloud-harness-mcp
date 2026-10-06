@@ -113,6 +113,66 @@ func dashboardMessageFor(op protocol.Operation, code protocol.ErrorCode) string 
 		if code == protocol.ErrorNotFound {
 			return "Model credential or profile not found."
 		}
+	case protocol.OpSkillList, protocol.OpSkillBulk, protocol.OpSkillSearch:
+		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
+			return "The skill registry is temporarily unavailable."
+		}
+	case protocol.OpSkillGet, protocol.OpSkillUpdate, protocol.OpSkillArchive, protocol.OpSkillRestore, protocol.OpSkillUsage,
+		protocol.OpSkillRevisionList, protocol.OpSkillRevisionGet, protocol.OpSkillRevisionDiff, protocol.OpSkillRevisionCreate, protocol.OpSkillRevisionFork:
+		if code == protocol.ErrorNotFound {
+			return "Skill not found."
+		}
+		if code == protocol.ErrorConflict {
+			return "This skill changed after you opened it."
+		}
+		if (op == protocol.OpSkillCreateCustom || op == protocol.OpSkillRevisionFork) && code == protocol.ErrorConflict {
+			return "A skill with this name already exists."
+		}
+	case protocol.OpSkillCreateCustom:
+		if code == protocol.ErrorConflict {
+			return "A skill with this name already exists."
+		}
+	case protocol.OpSkillImportStart:
+		if code == protocol.ErrorConflict {
+			return "This import already started."
+		}
+		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
+			return "The provider is temporarily unavailable."
+		}
+	case protocol.OpSkillImportStatus:
+		if code == protocol.ErrorNotFound {
+			return "Import job not found."
+		}
+	case protocol.OpSkillImportCancel:
+		if code == protocol.ErrorNotFound {
+			return "Import job not found."
+		}
+		if code == protocol.ErrorConflict {
+			return "This import already finished."
+		}
+	case protocol.OpSkillSetList:
+		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
+			return "Skill sets are temporarily unavailable."
+		}
+	case protocol.OpSkillSetGet, protocol.OpSkillSetPreview:
+		if code == protocol.ErrorNotFound {
+			return "Skill set not found."
+		}
+		if code == protocol.ErrorConflict {
+			return "This skill set changed after you opened it."
+		}
+	case protocol.OpSkillSetCreate:
+		if code == protocol.ErrorConflict {
+			return "A skill set with this name already exists."
+		}
+	case protocol.OpSkillSetUpdate:
+		if code == protocol.ErrorConflict {
+			return "This skill set changed after you opened it."
+		}
+	case protocol.OpSkillSetDelete:
+		if code == protocol.ErrorConflict {
+			return "This skill set is still used by a workspace."
+		}
 	}
 	return dashboardMessage(code)
 }

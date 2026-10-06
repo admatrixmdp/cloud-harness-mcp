@@ -27,6 +27,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/models"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/runner"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/skillsreg"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 
 	_ "modernc.org/sqlite"
@@ -101,13 +102,17 @@ func dashboardGitHubStores(t *testing.T) (http.Handler, *grants.Store, *audit.St
 	if err != nil {
 		t.Fatal(err)
 	}
+	skillStore, err := skillsreg.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
 	svc := runner.NewService(runner.Config{
 		NetworkProfile: protocol.NetworkNone,
 		JobsRoot:       t.TempDir(),
 		GitHubApp:      git.AppConfig{AppID: "1", AppSlug: "test-app"},
 	}, nil, nil).
 		WithGrants(store).WithKnowledge(kn).WithMCPGateway(gw).WithArtifacts(art).WithAudit(aud).
-		WithGitHub(gh, stubGitHubVerifier{}).WithMetadata(meta).WithSecrets(sec).WithModels(modelStore)
+		WithGitHub(gh, stubGitHubVerifier{}).WithMetadata(meta).WithSecrets(sec).WithModels(modelStore).WithSkills(skillStore)
 	inner := httptest.NewServer(runner.Handler(runner.Options{Service: svc}))
 	t.Cleanup(inner.Close)
 	h := Handler(Options{
@@ -1349,5 +1354,64 @@ func TestDashboardModelCredentialsAndProfiles(t *testing.T) {
 
 	if protocol.OpModelCredentialList.Known() || protocol.OpModelProfileCreate.Known() || !protocol.OpModelConfigStatus.Dashboard() {
 		t.Fatal("model dashboard ops must stay dashboard-only")
+	}
+}
+
+func TestDashboardSkillsRegistry(t *testing.T) {
+	h, _, _, _ := dashboardGitHubStores(t)
+	auth := map[string]string{"Authorization": "Bearer owner-secret"}
+	csrf, cookie := dashboardCSRF(t, h)
+	mut := map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+	}
+
+	denied := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/skills", `{"slug":"tdd","displayName":"TDD","instructions":"# TDD\nWrite the test first.","expectedGeneration":0}`, map[string]string{
+		"Authorization": "Bearer owner-secret",
+	})
+	if denied.Code != http.StatusUnauthorized && denied.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf %d %s", denied.Code, denied.Body.String())
+	}
+
+	created := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/skills", `{"slug":"tdd","displayName":"TDD","instructions":"# TDD\nWrite the test first.","expectedGeneration":0}`, mut)
+	if created.Code != 200 {
+		t.Fatalf("create %d %s", created.Code, created.Body.String())
+	}
+	if strings.Contains(created.Body.String(), "owner-secret") || strings.Contains(created.Body.String(), `"instructions"`) {
+		t.Fatalf("leaked %s", created.Body.String())
+	}
+	var createdBody struct {
+		Data struct {
+			ID   string `json:"id"`
+			Slug string `json:"slug"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &createdBody); err != nil || createdBody.Data.ID == "" {
+		t.Fatalf("create parse %s", created.Body.String())
+	}
+
+	listed := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/skills", "", auth)
+	if listed.Code != 200 || !strings.Contains(listed.Body.String(), `"slug":"tdd"`) {
+		t.Fatalf("list %d %s", listed.Code, listed.Body.String())
+	}
+
+	got := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/skills/"+createdBody.Data.ID, "", auth)
+	if got.Code != 200 || !strings.Contains(got.Body.String(), `"displayName":"TDD"`) {
+		t.Fatalf("get %d %s", got.Code, got.Body.String())
+	}
+
+	search := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/skills/search?query=tdd", "", auth)
+	if search.Code != 200 || !strings.Contains(search.Body.String(), `"slug":"tdd"`) {
+		t.Fatalf("search %d %s", search.Code, search.Body.String())
+	}
+
+	set := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/skill-sets", `{"name":"core","expectedGeneration":0}`, mut)
+	if set.Code != 200 {
+		t.Fatalf("set %d %s", set.Code, set.Body.String())
+	}
+
+	if protocol.OpSkillList.Known() || protocol.OpSkillCreateCustom.Known() || !protocol.OpSkillSetList.Dashboard() {
+		t.Fatal("skill dashboard ops must stay dashboard-only")
 	}
 }

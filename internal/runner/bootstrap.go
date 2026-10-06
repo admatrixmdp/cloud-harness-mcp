@@ -22,6 +22,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/models"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/skillsreg"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/typesafe"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
@@ -196,6 +197,9 @@ func ProductionService(getenv Env) (*Service, error) {
 		}
 		if knowledgeStore, err := knowledge.Open(db); err == nil {
 			svc = svc.WithKnowledge(knowledgeStore)
+		}
+		if skillStore, err := skillsreg.Open(db); err == nil {
+			svc = svc.WithSkills(skillStore)
 		}
 		if meta, err := metadata.Open(db); err == nil {
 			svc = svc.WithMetadata(meta)

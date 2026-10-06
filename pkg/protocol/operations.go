@@ -190,6 +190,30 @@ const (
 	OpModelProfileDisable   Operation = "model_profile_disable"
 	OpModelProfileDelete    Operation = "model_profile_delete"
 	OpModelConfigStatus     Operation = "model_config_status"
+
+	OpSkillList           Operation = "skill_list"
+	OpSkillGet            Operation = "skill_get"
+	OpSkillCreateCustom   Operation = "skill_create_custom"
+	OpSkillUpdate         Operation = "skill_update"
+	OpSkillArchive        Operation = "skill_archive"
+	OpSkillRestore        Operation = "skill_restore"
+	OpSkillBulk           Operation = "skill_bulk"
+	OpSkillUsage          Operation = "skill_usage"
+	OpSkillSearch         Operation = "skill_search"
+	OpSkillRevisionList   Operation = "skill_revision_list"
+	OpSkillRevisionGet    Operation = "skill_revision_get"
+	OpSkillRevisionDiff   Operation = "skill_revision_diff"
+	OpSkillRevisionCreate Operation = "skill_revision_create"
+	OpSkillRevisionFork   Operation = "skill_revision_fork"
+	OpSkillImportStart    Operation = "skill_import_start"
+	OpSkillImportStatus   Operation = "skill_import_status"
+	OpSkillImportCancel   Operation = "skill_import_cancel"
+	OpSkillSetList        Operation = "skill_set_list"
+	OpSkillSetGet         Operation = "skill_set_get"
+	OpSkillSetCreate      Operation = "skill_set_create"
+	OpSkillSetUpdate      Operation = "skill_set_update"
+	OpSkillSetDelete      Operation = "skill_set_delete"
+	OpSkillSetPreview     Operation = "skill_set_preview"
 )
 
 // AllOperations is the ordered public MCP tool catalog from RunnerOperationSchema.
@@ -288,7 +312,12 @@ func (op Operation) Dashboard() bool {
 		OpGlobalSecretList, OpGlobalSecretCreate, OpGlobalSecretRotate, OpGlobalSecretUpdate, OpGlobalSecretDelete, OpGlobalSecretBulkApply,
 		OpModelCredentialList, OpModelCredentialCreate, OpModelCredentialRotate, OpModelCredentialDelete,
 		OpModelProfileList, OpModelProfileCreate, OpModelProfileUpdate, OpModelProfileActivate, OpModelProfileDisable, OpModelProfileDelete,
-		OpModelConfigStatus:
+		OpModelConfigStatus,
+		OpSkillList, OpSkillGet, OpSkillCreateCustom, OpSkillUpdate, OpSkillArchive, OpSkillRestore, OpSkillBulk,
+		OpSkillUsage, OpSkillSearch,
+		OpSkillRevisionList, OpSkillRevisionGet, OpSkillRevisionDiff, OpSkillRevisionCreate, OpSkillRevisionFork,
+		OpSkillImportStart, OpSkillImportStatus, OpSkillImportCancel,
+		OpSkillSetList, OpSkillSetGet, OpSkillSetCreate, OpSkillSetUpdate, OpSkillSetDelete, OpSkillSetPreview:
 		return true
 	default:
 		return false

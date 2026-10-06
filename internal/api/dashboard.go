@@ -245,6 +245,7 @@ func dashboardHandler(opts Options, sessions *Sessions) http.Handler {
 	registerDashboardGitHub(mux, opts, sessions)
 	registerDashboardProjects(mux, opts, sessions)
 	registerDashboardModels(mux, opts, sessions)
+	registerDashboardSkills(mux, opts, sessions)
 	mux.Handle("GET /api/v1/overview", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeOverview(w, r, opts.Runner)
 	})))
@@ -670,6 +671,47 @@ func projectDashboard(op protocol.Operation, data any) any {
 		return projectModelProfile(obj)
 	case protocol.OpModelConfigStatus:
 		return projectModelStatus(obj)
+	case protocol.OpSkillList:
+		return map[string]any{"skills": projectObjects(obj["skills"], skillKeys...)}
+	case protocol.OpSkillGet, protocol.OpSkillCreateCustom, protocol.OpSkillUpdate, protocol.OpSkillArchive, protocol.OpSkillRestore:
+		return pickKeys(obj, skillKeys...)
+	case protocol.OpSkillBulk:
+		return projectSkillBulk(obj)
+	case protocol.OpSkillUsage:
+		return map[string]any{
+			"sets":           projectObjects(obj["sets"], skillUsageSetKeys...),
+			"liveWorkspaces": projectObjects(obj["liveWorkspaces"], skillUsageWorkspaceKeys...),
+		}
+	case protocol.OpSkillSearch:
+		return map[string]any{
+			"local":     projectObjects(obj["local"], skillKeys...),
+			"providers": projectObjects(obj["providers"], "provider", "status", "warning", "count"),
+			"results":   projectObjects(obj["results"], "provider", "reference", "name", "description", "installs"),
+		}
+	case protocol.OpSkillImportStart, protocol.OpSkillImportStatus, protocol.OpSkillImportCancel:
+		return pickKeys(obj, skillImportJobKeys...)
+	case protocol.OpSkillRevisionList:
+		return map[string]any{"revisions": projectObjects(obj["revisions"], skillRevisionKeys...)}
+	case protocol.OpSkillRevisionGet, protocol.OpSkillRevisionDiff:
+		return projectSkillRevision(obj)
+	case protocol.OpSkillRevisionCreate:
+		return pickKeys(obj, "sourceId", "revisionId", "warning")
+	case protocol.OpSkillRevisionFork:
+		out := pickKeys(obj, "sourceId", "revisionId")
+		if nested, ok := obj["forkedFrom"].(map[string]any); ok {
+			out["forkedFrom"] = pickKeys(nested, "skillId", "revisionId")
+		}
+		return out
+	case protocol.OpSkillSetList:
+		return map[string]any{"sets": projectObjects(obj["sets"], skillSetKeys...)}
+	case protocol.OpSkillSetGet:
+		out := pickKeys(obj, skillSetKeys...)
+		out["items"] = projectObjects(obj["items"], skillSetItemKeys...)
+		return out
+	case protocol.OpSkillSetCreate, protocol.OpSkillSetUpdate, protocol.OpSkillSetDelete:
+		return pickKeys(obj, skillSetKeys...)
+	case protocol.OpSkillSetPreview:
+		return projectSkillPreview(obj)
 	case protocol.OpArtifactList:
 		return map[string]any{"artifacts": projectObjects(obj["artifacts"], artifactKeys...)}
 	case protocol.OpArtifactSnapshot, protocol.OpArtifactDelete:

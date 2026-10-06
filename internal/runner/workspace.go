@@ -30,6 +30,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/models"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/skillsreg"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/typesafe"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
@@ -98,6 +99,7 @@ type Service struct {
 	cloner       *git.Cloner
 	secrets      *secrets.Store
 	models       *models.Store
+	skills       *skillsreg.Store
 	metadata     *metadata.Store
 	artifacts    *artifacts.Store
 	audit        *audit.Store
@@ -147,6 +149,12 @@ func (s *Service) WithSecrets(sec *secrets.Store) *Service {
 // Dashboard list/create/rotate never return apiKey plaintext.
 func (s *Service) WithModels(store *models.Store) *Service {
 	s.models = store
+	return s
+}
+
+// WithSkills attaches the dashboard skill registry. Public MCP skills_* stay executor-local.
+func (s *Service) WithSkills(store *skillsreg.Store) *Service {
+	s.skills = store
 	return s
 }
 
