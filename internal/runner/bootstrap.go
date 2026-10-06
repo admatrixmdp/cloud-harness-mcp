@@ -12,6 +12,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/audit"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/githubapp"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/hooks"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
@@ -78,6 +79,7 @@ func durationSeconds(getenv Env, name string, fallback time.Duration) time.Durat
 func githubAppFromEnv(getenv Env) git.AppConfig {
 	return git.AppConfig{
 		AppID:          strings.TrimSpace(getenv("GITHUB_APP_ID")),
+		AppSlug:        strings.TrimSpace(getenv("GITHUB_APP_SLUG")),
 		InstallationID: strings.TrimSpace(getenv("GITHUB_APP_INSTALLATION_ID")),
 		PrivateKey:     []byte(secretFileThenEnv(getenv, "GITHUB_APP_PRIVATE_KEY")),
 	}
@@ -176,6 +178,13 @@ func ProductionService(getenv Env) (*Service, error) {
 		}
 		if auditStore, err := audit.Open(db); err == nil {
 			svc = svc.WithAudit(auditStore)
+		}
+		if ghStore, err := githubapp.Open(db); err == nil {
+			var verifier GitHubVerifier
+			if cfg.GitHubApp.AppID != "" && len(cfg.GitHubApp.PrivateKey) > 0 {
+				verifier = githubapp.NewHTTPVerifier(cfg.GitHubApp, cfg.HTTP)
+			}
+			svc = svc.WithGitHub(ghStore, verifier)
 		}
 		if hookStore, err := hooks.Open(db); err == nil {
 			svc = svc.WithHooks(hookStore)

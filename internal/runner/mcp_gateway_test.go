@@ -103,6 +103,9 @@ func TestInternalGatewayOpsStayOffPublicCatalog(t *testing.T) {
 	if protocol.OpAuditList.Known() || !protocol.OpAuditList.Dashboard() {
 		t.Fatal("audit_list must not be a public /mcp tool")
 	}
+	if protocol.OpGitHubStatus.Known() || protocol.OpGitHubSetupBegin.Known() || protocol.OpGitHubDisconnect.Known() {
+		t.Fatal("github_* dashboard ops must not be public /mcp tools")
+	}
 	if len(protocol.AllOperations) != 92 {
 		t.Fatalf("AllOperations = %d", len(protocol.AllOperations))
 	}

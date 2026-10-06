@@ -151,6 +151,12 @@ const (
 	OpArtifactDelete   Operation = "artifact_delete"
 
 	OpAuditList Operation = "audit_list"
+
+	OpGitHubStatus        Operation = "github_status"
+	OpGitHubSetupBegin    Operation = "github_setup_begin"
+	OpGitHubSetupComplete Operation = "github_setup_complete"
+	OpGitHubReconcile     Operation = "github_reconcile"
+	OpGitHubDisconnect    Operation = "github_disconnect"
 )
 
 // AllOperations is the ordered public MCP tool catalog from RunnerOperationSchema.
@@ -241,7 +247,8 @@ func (op Operation) Dashboard() bool {
 		OpKnowledgeDashboardDelete, OpKnowledgeDashboardSearch, OpKnowledgeDashboardGraph,
 		OpKnowledgeDashboardLinkCreate, OpKnowledgeDashboardLinkDelete,
 		OpArtifactList, OpArtifactSnapshot, OpArtifactRead, OpArtifactRestore, OpArtifactDelete,
-		OpAuditList:
+		OpAuditList,
+		OpGitHubStatus, OpGitHubSetupBegin, OpGitHubSetupComplete, OpGitHubReconcile, OpGitHubDisconnect:
 		return true
 	default:
 		return false

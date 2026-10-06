@@ -35,6 +35,8 @@ func (s *Service) dashboard(ctx context.Context, req protocol.RunnerRequest) pro
 		return s.artifactsDelete(req)
 	case protocol.OpAuditList:
 		return s.auditList(req)
+	case protocol.OpGitHubStatus, protocol.OpGitHubSetupBegin, protocol.OpGitHubSetupComplete, protocol.OpGitHubReconcile, protocol.OpGitHubDisconnect:
+		return s.githubDashboard(req)
 	case protocol.OpPrivilegeGrantList:
 		if s.grants == nil {
 			return protocol.Fail(protocol.ErrorUnavailable, "privilege grant store is unavailable", true)

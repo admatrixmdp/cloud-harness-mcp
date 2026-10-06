@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -16,6 +17,8 @@ import (
 	apiembed "github.com/bestagentkits/cloud-harness-mcp/apps/api"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/audit"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/githubapp"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcp"
@@ -32,7 +35,22 @@ func dashboardFixture(t *testing.T) (http.Handler, *grants.Store) {
 	return h, store
 }
 
+type stubGitHubVerifier struct{}
+
+func (stubGitHubVerifier) VerifyInstallation(id string) (githubapp.Verified, error) {
+	return githubapp.Verified{
+		AppID: "1", InstallationID: id, AccountID: id, AccountLogin: "org-" + id, Status: "active",
+		Repositories: []githubapp.VerifiedRepo{{Owner: "org-" + id, Repository: "repo", Contents: "write"}},
+	}, nil
+}
+
 func dashboardStores(t *testing.T) (http.Handler, *grants.Store, *audit.Store) {
+	t.Helper()
+	h, store, aud, _ := dashboardGitHubStores(t)
+	return h, store, aud
+}
+
+func dashboardGitHubStores(t *testing.T) (http.Handler, *grants.Store, *audit.Store, *githubapp.Store) {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "grants.sqlite"))
 	if err != nil {
@@ -59,8 +77,17 @@ func dashboardStores(t *testing.T) (http.Handler, *grants.Store, *audit.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := runner.NewService(runner.Config{NetworkProfile: protocol.NetworkNone, JobsRoot: t.TempDir()}, nil, nil).
-		WithGrants(store).WithKnowledge(kn).WithMCPGateway(gw).WithArtifacts(art).WithAudit(aud)
+	gh, err := githubapp.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := runner.NewService(runner.Config{
+		NetworkProfile: protocol.NetworkNone,
+		JobsRoot:       t.TempDir(),
+		GitHubApp:      git.AppConfig{AppID: "1", AppSlug: "test-app"},
+	}, nil, nil).
+		WithGrants(store).WithKnowledge(kn).WithMCPGateway(gw).WithArtifacts(art).WithAudit(aud).
+		WithGitHub(gh, stubGitHubVerifier{})
 	inner := httptest.NewServer(runner.Handler(runner.Options{Service: svc}))
 	t.Cleanup(inner.Close)
 	h := Handler(Options{
@@ -72,7 +99,7 @@ func dashboardStores(t *testing.T) (http.Handler, *grants.Store, *audit.Store) {
 			return []net.IP{net.ParseIP("93.184.216.34")}, nil
 		},
 	})
-	return h, store, aud
+	return h, store, aud, gh
 }
 
 func dashboardDo(t *testing.T, h http.Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
@@ -1055,5 +1082,106 @@ func TestDashboardOverviewMetricsAudit(t *testing.T) {
 
 	if protocol.OpAuditList.Known() || !protocol.OpAuditList.Dashboard() {
 		t.Fatal("audit_list must stay dashboard-only")
+	}
+}
+
+func TestDashboardGitHubStatusSetupDisconnect(t *testing.T) {
+	h, _, _, gh := dashboardGitHubStores(t)
+	if _, err := gh.ReplaceVerified("owner", githubapp.Verified{
+		AppID: "1", InstallationID: "101", AccountID: "201", AccountLogin: "org-one", Status: "active",
+		Repositories: []githubapp.VerifiedRepo{{Owner: "org-one", Repository: "repo1", Contents: "write"}},
+	}, 100); err != nil {
+		t.Fatal(err)
+	}
+	auth := map[string]string{"Authorization": "Bearer owner-secret"}
+	status := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/github", "", auth)
+	if status.Code != 200 {
+		t.Fatalf("status %d %s", status.Code, status.Body.String())
+	}
+	body := status.Body.String()
+	if !strings.Contains(body, `"installationId":"101"`) || !strings.Contains(body, `"configured":true`) {
+		t.Fatalf("status body %s", body)
+	}
+	if strings.Contains(body, `"ownerId"`) || strings.Contains(body, `"secretToken"`) || strings.Contains(body, "owner-secret") {
+		t.Fatalf("leaked %s", body)
+	}
+
+	csrf, cookie := dashboardCSRF(t, h)
+	mut := map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+	}
+	denied := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/github/setup", `{}`, map[string]string{
+		"Authorization": "Bearer owner-secret",
+	})
+	if denied.Code != http.StatusUnauthorized && denied.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf %d %s", denied.Code, denied.Body.String())
+	}
+
+	setup := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/github/setup", `{}`, mut)
+	if setup.Code != 200 {
+		t.Fatalf("setup %d %s", setup.Code, setup.Body.String())
+	}
+	if !strings.Contains(setup.Body.String(), `"url":"https://github.com/apps/test-app/installations/new?state=`) {
+		t.Fatalf("setup body %s", setup.Body.String())
+	}
+	var setupBody struct {
+		Data struct {
+			State string `json:"state"`
+			URL   string `json:"url"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(setup.Body.Bytes(), &setupBody); err != nil || setupBody.Data.State == "" {
+		t.Fatalf("setup parse %s", setup.Body.String())
+	}
+	complete := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/github/complete", `{"state":"`+setupBody.Data.State+`","installationId":"456"}`, mut)
+	if complete.Code != 200 || !strings.Contains(complete.Body.String(), `"installationId":"456"`) {
+		t.Fatalf("complete %d %s", complete.Code, complete.Body.String())
+	}
+
+	disconnect := dashboardDo(t, h, http.MethodDelete, "/dashboard/api/v1/github/installations/101", `{}`, mut)
+	if disconnect.Code != 200 {
+		t.Fatalf("disconnect %d %s", disconnect.Code, disconnect.Body.String())
+	}
+	var disconnectBody struct {
+		Data struct {
+			Installations []map[string]any `json:"installations"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(disconnect.Body.Bytes(), &disconnectBody); err != nil {
+		t.Fatalf("disconnect parse %s", disconnect.Body.String())
+	}
+	for _, row := range disconnectBody.Data.Installations {
+		if fmt.Sprint(row["installationId"]) == "101" {
+			t.Fatalf("disconnected installation still listed %s", disconnect.Body.String())
+		}
+	}
+
+	if protocol.OpGitHubStatus.Known() || !protocol.OpGitHubStatus.Dashboard() {
+		t.Fatal("github_status must stay dashboard-only")
+	}
+}
+
+func TestDashboardGitHubErrorWording(t *testing.T) {
+	if dashboardMessageFor(protocol.OpGitHubReconcile, protocol.ErrorUnavailable) != githubUnavailable {
+		t.Fatal("github UNAVAILABLE must not use workspace wording")
+	}
+	if dashboardMessageFor(protocol.OpWorkspaceStatus, protocol.ErrorUnavailable) != "The workspace service is temporarily unavailable." {
+		t.Fatal("workspace UNAVAILABLE wording changed")
+	}
+	if dashboardMessageFor(protocol.OpGitHubSetupComplete, protocol.ErrorInvalidInput) != "The GitHub App connection could not be completed. Start the connection again." {
+		t.Fatal("setup complete INVALID_INPUT wording")
+	}
+	if dashboardMessageFor(protocol.OpGitHubDisconnect, protocol.ErrorNotFound) != "GitHub installation not found." {
+		t.Fatal("disconnect NOT_FOUND wording")
+	}
+	rec := httptest.NewRecorder()
+	writeDashboardFailOp(rec, protocol.OpGitHubReconcile, protocol.Fail(protocol.ErrorUnavailable, "GitHub App authentication failed: Cannot read properties of undefined (reading 'appId')", true))
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), githubUnavailable) {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "appId") {
+		t.Fatalf("runner text leaked %s", rec.Body.String())
 	}
 }

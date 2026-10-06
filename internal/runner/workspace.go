@@ -20,6 +20,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/audit"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/executor"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/githubapp"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/hooks"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
@@ -89,25 +90,27 @@ func (c Config) withDefaults() Config {
 
 // Service executes public runner operations.
 type Service struct {
-	cfg       Config
-	store     store.Store
-	engine    Engine
-	cloner    *git.Cloner
-	secrets   *secrets.Store
-	artifacts *artifacts.Store
-	audit     *audit.Store
-	memories  *memories.Store
-	knowledge *knowledge.Store
-	hooks     *hooks.Store
-	grants    *grants.Store
-	agents    *agentHub
-	docker    *sandbox.Engine
-	mcpGW     *mcpGatewayHub
-	mcpStore  *mcpgw.Store
-	typesafe  *typesafe.Suggester
-	gitOps    store.GitOpStore
-	tasks     store.TaskStore
-	bootID    string
+	cfg          Config
+	store        store.Store
+	engine       Engine
+	cloner       *git.Cloner
+	secrets      *secrets.Store
+	artifacts    *artifacts.Store
+	audit        *audit.Store
+	memories     *memories.Store
+	knowledge    *knowledge.Store
+	hooks        *hooks.Store
+	grants       *grants.Store
+	github       *githubapp.Store
+	githubVerify GitHubVerifier
+	agents       *agentHub
+	docker       *sandbox.Engine
+	mcpGW        *mcpGatewayHub
+	mcpStore     *mcpgw.Store
+	typesafe     *typesafe.Suggester
+	gitOps       store.GitOpStore
+	tasks        store.TaskStore
+	bootID       string
 }
 
 // WithAgents attaches the Docker subagent launcher and optional gateway control client.

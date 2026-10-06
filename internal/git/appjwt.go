@@ -24,6 +24,7 @@ import (
 // AppConfig is the GitHub App identity used to mint installation tokens.
 type AppConfig struct {
 	AppID          string
+	AppSlug        string
 	InstallationID string
 	PrivateKey     []byte
 }

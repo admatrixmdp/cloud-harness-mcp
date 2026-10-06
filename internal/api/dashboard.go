@@ -242,6 +242,7 @@ func dashboardHandler(opts Options, sessions *Sessions) http.Handler {
 	mux.Handle("GET /api/v1/audit", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxyDashboard(w, r, opts.Runner, protocol.OpAuditList, pageQuery(r))
 	})))
+	registerDashboardGitHub(mux, opts, sessions)
 	mux.Handle("GET /api/v1/overview", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeOverview(w, r, opts.Runner)
 	})))
@@ -566,7 +567,7 @@ func proxyDashboard(w http.ResponseWriter, r *http.Request, runner *mcp.RunnerCl
 		result = runner.Call(r.Context(), op, raw)
 	}
 	if !result.OK {
-		writeDashboardFail(w, result)
+		writeDashboardFailOp(w, op, result)
 		return
 	}
 	data := projectDashboard(op, result.Data)
@@ -636,6 +637,10 @@ func projectDashboard(op protocol.Operation, data any) any {
 		return map[string]any{"traces": projectObjects(obj["traces"], "id", "serverId", "serverName", "tool", "operation", "clientId", "durationMs", "status", "errorCode", "errorMessage", "requestBytes", "responseBytes", "createdAt")}
 	case protocol.OpAuditList:
 		return map[string]any{"events": projectObjects(obj["events"], "id", "action", "subjectType", "subjectId", "subjectGeneration", "details", "createdAt")}
+	case protocol.OpGitHubSetupBegin:
+		return pickKeys(obj, "url", "state", "expiresAt")
+	case protocol.OpGitHubStatus, protocol.OpGitHubSetupComplete, protocol.OpGitHubReconcile, protocol.OpGitHubDisconnect:
+		return projectGitHubStatus(obj)
 	case protocol.OpArtifactList:
 		return map[string]any{"artifacts": projectObjects(obj["artifacts"], artifactKeys...)}
 	case protocol.OpArtifactSnapshot, protocol.OpArtifactDelete:
@@ -986,6 +991,10 @@ func pickGrant(raw any) map[string]any {
 }
 
 func writeDashboardFail(w http.ResponseWriter, result protocol.ToolResult) {
+	writeDashboardFailOp(w, "", result)
+}
+
+func writeDashboardFailOp(w http.ResponseWriter, op protocol.Operation, result protocol.ToolResult) {
 	code := protocol.ErrorInternal
 	if result.Error != nil && result.Error.Code != "" {
 		code = result.Error.Code
@@ -1009,7 +1018,7 @@ func writeDashboardFail(w http.ResponseWriter, result protocol.ToolResult) {
 	case protocol.ErrorUnavailable, protocol.ErrorDependencyEgressUnavailable:
 		status = http.StatusServiceUnavailable
 	}
-	message := dashboardMessage(code)
+	message := dashboardMessageFor(op, code)
 	writeJSON(w, status, map[string]any{"error": strings.ToLower(string(code)), "message": message})
 }
 
