@@ -196,6 +196,16 @@ func dashboardMessageFor(op protocol.Operation, code protocol.ErrorCode) string 
 		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
 			return "The toolkit registry is temporarily unavailable."
 		}
+	case protocol.OpIntegrationCredentialList, protocol.OpIntegrationCredentialCreate, protocol.OpIntegrationCredentialRotate, protocol.OpIntegrationCredentialDelete, protocol.OpTypesafeStatus:
+		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
+			return "Integration credentials are temporarily unavailable."
+		}
+		if code == protocol.ErrorNotFound {
+			return "Integration credential not found."
+		}
+		if code == protocol.ErrorConflict {
+			return "This integration credential already exists or changed after you opened it."
+		}
 	}
 	return dashboardMessage(code)
 }

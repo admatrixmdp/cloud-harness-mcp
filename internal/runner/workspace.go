@@ -23,6 +23,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/githubapp"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/hooks"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/integrations"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcpgw"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/memories"
@@ -103,6 +104,7 @@ type Service struct {
 	secrets      *secrets.Store
 	models       *models.Store
 	skills       *skillsreg.Store
+	integrations *integrations.Store
 	metadata     *metadata.Store
 	artifacts    *artifacts.Store
 	audit        *audit.Store
@@ -158,6 +160,13 @@ func (s *Service) WithModels(store *models.Store) *Service {
 // WithSkills attaches the dashboard skill registry. Public MCP skills_* stay executor-local.
 func (s *Service) WithSkills(store *skillsreg.Store) *Service {
 	s.skills = store
+	return s
+}
+
+// WithIntegrations attaches encrypted TypeSafe (and later) keys. Dashboard
+// list/create/rotate never return plaintext.
+func (s *Service) WithIntegrations(store *integrations.Store) *Service {
+	s.integrations = store
 	return s
 }
 
@@ -838,7 +847,6 @@ func (s *Service) skillSuggest(req protocol.RunnerRequest) protocol.ToolResult {
 	if len([]byte(input.Prompt)) > typesafe.MaxEgressCeiling {
 		return protocol.Fail(protocol.ErrorInvalidInput, "the prompt exceeds the egress byte bound", false)
 	}
-	engine := s.typeSafeEngine()
 	if input.WorkspaceID == "" {
 		return noneSuggestion("empty_roster")
 	}
@@ -849,6 +857,7 @@ func (s *Service) skillSuggest(req protocol.RunnerRequest) protocol.ToolResult {
 	if rec.Status != store.StatusActive {
 		return noneSuggestion("empty_roster")
 	}
+	engine := s.typeSafeEngineFor(req.OwnerID)
 	if engine == nil {
 		return noneSuggestion("not_configured")
 	}
@@ -871,8 +880,19 @@ func noneSuggestion(reason string) protocol.ToolResult {
 }
 
 func (s *Service) typeSafeEngine() *typesafe.Suggester {
+	return s.typeSafeEngineFor("")
+}
+
+func (s *Service) typeSafeEngineFor(ownerID string) *typesafe.Suggester {
 	if s.typesafe != nil {
 		return s.typesafe
+	}
+	if s.integrations != nil && ownerID != "" {
+		key, err := s.integrations.DecryptValue(ownerID, "typesafe")
+		if err != nil || strings.TrimSpace(key) == "" {
+			return nil
+		}
+		return typesafe.New(typesafe.Config{APIKey: func() string { return key }})
 	}
 	key := strings.TrimSpace(os.Getenv("TYPESAFE_API_KEY"))
 	if key == "" {

@@ -224,6 +224,12 @@ const (
 	OpToolkitRegistryList    Operation = "toolkit_registry_list"
 	OpToolkitRegistryUpdate  Operation = "toolkit_registry_update"
 	OpToolkitRegistryRefresh Operation = "toolkit_registry_refresh"
+
+	OpIntegrationCredentialList   Operation = "integration_credential_list"
+	OpIntegrationCredentialCreate Operation = "integration_credential_create"
+	OpIntegrationCredentialRotate Operation = "integration_credential_rotate"
+	OpIntegrationCredentialDelete Operation = "integration_credential_delete"
+	OpTypesafeStatus              Operation = "typesafe_status"
 )
 
 // AllOperations is the ordered public MCP tool catalog from RunnerOperationSchema.
@@ -329,7 +335,9 @@ func (op Operation) Dashboard() bool {
 		OpSkillImportStart, OpSkillImportStatus, OpSkillImportCancel,
 		OpSkillSetList, OpSkillSetGet, OpSkillSetCreate, OpSkillSetUpdate, OpSkillSetDelete, OpSkillSetPreview,
 		OpToolkitsList, OpToolkitsPreview, OpSettingsGet, OpSettingsUpdate, OpSettingsNetworkCheck,
-		OpToolkitRegistryList, OpToolkitRegistryUpdate, OpToolkitRegistryRefresh:
+		OpToolkitRegistryList, OpToolkitRegistryUpdate, OpToolkitRegistryRefresh,
+		OpIntegrationCredentialList, OpIntegrationCredentialCreate, OpIntegrationCredentialRotate, OpIntegrationCredentialDelete,
+		OpTypesafeStatus:
 		return true
 	default:
 		return false

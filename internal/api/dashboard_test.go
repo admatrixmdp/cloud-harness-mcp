@@ -20,6 +20,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/githubapp"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/integrations"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcp"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcpgw"
@@ -106,13 +107,17 @@ func dashboardGitHubStores(t *testing.T) (http.Handler, *grants.Store, *audit.St
 	if err != nil {
 		t.Fatal(err)
 	}
+	intStore, err := integrations.Open(db, ring)
+	if err != nil {
+		t.Fatal(err)
+	}
 	svc := runner.NewService(runner.Config{
 		NetworkProfile: protocol.NetworkNone,
 		JobsRoot:       t.TempDir(),
 		GitHubApp:      git.AppConfig{AppID: "1", AppSlug: "test-app"},
 	}, nil, nil).
 		WithGrants(store).WithKnowledge(kn).WithMCPGateway(gw).WithArtifacts(art).WithAudit(aud).
-		WithGitHub(gh, stubGitHubVerifier{}).WithMetadata(meta).WithSecrets(sec).WithModels(modelStore).WithSkills(skillStore)
+		WithGitHub(gh, stubGitHubVerifier{}).WithMetadata(meta).WithSecrets(sec).WithModels(modelStore).WithSkills(skillStore).WithIntegrations(intStore)
 	inner := httptest.NewServer(runner.Handler(runner.Options{Service: svc}))
 	t.Cleanup(inner.Close)
 	h := Handler(Options{
@@ -1510,5 +1515,66 @@ func TestDashboardToolkitRegistry(t *testing.T) {
 
 	if protocol.OpToolkitRegistryList.Known() || protocol.OpToolkitRegistryUpdate.Known() || !protocol.OpToolkitRegistryRefresh.Dashboard() {
 		t.Fatal("toolkit_registry_* must stay dashboard-only")
+	}
+}
+
+func TestDashboardIntegrationCredentials(t *testing.T) {
+	h, _, _, _ := dashboardGitHubStores(t)
+	auth := map[string]string{"Authorization": "Bearer owner-secret"}
+	csrf, cookie := dashboardCSRF(t, h)
+	mut := map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+	}
+	secret := "ts_live_do_not_log_this_value"
+
+	status := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/typesafe", "", auth)
+	if status.Code != 200 || !strings.Contains(status.Body.String(), `"configured":false`) {
+		t.Fatalf("status %d %s", status.Code, status.Body.String())
+	}
+
+	denied := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/integration-credentials", `{"integration":"typesafe","label":"TypeSafe","value":"`+secret+`","expectedGeneration":0}`, map[string]string{
+		"Authorization": "Bearer owner-secret",
+	})
+	if denied.Code != http.StatusUnauthorized && denied.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf %d %s", denied.Code, denied.Body.String())
+	}
+
+	created := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/integration-credentials", `{"integration":"typesafe","label":"TypeSafe","value":"`+secret+`","expectedGeneration":0}`, mut)
+	if created.Code != 200 || strings.Contains(created.Body.String(), secret) || strings.Contains(created.Body.String(), `"value"`) {
+		t.Fatalf("create %d %s", created.Code, created.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &envelope); err != nil || envelope.Data.ID == "" {
+		t.Fatalf("id %v %s", err, created.Body.String())
+	}
+
+	listed := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/integration-credentials", "", auth)
+	if listed.Code != 200 || strings.Contains(listed.Body.String(), secret) || !strings.Contains(listed.Body.String(), `"integration":"typesafe"`) {
+		t.Fatalf("list %d %s", listed.Code, listed.Body.String())
+	}
+
+	after := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/typesafe", "", auth)
+	if after.Code != 200 || !strings.Contains(after.Body.String(), `"configured":true`) || strings.Contains(after.Body.String(), secret) {
+		t.Fatalf("after %d %s", after.Code, after.Body.String())
+	}
+
+	rotated := dashboardDo(t, h, http.MethodPut, "/dashboard/api/v1/integration-credentials/"+envelope.Data.ID+"/rotate", `{"value":"ts_live_rotated","expectedGeneration":1}`, mut)
+	if rotated.Code != 200 || strings.Contains(rotated.Body.String(), "ts_live_rotated") {
+		t.Fatalf("rotate %d %s", rotated.Code, rotated.Body.String())
+	}
+
+	deleted := dashboardDo(t, h, http.MethodDelete, "/dashboard/api/v1/integration-credentials/"+envelope.Data.ID, `{"expectedGeneration":2}`, mut)
+	if deleted.Code != 200 || !strings.Contains(deleted.Body.String(), `"deleted":true`) {
+		t.Fatalf("delete %d %s", deleted.Code, deleted.Body.String())
+	}
+
+	if protocol.OpIntegrationCredentialList.Known() || protocol.OpTypesafeStatus.Known() || !protocol.OpIntegrationCredentialCreate.Dashboard() {
+		t.Fatal("integration credential ops must stay dashboard-only")
 	}
 }

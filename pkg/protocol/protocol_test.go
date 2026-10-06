@@ -79,6 +79,9 @@ func TestAllOperationsMatchCatalogCount(t *testing.T) {
 	if !OpToolkitRegistryList.Dashboard() || OpToolkitRegistryUpdate.Known() || OpToolkitRegistryRefresh.Internal() {
 		t.Fatal("toolkit_registry_* dashboard ops must be dashboard-only, not public /mcp tools")
 	}
+	if !OpIntegrationCredentialList.Dashboard() || OpIntegrationCredentialCreate.Known() || OpTypesafeStatus.Internal() || OpIntegrationCredentialDelete.Known() {
+		t.Fatal("integration_credential_* / typesafe_status must be dashboard-only, not public /mcp tools")
+	}
 }
 
 func TestOperationJSONIsBareString(t *testing.T) {

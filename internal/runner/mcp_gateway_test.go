@@ -121,6 +121,9 @@ func TestInternalGatewayOpsStayOffPublicCatalog(t *testing.T) {
 	if protocol.OpToolkitRegistryList.Known() || protocol.OpToolkitRegistryUpdate.Known() || protocol.OpToolkitRegistryRefresh.Known() {
 		t.Fatal("toolkit_registry_* dashboard ops must not be public /mcp tools")
 	}
+	if protocol.OpIntegrationCredentialList.Known() || protocol.OpIntegrationCredentialCreate.Known() || protocol.OpTypesafeStatus.Known() {
+		t.Fatal("integration_credential_* / typesafe_status must not be public /mcp tools")
+	}
 	if len(protocol.AllOperations) != 92 {
 		t.Fatalf("AllOperations = %d", len(protocol.AllOperations))
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/githubapp"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/hooks"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/integrations"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcpgw"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/memories"
@@ -220,6 +221,11 @@ func ProductionService(getenv Env) (*Service, error) {
 				return nil, err
 			}
 			svc = svc.WithModels(modelStore)
+			intStore, err := integrations.Open(db, ring)
+			if err != nil {
+				return nil, err
+			}
+			svc = svc.WithIntegrations(intStore)
 		}
 		if root := getenv("ARTIFACT_ROOT"); root != "" {
 			art, err := artifacts.Open(db, artifacts.Options{Root: root})

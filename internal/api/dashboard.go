@@ -248,6 +248,7 @@ func dashboardHandler(opts Options, sessions *Sessions) http.Handler {
 	registerDashboardSkills(mux, opts, sessions)
 	registerDashboardSettings(mux, opts, sessions)
 	registerDashboardToolkitRegistry(mux, opts, sessions)
+	registerDashboardIntegrations(mux, opts, sessions)
 	mux.Handle("GET /api/v1/overview", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeOverview(w, r, opts.Runner)
 	})))
@@ -728,6 +729,14 @@ func projectDashboard(op protocol.Operation, data any) any {
 		return projectToolkitRegistryUpdate(obj)
 	case protocol.OpToolkitRegistryRefresh:
 		return projectToolkitRegistryRefresh(obj)
+	case protocol.OpIntegrationCredentialList:
+		return projectIntegrationCredentialList(obj)
+	case protocol.OpIntegrationCredentialCreate, protocol.OpIntegrationCredentialRotate:
+		return pickKeys(obj, integrationCredentialKeys...)
+	case protocol.OpIntegrationCredentialDelete:
+		return pickKeys(obj, "id", "deleted")
+	case protocol.OpTypesafeStatus:
+		return pickKeys(obj, "configured", "enabled", "endpoint", "model")
 	case protocol.OpArtifactList:
 		return map[string]any{"artifacts": projectObjects(obj["artifacts"], artifactKeys...)}
 	case protocol.OpArtifactSnapshot, protocol.OpArtifactDelete:
