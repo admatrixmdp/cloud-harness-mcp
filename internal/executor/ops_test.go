@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -956,6 +957,70 @@ func TestOperationStatusWaitCancelAndTimeout(t *testing.T) {
 	genericCancel := ws.Execute(context.Background(), protocol.OpOperationCancel, json.RawMessage(`{"operationId":"`+rec.id+`"}`))
 	if !genericCancel.OK || genericCancel.Data.(map[string]any)["status"] != "cancelled" {
 		t.Fatalf("generic cancel: %+v", genericCancel)
+	}
+}
+
+func TestGitFetchPullPushValidateAndLocalFileRemote(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{Root: root}
+	badRemote := ws.Execute(context.Background(), protocol.OpGitFetch, json.RawMessage(`{"remote":"upstream"}`))
+	if badRemote.OK || badRemote.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("remote: %+v", badRemote)
+	}
+	dash := ws.Execute(context.Background(), protocol.OpGitFetch, json.RawMessage(`{"refspec":"--upload-pack=evil"}`))
+	if dash.OK || dash.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("dash refspec: %+v", dash)
+	}
+	both := ws.Execute(context.Background(), protocol.OpGitFetch, json.RawMessage(`{"depth":1,"unshallow":true}`))
+	if both.OK || both.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("history: %+v", both)
+	}
+	lease := ws.Execute(context.Background(), protocol.OpGitPush, json.RawMessage(`{"forceWithLease":true}`))
+	if lease.OK || lease.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("lease: %+v", lease)
+	}
+	seed := t.TempDir()
+	remote := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run(seed, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(seed, "README"), []byte("ok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run(seed, "add", "README")
+	run(seed, "commit", "-m", "init")
+	run(remote, "clone", "--bare", seed, ".")
+	run(root, "clone", remote, ".")
+	fetched := ws.Execute(context.Background(), protocol.OpGitFetch, json.RawMessage(`{}`))
+	if !fetched.OK {
+		t.Fatalf("fetch: %+v", fetched)
+	}
+	pulled := ws.Execute(context.Background(), protocol.OpGitPull, json.RawMessage(`{"strategy":"ff-only"}`))
+	if !pulled.OK {
+		t.Fatalf("pull: %+v", pulled)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README"), []byte("next\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	add := ws.Execute(context.Background(), protocol.OpGitAdd, json.RawMessage(`{"all":true}`))
+	if !add.OK {
+		t.Fatalf("add: %+v", add)
+	}
+	commit := ws.Execute(context.Background(), protocol.OpGitCommit, json.RawMessage(`{"message":"local"}`))
+	if !commit.OK {
+		t.Fatalf("commit: %+v", commit)
+	}
+	pushed := ws.Execute(context.Background(), protocol.OpGitPush, json.RawMessage(`{"refspec":"HEAD:refs/heads/main"}`))
+	if !pushed.OK {
+		t.Fatalf("push: %+v", pushed)
 	}
 }
 

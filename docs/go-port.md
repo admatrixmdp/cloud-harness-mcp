@@ -10,7 +10,7 @@ files and `packages/contracts` until a package is marked runtime-of-record.
 | --- | --- | --- |
 | Streamable HTTP `/mcp` | `apps/api/src/mcp-server.ts`, `apps/api/src/app.ts` | `cmd/cloud-harness-mcp`, `internal/mcp`, `internal/api` |
 | MCP gateway `/mcp-gateway` | `apps/api/src/mcp-gateway/` | `internal/gateway` (constant five-tool surface; execute is SSRF-gated, DNS-pinned, no redirects, credentials only on the configured origin+path) |
-| Local stdio | `apps/api/src/cli-options.ts`, `apps/api/src/local/` | `cmd/cloud-harness-mcp --transport stdio --workspace` (`internal/mcp.ServeStdio` + confined `LocalBackend` including write_batch/move/symbols/git local; fetch/push stay gated on `--git-network`/`--git-push`; `workspace_open` remains unsupported) |
+| Local stdio | `apps/api/src/cli-options.ts`, `apps/api/src/local/` | `cmd/cloud-harness-mcp --transport stdio --workspace` (`internal/mcp.ServeStdio` + confined `LocalBackend` including write_batch/move/symbols/git local; `git_fetch`/`git_pull` require `--git-network`, `git_push` requires `--git-push`; host `git` stays confined, tokens never in argv; `workspace_open` remains unsupported) |
 
 ## Control plane
 

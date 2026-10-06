@@ -28,6 +28,20 @@ func TestLocalBackendRejectsRemoteOnlyAndGitWithoutFlags(t *testing.T) {
 	if got.OK || got.Error.Code != protocol.ErrorRepositoryOperationNotAuthorized {
 		t.Fatalf("push without flag: %+v", got)
 	}
+	fetchOff := b.Call(context.Background(), protocol.OpGitFetch, json.RawMessage(`{}`))
+	if fetchOff.OK || fetchOff.Error.Code != protocol.ErrorForbidden {
+		t.Fatalf("fetch without flag: %+v", fetchOff)
+	}
+	netOnly := LocalBackend{Root: root, GitNetwork: true}
+	pushNetOnly := netOnly.Call(context.Background(), protocol.OpGitPush, json.RawMessage(`{}`))
+	if pushNetOnly.OK || pushNetOnly.Error.Code != protocol.ErrorRepositoryOperationNotAuthorized {
+		t.Fatalf("push with network only: %+v", pushNetOnly)
+	}
+	enabled := LocalBackend{Root: root, GitNetwork: true, GitPush: true}
+	badRemote := enabled.Call(context.Background(), protocol.OpGitFetch, json.RawMessage(`{"remote":"upstream"}`))
+	if badRemote.OK || badRemote.Error.Code != protocol.ErrorInvalidInput {
+		t.Fatalf("enabled fetch validation: %+v", badRemote)
+	}
 	listed := b.Call(context.Background(), protocol.OpFilesList, json.RawMessage(`{"path":"."}`))
 	if !listed.OK {
 		t.Fatalf("list: %+v", listed)

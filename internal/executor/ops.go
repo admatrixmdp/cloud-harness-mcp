@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
 
@@ -67,6 +68,15 @@ type pathInput struct {
 	StartPoint             string   `json:"startPoint"`
 	Force                  bool     `json:"force"`
 	Ref                    string   `json:"ref"`
+	Remote                 string   `json:"remote"`
+	Refspec                string   `json:"refspec"`
+	Branch                 string   `json:"branch"`
+	Strategy               string   `json:"strategy"`
+	ForceWithLease         bool     `json:"forceWithLease"`
+	ExpectedRemoteOid      string   `json:"expectedRemoteOid"`
+	Depth                  *int     `json:"depth"`
+	Unshallow              bool     `json:"unshallow"`
+	ShallowSince           string   `json:"shallowSince"`
 	Create                 bool     `json:"create"`
 	CreateBranch           bool     `json:"createBranch"`
 	IncludeShadowed        *bool    `json:"includeShadowed"`
@@ -150,6 +160,12 @@ func (w Workspace) Execute(ctx context.Context, op protocol.Operation, input jso
 		return w.gitMerge(ctx, in)
 	case protocol.OpGitRebase:
 		return w.gitRebase(ctx, in)
+	case protocol.OpGitFetch:
+		return w.gitFetch(ctx, in)
+	case protocol.OpGitPull:
+		return w.gitPull(ctx, in)
+	case protocol.OpGitPush:
+		return w.gitPush(ctx, in)
 	case protocol.OpWorktreesList:
 		return w.worktreesList(ctx)
 	case protocol.OpWorktreesCreate:
@@ -858,6 +874,147 @@ func (w Workspace) gitMerge(ctx context.Context, in pathInput) protocol.ToolResu
 		return got
 	}
 	return protocol.Fail(protocol.ErrorConflict, stringFrom(got, "output"), false)
+}
+
+func originOrEmpty(remote string) bool {
+	return remote == "" || remote == "origin"
+}
+
+func (w Workspace) gitFetch(ctx context.Context, in pathInput) protocol.ToolResult {
+	if !originOrEmpty(in.Remote) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "remote must be origin", false)
+	}
+	if in.Refspec != "" && !git.ValidFetchRef(in.Refspec) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "Git fetch ref cannot contain a destination", false)
+	}
+	if _, err := git.FetchHistorySpec(in.Depth, in.Unshallow, in.ShallowSince); err != nil {
+		msg := err.Error()
+		if _, after, ok := strings.Cut(msg, ": "); ok {
+			msg = after
+		}
+		return protocol.Fail(protocol.ErrorInvalidInput, msg, false)
+	}
+	args := []string{"fetch", "--no-tags"}
+	shallow := w.gitCmd(ctx, "Git shallow check", "rev-parse", "--is-shallow-repository")
+	isShallow := strings.TrimSpace(stringFrom(shallow, "output")) == "true"
+	if isShallow {
+		switch {
+		case in.Unshallow:
+			args = append(args, "--unshallow")
+		case in.Depth != nil:
+			args = append(args, fmt.Sprintf("--depth=%d", *in.Depth))
+		case in.ShallowSince != "":
+			if strings.HasPrefix(in.ShallowSince, "-") || strings.Contains(in.ShallowSince, "\x00") {
+				return protocol.Fail(protocol.ErrorInvalidInput, "invalid shallowSince", false)
+			}
+			args = append(args, "--shallow-since="+in.ShallowSince)
+		}
+	}
+	args = append(args, "origin")
+	if in.Refspec != "" {
+		args = append(args, in.Refspec)
+	}
+	got := w.gitCmd(ctx, "Git fetch complete", args...)
+	if !got.OK {
+		return got
+	}
+	if exitOf(got) != 0 {
+		return protocol.Fail(protocol.ErrorUnavailable, optionalGitOut(got), true)
+	}
+	return got
+}
+
+func (w Workspace) gitPull(ctx context.Context, in pathInput) protocol.ToolResult {
+	if !originOrEmpty(in.Remote) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "remote must be origin", false)
+	}
+	strategy := in.Strategy
+	if strategy == "" {
+		strategy = "ff-only"
+	}
+	switch strategy {
+	case "ff-only", "merge", "rebase":
+	default:
+		return protocol.Fail(protocol.ErrorInvalidInput, "strategy must be ff-only, merge, or rebase", false)
+	}
+	branch := in.Branch
+	if branch == "" {
+		head := w.gitCmd(ctx, "Git current branch", "rev-parse", "--abbrev-ref", "HEAD")
+		branch = strings.TrimSpace(stringFrom(head, "output"))
+		if branch == "" || branch == "HEAD" {
+			return protocol.Fail(protocol.ErrorConflict, "git_pull requires branch when HEAD is detached", false)
+		}
+	}
+	if !validGitArg(branch) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "branch cannot start with a dash", false)
+	}
+	fetch := w.gitFetch(ctx, pathInput{Remote: "origin", Refspec: "refs/heads/" + branch})
+	if !fetch.OK {
+		return fetch
+	}
+	switch strategy {
+	case "rebase":
+		got := w.gitRebase(ctx, pathInput{Action: "start", Upstream: "FETCH_HEAD"})
+		if !got.OK {
+			return got
+		}
+		return protocol.Success("Git pull complete", map[string]any{"strategy": strategy, "output": stringFrom(got, "output")})
+	default:
+		ff := "allow"
+		if strategy == "ff-only" {
+			ff = "only"
+		}
+		got := w.gitMerge(ctx, pathInput{Ref: "FETCH_HEAD", FastForward: ff})
+		if !got.OK {
+			return got
+		}
+		return protocol.Success("Git pull complete", map[string]any{"strategy": strategy, "output": stringFrom(got, "output")})
+	}
+}
+
+func (w Workspace) gitPush(ctx context.Context, in pathInput) protocol.ToolResult {
+	if !originOrEmpty(in.Remote) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "remote must be origin", false)
+	}
+	if in.ForceWithLease && in.ExpectedRemoteOid == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "expectedRemoteOid is required with forceWithLease", false)
+	}
+	if !in.ForceWithLease && in.ExpectedRemoteOid != "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "expectedRemoteOid is only valid with forceWithLease", false)
+	}
+	if in.ForceWithLease && in.Refspec != "" && !strings.Contains(in.Refspec, ":") {
+		return protocol.Fail(protocol.ErrorInvalidInput, "an explicit destination branch is required with forceWithLease", false)
+	}
+	branch := ""
+	head := w.gitCmd(ctx, "Git current branch", "rev-parse", "--abbrev-ref", "HEAD")
+	branch = strings.TrimSpace(stringFrom(head, "output"))
+	if branch == "HEAD" {
+		branch = ""
+	}
+	refspec, err := git.NormalizePushRefspec(in.Refspec, branch)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, string(protocol.ErrorConflict)) {
+			return protocol.Fail(protocol.ErrorConflict, "git_push requires refspec when HEAD is detached", false)
+		}
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid push refspec", false)
+	}
+	args := []string{"push", "--porcelain"}
+	if in.ForceWithLease {
+		args = append(args, "--force-with-lease=:"+in.ExpectedRemoteOid)
+	}
+	args = append(args, "origin", refspec)
+	got := w.gitCmd(ctx, "Git push complete", args...)
+	if !got.OK {
+		return got
+	}
+	if exitOf(got) != 0 {
+		return protocol.Fail(protocol.ErrorConflict, optionalGitOut(got), false)
+	}
+	if data, ok := got.Data.(map[string]any); ok {
+		data["refspec"] = refspec
+	}
+	return got
 }
 
 func validWorktreeName(name string) bool {
