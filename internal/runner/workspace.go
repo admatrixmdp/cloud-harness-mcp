@@ -21,6 +21,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/hooks"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/mcpgw"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/memories"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
@@ -98,6 +99,7 @@ type Service struct {
 	agents    *agentHub
 	docker    *sandbox.Engine
 	mcpGW     *mcpGatewayHub
+	mcpStore  *mcpgw.Store
 }
 
 // WithCloner clones through a helper container after executor create.
@@ -147,6 +149,13 @@ func (s *Service) WithGrants(store *grants.Store) *Service {
 // WithDocker attaches the runner Docker CLI used for disposable skill helpers.
 func (s *Service) WithDocker(engine *sandbox.Engine) *Service {
 	s.docker = engine
+	return s
+}
+
+// WithMCPGateway attaches the durable MCP-gateway registry. Tests without a
+// store keep the in-memory hub. Traces stay unwired in this slice.
+func (s *Service) WithMCPGateway(store *mcpgw.Store) *Service {
+	s.mcpStore = store
 	return s
 }
 

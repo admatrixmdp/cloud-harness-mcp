@@ -117,6 +117,7 @@ const (
 	OpMCPServerGetCredentials Operation = "mcp_server_get_credentials"
 	OpMCPServerCreate         Operation = "mcp_server_create"
 	OpMCPServerReplaceTools   Operation = "mcp_server_replace_tools"
+	OpMCPServerSetPermissions Operation = "mcp_server_set_permissions"
 )
 
 // AllOperations is the ordered public MCP tool catalog from RunnerOperationSchema.
@@ -191,7 +192,7 @@ func (op Operation) Known() bool {
 // Internal reports whether op is a runner-only MCP-gateway RPC.
 func (op Operation) Internal() bool {
 	switch op {
-	case OpMCPGatewayCatalog, OpMCPServerGetCredentials, OpMCPServerCreate, OpMCPServerReplaceTools:
+	case OpMCPGatewayCatalog, OpMCPServerGetCredentials, OpMCPServerCreate, OpMCPServerReplaceTools, OpMCPServerSetPermissions:
 		return true
 	default:
 		return false

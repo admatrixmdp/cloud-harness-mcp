@@ -60,6 +60,9 @@ func newMCPGatewayHub() *mcpGatewayHub {
 }
 
 func (s *Service) mcpGateway(req protocol.RunnerRequest) protocol.ToolResult {
+	if s.mcpStore != nil {
+		return s.mcpStore.Handle(req)
+	}
 	if s.mcpGW == nil {
 		s.mcpGW = newMCPGatewayHub()
 	}
@@ -80,6 +83,8 @@ func (h *mcpGatewayHub) handle(req protocol.RunnerRequest) protocol.ToolResult {
 		return h.create(principal, req.Input)
 	case protocol.OpMCPServerReplaceTools:
 		return h.replaceTools(principal, req.Input)
+	case protocol.OpMCPServerSetPermissions:
+		return h.setPermissions(principal, req.Input)
 	default:
 		return protocol.Fail(protocol.ErrorInvalidInput, "unknown operation", false)
 	}
@@ -310,6 +315,61 @@ func (h *mcpGatewayHub) replaceTools(principal string, raw json.RawMessage) prot
 		out = append(out, toolView(rec, tool))
 	}
 	return protocol.Success("MCP tools replaced", map[string]any{"tools": out, "toolCount": len(in.Tools)})
+}
+
+func (h *mcpGatewayHub) setPermissions(principal string, raw json.RawMessage) protocol.ToolResult {
+	var in struct {
+		ServerID           string `json:"serverId"`
+		PermissionDefault  string `json:"permissionDefault"`
+		ExpectedGeneration int    `json:"expectedGeneration"`
+		Tools              []struct {
+			Name       string `json:"name"`
+			Permission string `json:"permission"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid set permissions input", false)
+	}
+	if !protocol.ValidOpaqueID(protocol.PrefixMCPServer, in.ServerID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "serverId is required", false)
+	}
+	perm := protocol.GatewayPermission(strings.TrimSpace(in.PermissionDefault))
+	if perm != protocol.GatewayAllow && perm != protocol.GatewayDeny {
+		return protocol.Fail(protocol.ErrorInvalidInput, "permissionDefault must be allow or deny", false)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rec := h.byID[in.ServerID]
+	if rec == nil || rec.PrincipalID != principal {
+		return protocol.Fail(protocol.ErrorNotFound, "MCP server is unavailable", false)
+	}
+	if rec.Generation != in.ExpectedGeneration {
+		return protocol.Fail(protocol.ErrorConflict, "stale MCP server generation", false)
+	}
+	next := map[string]protocol.GatewayPermission{}
+	for _, tool := range in.Tools {
+		name := strings.TrimSpace(tool.Name)
+		if !validToolName(name) {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid upstream tool name", false)
+		}
+		p := protocol.GatewayPermission(strings.TrimSpace(tool.Permission))
+		if p != protocol.GatewayAllow && p != protocol.GatewayDeny {
+			return protocol.Fail(protocol.ErrorInvalidInput, "permission must be allow or deny", false)
+		}
+		next[name] = p
+	}
+	rec.PermissionDefault = perm
+	rec.PermissionOverride = next
+	for _, tool := range rec.Tools {
+		if override, ok := next[tool.UpstreamName]; ok {
+			tool.Permission = override
+		} else {
+			tool.Permission = perm
+		}
+	}
+	rec.Generation++
+	rec.UpdatedAt = time.Now().UnixMilli()
+	return protocol.Success("MCP permissions updated", serverView(rec))
 }
 
 func (h *mcpGatewayHub) credentials(principal string, raw json.RawMessage) protocol.ToolResult {

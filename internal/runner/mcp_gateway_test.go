@@ -60,13 +60,30 @@ func replaceTool(t *testing.T, svc *Service, owner, serverID, upstream, perm str
 		t.Fatalf("replace: %+v", got)
 	}
 	if perm == string(protocol.GatewayDeny) {
-		svc.mcpGW.mu.Lock()
-		rec := svc.mcpGW.byID[serverID]
-		if rec != nil && len(rec.Tools) > 0 {
-			rec.Tools[0].Permission = protocol.GatewayDeny
-			rec.PermissionOverride[upstream] = protocol.GatewayDeny
+		status := svc.Execute(context.Background(), protocol.RunnerRequest{
+			Version: 2, OwnerID: owner, Operation: protocol.OpMCPGatewayCatalog,
+			Input: json.RawMessage(`{"serverId":"` + serverID + `"}`),
+		})
+		if !status.OK {
+			t.Fatalf("catalog for generation: %+v", status)
 		}
-		svc.mcpGW.mu.Unlock()
+		servers, _ := status.Data.(map[string]any)["servers"].([]any)
+		if len(servers) == 0 {
+			t.Fatal("missing server after replace")
+		}
+		generation := asInt(servers[0].(map[string]any)["generation"])
+		raw, _ := json.Marshal(map[string]any{
+			"serverId":           serverID,
+			"permissionDefault":  perm,
+			"expectedGeneration": generation,
+			"tools":              []map[string]any{{"name": upstream, "permission": perm}},
+		})
+		set := svc.Execute(context.Background(), protocol.RunnerRequest{
+			Version: 2, OwnerID: owner, Operation: protocol.OpMCPServerSetPermissions, Input: raw,
+		})
+		if !set.OK {
+			t.Fatalf("set permissions: %+v", set)
+		}
 	}
 }
 
@@ -197,5 +214,18 @@ func TestInternalGatewayHTTP(t *testing.T) {
 	}
 	if !got.OK {
 		t.Fatalf("%+v", got)
+	}
+}
+
+func asInt(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	default:
+		return 0
 	}
 }

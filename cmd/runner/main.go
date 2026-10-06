@@ -2,18 +2,23 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/healthcheck"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/mcpgw"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/runner"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
+
+	_ "modernc.org/sqlite"
 )
 
 var (
@@ -50,6 +55,23 @@ disposable UID 10001 helper; it never falls back to a local child process.`,
 				JobsRoot:        jobsRoot,
 				InstanceID:      os.Getenv("INSTANCE_ID"),
 			}, nil, nil).WithDocker(docker)
+			if stateDB := os.Getenv("STATE_DB"); stateDB != "" {
+				if err := os.MkdirAll(filepath.Dir(stateDB), 0o700); err != nil {
+					return err
+				}
+				db, err := sql.Open("sqlite", stateDB)
+				if err != nil {
+					return err
+				}
+				if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;`); err != nil {
+					return err
+				}
+				gw, err := mcpgw.Open(db)
+				if err != nil {
+					return err
+				}
+				svc = svc.WithMCPGateway(gw)
+			}
 			h := runner.Handler(runner.Options{ServiceToken: os.Getenv("RUNNER_SERVICE_TOKEN"), Service: svc})
 			slog.Info("runner listening", "addr", listen)
 			return http.ListenAndServe(listen, h)

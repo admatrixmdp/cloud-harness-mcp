@@ -25,6 +25,9 @@ func TestAllOperationsMatchCatalogCount(t *testing.T) {
 	if !OpMCPGatewayCatalog.Internal() || OpMCPGatewayCatalog.Known() {
 		t.Fatal("mcp_gateway_catalog must be runner-internal, not a public /mcp tool")
 	}
+	if !OpMCPServerSetPermissions.Internal() || OpMCPServerSetPermissions.Known() {
+		t.Fatal("mcp_server_set_permissions must be runner-internal, not a public /mcp tool")
+	}
 }
 
 func TestOperationJSONIsBareString(t *testing.T) {
