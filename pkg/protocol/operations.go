@@ -15,16 +15,16 @@ const (
 	OpWorkspaceSetActive    Operation = "workspace_set_active"
 	OpWorkspaceFinalize     Operation = "workspace_finalize"
 
-	OpFilesList        Operation = "files_list"
-	OpFilesRead        Operation = "files_read"
-	OpFilesWrite       Operation = "files_write"
-	OpFilesWriteBatch  Operation = "files_write_batch"
-	OpFilesApplyPatch  Operation = "files_apply_patch"
-	OpFilesDelete      Operation = "files_delete"
-	OpFilesMove        Operation = "files_move"
-	OpFilesMkdir       Operation = "files_mkdir"
-	OpGrepSearch       Operation = "grep_search"
-	OpSymbolsSearch    Operation = "symbols_search"
+	OpFilesList         Operation = "files_list"
+	OpFilesRead         Operation = "files_read"
+	OpFilesWrite        Operation = "files_write"
+	OpFilesWriteBatch   Operation = "files_write_batch"
+	OpFilesApplyPatch   Operation = "files_apply_patch"
+	OpFilesDelete       Operation = "files_delete"
+	OpFilesMove         Operation = "files_move"
+	OpFilesMkdir        Operation = "files_mkdir"
+	OpGrepSearch        Operation = "grep_search"
+	OpSymbolsSearch     Operation = "symbols_search"
 	OpSymbolsReferences Operation = "symbols_references"
 
 	OpExecRun    Operation = "exec_run"
@@ -111,6 +111,12 @@ const (
 	OpAgentMessage Operation = "agent_message"
 	OpAgentCancel  Operation = "agent_cancel"
 	OpAgentList    Operation = "agent_list"
+
+	// Internal runner RPC for /mcp-gateway. Never listed on public /mcp.
+	OpMCPGatewayCatalog       Operation = "mcp_gateway_catalog"
+	OpMCPServerGetCredentials Operation = "mcp_server_get_credentials"
+	OpMCPServerCreate         Operation = "mcp_server_create"
+	OpMCPServerReplaceTools   Operation = "mcp_server_replace_tools"
 )
 
 // AllOperations is the ordered public MCP tool catalog from RunnerOperationSchema.
@@ -180,6 +186,16 @@ var openWorldOps = setOf(
 func (op Operation) Known() bool {
 	_, ok := operationIndex[op]
 	return ok
+}
+
+// Internal reports whether op is a runner-only MCP-gateway RPC.
+func (op Operation) Internal() bool {
+	switch op {
+	case OpMCPGatewayCatalog, OpMCPServerGetCredentials, OpMCPServerCreate, OpMCPServerReplaceTools:
+		return true
+	default:
+		return false
+	}
 }
 
 var operationIndex map[Operation]struct{}

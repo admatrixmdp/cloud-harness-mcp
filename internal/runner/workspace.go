@@ -97,6 +97,7 @@ type Service struct {
 	grants    *grants.Store
 	agents    *agentHub
 	docker    *sandbox.Engine
+	mcpGW     *mcpGatewayHub
 }
 
 // WithCloner clones through a helper container after executor create.
@@ -157,7 +158,7 @@ func NewService(cfg Config, st store.Store, engine Engine) *Service {
 	if engine == nil {
 		engine = noopEngine{}
 	}
-	return &Service{cfg: cfg.withDefaults(), store: st, engine: engine, agents: newAgentHub()}
+	return &Service{cfg: cfg.withDefaults(), store: st, engine: engine, agents: newAgentHub(), mcpGW: newMCPGatewayHub()}
 }
 
 type openInput struct {
@@ -174,6 +175,9 @@ type openInput struct {
 
 // Execute runs one public runner operation.
 func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
+	if req.Operation.Internal() {
+		return s.mcpGateway(req)
+	}
 	if !req.Operation.Known() {
 		return protocol.Fail(protocol.ErrorInvalidInput, "unknown operation", false)
 	}

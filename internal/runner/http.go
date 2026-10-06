@@ -41,7 +41,7 @@ func handleOperation(w http.ResponseWriter, r *http.Request, svc *Service) {
 		writeResult(w, http.StatusBadRequest, protocol.Fail(protocol.ErrorInvalidInput, "invalid runner request", false))
 		return
 	}
-	if !req.Operation.Known() {
+	if !req.Operation.Known() && !req.Operation.Internal() {
 		writeResult(w, http.StatusBadRequest, protocol.Fail(protocol.ErrorInvalidInput, "unknown operation", false))
 		return
 	}

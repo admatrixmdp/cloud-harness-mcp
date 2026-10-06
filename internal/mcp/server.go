@@ -60,8 +60,10 @@ type callParams struct {
 
 // HandlerOptions configure the MCP JSON-RPC surface.
 type HandlerOptions struct {
-	Runner *RunnerClient
-	Local  Dispatcher
+	Runner          *RunnerClient
+	Local           Dispatcher
+	Gateway         *gateway.Registry
+	GatewayEndpoint gateway.EndpointOptions
 }
 
 // Handler serves Streamable-HTTP JSON-RPC: initialize, ping, tools/list, tools/call.
@@ -87,7 +89,7 @@ func HandlerWith(opts HandlerOptions) http.Handler {
 			writeRPC(w, rpcResponse{JSONRPC: "2.0", Error: &rpcError{Code: -32700, Message: "parse error"}})
 			return
 		}
-		writeRPC(w, serveRPC(r.Context(), req, opts, tools, nil, true))
+		writeRPC(w, serveRPC(r.Context(), req, opts, tools, opts.Gateway, true))
 	})
 }
 
@@ -98,11 +100,12 @@ func writeRPC(w http.ResponseWriter, resp rpcResponse) {
 
 // GatewayHandler serves the constant five-tool /mcp-gateway catalog.
 func GatewayHandler() http.Handler {
-	return GatewayHandlerWith(gateway.NewRegistry())
+	return GatewayHandlerWith(HandlerOptions{})
 }
 
-// GatewayHandlerWith injects a downstream catalog. tools/list stays five tools.
-func GatewayHandlerWith(reg *gateway.Registry) http.Handler {
+// GatewayHandlerWith injects a downstream catalog or live runner. tools/list stays five tools.
+func GatewayHandlerWith(opts HandlerOptions) http.Handler {
+	reg := opts.Gateway
 	if reg == nil {
 		reg = gateway.NewRegistry()
 	}
@@ -123,32 +126,6 @@ func GatewayHandlerWith(reg *gateway.Registry) http.Handler {
 			writeRPC(w, rpcResponse{JSONRPC: "2.0", Error: &rpcError{Code: -32700, Message: "parse error"}})
 			return
 		}
-		resp := rpcResponse{JSONRPC: "2.0", ID: req.ID}
-		switch req.Method {
-		case "initialize":
-			resp.Result = map[string]any{
-				"protocolVersion": "2025-03-26",
-				"capabilities":    map[string]any{"tools": map[string]any{}},
-				"serverInfo":      map[string]any{"name": "cloud-harness-mcp-gateway", "version": "go-port"},
-			}
-		case "ping":
-			resp.Result = map[string]any{}
-		case "tools/list":
-			resp.Result = map[string]any{"tools": tools}
-		case "tools/call":
-			var p callParams
-			if err := json.Unmarshal(req.Params, &p); err != nil || p.Name == "" {
-				resp.Result = ResultToMCP(protocol.Fail(protocol.ErrorInvalidInput, "tools/call requires name", false))
-				break
-			}
-			args := map[string]any{}
-			if len(p.Arguments) > 0 {
-				_ = json.Unmarshal(p.Arguments, &args)
-			}
-			resp.Result = ResultToMCP(reg.Dispatch(p.Name, args))
-		default:
-			resp.Error = &rpcError{Code: -32601, Message: "method not found"}
-		}
-		writeRPC(w, resp)
+		writeRPC(w, serveRPC(r.Context(), req, opts, tools, reg, false))
 	})
 }

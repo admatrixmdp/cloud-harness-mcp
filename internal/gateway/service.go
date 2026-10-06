@@ -21,7 +21,8 @@ func (t DownstreamTool) Qualified() string {
 	return protocol.QualifiedToolName(t.Server, t.Name)
 }
 
-// Registry is an in-process catalog used until the runner store is wired.
+// Registry is an in-process catalog used by unit tests and local stdio.
+// Production /mcp-gateway uses Live against the runner store.
 type Registry struct {
 	tools  []DownstreamTool
 	Client *DownstreamClient

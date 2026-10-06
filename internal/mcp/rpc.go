@@ -35,7 +35,7 @@ func serveRPC(ctx context.Context, req rpcRequest, opts HandlerOptions, tools []
 		if coding {
 			resp.Result = dispatchCall(ctx, opts, req.Params)
 		} else {
-			resp.Result = dispatchGateway(gatewayReg, req.Params)
+			resp.Result = dispatchGateway(ctx, opts, gatewayReg, req.Params)
 		}
 	default:
 		resp.Error = &rpcError{Code: -32601, Message: "method not found"}
@@ -61,10 +61,7 @@ func dispatchCall(ctx context.Context, opts HandlerOptions, params json.RawMessa
 	return ResultToMCP(opts.Runner.Call(ctx, op, p.Arguments))
 }
 
-func dispatchGateway(reg *gateway.Registry, params json.RawMessage) CallToolResult {
-	if reg == nil {
-		reg = gateway.NewRegistry()
-	}
+func dispatchGateway(ctx context.Context, opts HandlerOptions, reg *gateway.Registry, params json.RawMessage) CallToolResult {
 	var p callParams
 	if err := json.Unmarshal(params, &p); err != nil || p.Name == "" {
 		return ResultToMCP(protocol.Fail(protocol.ErrorInvalidInput, "tools/call requires name", false))
@@ -72,6 +69,13 @@ func dispatchGateway(reg *gateway.Registry, params json.RawMessage) CallToolResu
 	args := map[string]any{}
 	if len(p.Arguments) > 0 {
 		_ = json.Unmarshal(p.Arguments, &args)
+	}
+	if opts.Runner != nil {
+		live := &gateway.Live{Runner: opts.Runner, Endpoint: opts.GatewayEndpoint}
+		return ResultToMCP(live.Dispatch(ctx, p.Name, args))
+	}
+	if reg == nil {
+		reg = gateway.NewRegistry()
 	}
 	return ResultToMCP(reg.Dispatch(p.Name, args))
 }

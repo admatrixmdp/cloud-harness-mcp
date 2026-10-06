@@ -14,10 +14,16 @@ func TestAllOperationsMatchCatalogCount(t *testing.T) {
 		if !op.Known() {
 			t.Fatalf("unknown operation %q", op)
 		}
+		if op.Internal() {
+			t.Fatalf("internal operation %q must not appear in AllOperations", op)
+		}
 		if _, dup := seen[op]; dup {
 			t.Fatalf("duplicate operation %q", op)
 		}
 		seen[op] = struct{}{}
+	}
+	if !OpMCPGatewayCatalog.Internal() || OpMCPGatewayCatalog.Known() {
+		t.Fatal("mcp_gateway_catalog must be runner-internal, not a public /mcp tool")
 	}
 }
 

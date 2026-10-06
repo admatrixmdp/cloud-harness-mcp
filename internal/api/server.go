@@ -39,7 +39,7 @@ func Handler(opts Options) http.Handler {
 		_, _ = w.Write([]byte(`{"status":"ready"}`))
 	})
 	mux.Handle("/mcp", authenticate(opts, mcp.HandlerWith(mcp.HandlerOptions{Runner: opts.Runner})))
-	mux.Handle("/mcp-gateway", authenticate(opts, mcp.GatewayHandler()))
+	mux.Handle("/mcp-gateway", authenticate(opts, mcp.GatewayHandlerWith(mcp.HandlerOptions{Runner: opts.Runner})))
 	inner := securityHeaders(mux)
 	if len(opts.Security.PublicHosts) > 0 {
 		return RequestSecurity(opts.Security, inner)
