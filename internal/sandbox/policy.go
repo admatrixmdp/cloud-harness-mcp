@@ -33,6 +33,21 @@ type ExecutorSpec struct {
 	DNSResolvers    []string
 }
 
+// SkillHelperSpec is a disposable unprivileged helper for skills_run.
+// Repository-controlled scripts never run as root and never see the Docker socket.
+type SkillHelperSpec struct {
+	Name           string
+	Image          string
+	InstanceID     string
+	WorkspaceID    string
+	RepositoryPath string
+	ToolsPath      string
+	CachePath      string
+	Network        protocol.NetworkProfile
+	DependencyNet  string
+	DNSResolvers   []string
+}
+
 // Attestor verifies the host firewall for dependency-access.
 type Attestor interface {
 	Verify(ctx context.Context) (ok bool, reason string, err error)
@@ -154,6 +169,78 @@ func ValidateCreateArgs(args []string) error {
 		if !contains(args, flag) {
 			return fmt.Errorf("missing required hardening flag %s", flag)
 		}
+	}
+	return nil
+}
+
+// SkillHelperArgs is docker run argv for a grant-gated skills_run helper.
+// The worker payload rides stdin; argv never includes tokens or docker.sock.
+func SkillHelperArgs(spec SkillHelperSpec) []string {
+	args := []string{
+		"run", "-i", "--rm", "--pull", "never", "--name", spec.Name,
+		"--label", ManagedLabel,
+		"--label", "cloud-harness.instance=" + spec.InstanceID,
+		"--label", "cloud-harness.workspace=" + spec.WorkspaceID,
+		"--label", "cloud-harness.role=skill-helper",
+		"--label", "cloud-harness.ephemeral=true",
+	}
+	args = append(args, NetworkArgs(spec.Network, spec.DependencyNet, spec.DNSResolvers)...)
+	args = append(args,
+		"--user", ExecutorUser,
+		"--cap-drop", "ALL",
+		"--security-opt", "no-new-privileges",
+		"--workdir", ExecutorWorkdir,
+		"--pids-limit", DefaultPidsLimit,
+		"--memory", DefaultMemory,
+		"--memory-swap", DefaultMemory,
+		"--cpus", DefaultCPUs,
+		"--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=128m",
+		"--tmpfs", "/run:rw,nosuid,nodev,size=8m",
+		"--volume", spec.RepositoryPath+":/workspace:rw",
+	)
+	if spec.ToolsPath != "" {
+		args = append(args, "--volume", spec.ToolsPath+":/opt/user-tools:rw")
+	}
+	if spec.CachePath != "" {
+		args = append(args, "--volume", spec.CachePath+":/var/cache/harness:rw")
+	}
+	args = append(args,
+		"--env", "HOME=/tmp/cloud-harness-home",
+		"--env", "HARNESS_WORKSPACE_ROOT=/workspace",
+		"--env", "GIT_CONFIG_NOSYSTEM=1",
+		"--entrypoint", "/opt/harness/harness-worker",
+		spec.Image,
+	)
+	return args
+}
+
+// ValidateSkillHelperArgs rejects raw bridge, docker.sock, tokens, and root.
+func ValidateSkillHelperArgs(args []string) error {
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "--network bridge") {
+		return fmt.Errorf("raw bridge profile is not selectable")
+	}
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--volume" && ForbiddenVolume(args[i+1]) {
+			return fmt.Errorf("docker socket must not be mounted into a skill helper")
+		}
+	}
+	if !strings.Contains(joined, "--user "+ExecutorUser) {
+		return fmt.Errorf("skill helper must be unprivileged")
+	}
+	for _, flag := range []string{"--cap-drop", "--security-opt", "--rm"} {
+		if !contains(args, flag) {
+			return fmt.Errorf("missing required hardening flag %s", flag)
+		}
+	}
+	if strings.Contains(joined, "GH_TOKEN=") || strings.Contains(joined, "GITHUB_TOKEN=") {
+		return fmt.Errorf("skill helper argv must not contain tokens")
+	}
+	if strings.Contains(strings.ToLower(joined), "docker.sock") {
+		return fmt.Errorf("docker socket must not be mounted into a skill helper")
+	}
+	if !strings.Contains(joined, "cloud-harness.role=skill-helper") {
+		return fmt.Errorf("skill helper role label is required")
 	}
 	return nil
 }

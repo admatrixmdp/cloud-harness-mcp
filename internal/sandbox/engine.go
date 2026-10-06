@@ -56,8 +56,11 @@ func (e Engine) cli(ctx context.Context, args []string, stdin string) (Result, e
 	if err := ValidateCreateArgs(args); err != nil && args[0] == "create" {
 		return Result{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, e.timeout())
-	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, e.timeout())
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
@@ -119,6 +122,11 @@ func (e Engine) CreateExecutor(ctx context.Context, spec ExecutorSpec) (string, 
 func (e Engine) RemoveExecutor(ctx context.Context, name string) error {
 	_, err := e.runner()(ctx, []string{"rm", "--force", name}, "")
 	return err
+}
+
+// Invoke runs docker with the given argv. Tests inject Engine.Run; production uses the CLI.
+func (e Engine) Invoke(ctx context.Context, args []string, stdin string) (Result, error) {
+	return e.runner()(ctx, args, stdin)
 }
 
 // HelperStdin is the documented token transport: one line on docker run stdin.

@@ -1066,6 +1066,86 @@ func TestSkillsRunRequiresPrivilegeGrant(t *testing.T) {
 	if bad.OK || bad.Error.Code != protocol.ErrorForbidden {
 		t.Fatalf("bad token: %+v", bad)
 	}
+	missingHelper := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSkillsRun,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","name":"tdd","script":"run.sh","expectedSha256":"` + sha + `","approvalGrantToken":"` + grantID + `"}`),
+	})
+	if missingHelper.OK || missingHelper.Error.Code != protocol.ErrorUnavailable {
+		t.Fatalf("approved grant without docker must not fall back to local: %+v", missingHelper)
+	}
+}
+
+func TestSkillsRunHelperContainerAfterGrant(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "grants.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	grantStore, err := grants.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := t.TempDir()
+	var capturedArgs []string
+	var capturedStdin string
+	docker := &sandbox.Engine{
+		Run: func(_ context.Context, args []string, stdin string) (sandbox.Result, error) {
+			capturedArgs = append([]string{}, args...)
+			capturedStdin = stdin
+			return sandbox.Result{Stdout: `{"ok":true,"message":"Skill script exited with 0","data":{"output":"ok","exitCode":0,"executionMode":"local"},"truncated":false}`}, nil
+		},
+	}
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, JobsRoot: jobs}, nil, nil).WithGrants(grantStore).WithDocker(docker)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"skill-helper-open-001","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	wsID := open.Data.(map[string]any)["workspaceId"].(string)
+	if err := os.MkdirAll(filepath.Join(jobs, wsID, "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sha := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	denied := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSkillsRun,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","name":"tdd","script":"run.sh","expectedSha256":"` + sha + `"}`),
+	})
+	if denied.OK || denied.Error.Code != protocol.ErrorPrivilegeApprovalRequired {
+		t.Fatalf("denied: %+v", denied)
+	}
+	grantID := denied.Error.GrantRequest.(map[string]any)["grantId"].(string)
+	if !grantStore.Approve("owner", grantID) {
+		t.Fatal("approve")
+	}
+	got := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSkillsRun,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","name":"tdd","script":"run.sh","expectedSha256":"` + sha + `","approvalGrantToken":"` + grantID + `"}`),
+	})
+	if !got.OK {
+		t.Fatalf("helper: %+v", got)
+	}
+	data, _ := got.Data.(map[string]any)
+	if data["executionMode"] != "helper-container" {
+		t.Fatalf("executionMode %+v", data)
+	}
+	if err := sandbox.ValidateSkillHelperArgs(capturedArgs); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(capturedArgs, " ")
+	if strings.Contains(joined, grantID) || strings.Contains(joined, "docker.sock") || strings.Contains(joined, "--user 0:0") {
+		t.Fatalf("leaky helper argv: %s", joined)
+	}
+	if !strings.Contains(joined, "--network none") || !strings.Contains(joined, "--user 10001:10001") {
+		t.Fatalf("hardening missing: %s", joined)
+	}
+	if strings.Contains(capturedStdin, grantID) || strings.Contains(capturedStdin, "approvalGrantToken") {
+		t.Fatalf("grant token leaked onto helper stdin: %s", capturedStdin)
+	}
+	if !strings.Contains(capturedStdin, `"operation":"skills_run"`) {
+		t.Fatalf("stdin payload: %s", capturedStdin)
+	}
 }
 
 func initGitRepo(t *testing.T, root string) {

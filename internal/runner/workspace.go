@@ -96,6 +96,7 @@ type Service struct {
 	hooks     *hooks.Store
 	grants    *grants.Store
 	agents    *agentHub
+	docker    *sandbox.Engine
 }
 
 // WithCloner clones through a helper container after executor create.
@@ -139,6 +140,12 @@ func (s *Service) WithHooks(store *hooks.Store) *Service {
 // WithGrants attaches owner privilege grants. skills_run on the runner requires one.
 func (s *Service) WithGrants(store *grants.Store) *Service {
 	s.grants = store
+	return s
+}
+
+// WithDocker attaches the runner Docker CLI used for disposable skill helpers.
+func (s *Service) WithDocker(engine *sandbox.Engine) *Service {
+	s.docker = engine
 	return s
 }
 
@@ -566,10 +573,70 @@ func (s *Service) skillsRun(ctx context.Context, req protocol.RunnerRequest) pro
 	if fail := s.requireActiveExecutor(rec); fail != nil {
 		return *fail
 	}
-	got := s.executeInJob(ctx, rec, protocol.OpSkillsRun, req.Input)
-	if data, ok := got.Data.(map[string]any); ok {
-		data["executionMode"] = "local"
-		got.Data = data
+	return s.runSkillHelper(ctx, rec, req.Input)
+}
+
+func (s *Service) runSkillHelper(ctx context.Context, rec store.Record, input json.RawMessage) protocol.ToolResult {
+	if s.docker == nil {
+		return protocol.Fail(protocol.ErrorUnavailable, "skill helper container is not configured", true)
+	}
+	fields := map[string]any{}
+	if len(input) > 0 {
+		if err := json.Unmarshal(input, &fields); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid skills_run input", false)
+		}
+	}
+	delete(fields, "approvalGrantToken")
+	timeout := 60 * time.Second
+	if raw, ok := fields["timeoutMs"]; ok {
+		switch v := raw.(type) {
+		case float64:
+			if v > 0 {
+				timeout = time.Duration(v) * time.Millisecond
+			}
+		}
+	}
+	payload, err := json.Marshal(map[string]any{"operation": protocol.OpSkillsRun, "input": fields})
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInternal, "skill helper payload is invalid", true)
+	}
+	job := filepath.Join(s.cfg.JobsRoot, rec.ID)
+	spec := sandbox.SkillHelperSpec{
+		Name:           "chm-skill-" + rec.ID[3:minLen(rec.ID, 15)] + "-" + fmt.Sprintf("%x", time.Now().UnixNano()&0xffffffff),
+		Image:          s.cfg.ExecutorImage,
+		InstanceID:     s.cfg.InstanceID,
+		WorkspaceID:    rec.ID,
+		RepositoryPath: filepath.Join(job, "repo"),
+		ToolsPath:      filepath.Join(job, "tools"),
+		CachePath:      filepath.Join(job, "cache"),
+		Network:        rec.NetworkProfile,
+	}
+	args := sandbox.SkillHelperArgs(spec)
+	if err := sandbox.ValidateSkillHelperArgs(args); err != nil {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	res, err := s.docker.Invoke(runCtx, args, string(payload))
+	if err != nil {
+		return failFrom(err)
+	}
+	raw := strings.TrimSpace(res.Stdout)
+	if raw == "" {
+		raw = strings.TrimSpace(res.Stderr)
+	}
+	var got protocol.ToolResult
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		return protocol.Fail(protocol.ErrorInternal, "skill helper container returned an invalid bounded result", true)
+	}
+	data, _ := got.Data.(map[string]any)
+	if data == nil {
+		data = map[string]any{}
+	}
+	data["executionMode"] = "helper-container"
+	got.Data = data
+	if res.Truncated {
+		got.Truncated = true
 	}
 	return got
 }

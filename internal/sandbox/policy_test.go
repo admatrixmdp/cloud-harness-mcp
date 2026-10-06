@@ -78,3 +78,43 @@ func TestBridgeRejected(t *testing.T) {
 		t.Fatal("bridge must be rejected")
 	}
 }
+
+func TestSkillHelperArgsUnprivilegedNoSocket(t *testing.T) {
+	args := SkillHelperArgs(SkillHelperSpec{
+		Name:           "chm-skill-test",
+		Image:          "cloud-harness-executor:local",
+		InstanceID:     "inst",
+		WorkspaceID:    "ws_abcdefghijklmnopqrst",
+		RepositoryPath: "/jobs/ws/repo",
+		ToolsPath:      "/jobs/ws/tools",
+		CachePath:      "/jobs/ws/cache",
+		Network:        protocol.NetworkNone,
+	})
+	if err := ValidateSkillHelperArgs(args); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "docker.sock") {
+		t.Fatal("docker.sock leaked")
+	}
+	if strings.Contains(joined, "--network bridge") {
+		t.Fatal("raw bridge selected")
+	}
+	if !strings.Contains(joined, "--user 10001:10001") {
+		t.Fatal("skill helper must be non-root")
+	}
+	if !strings.Contains(joined, "--network none") {
+		t.Fatalf("network-none helper: %s", joined)
+	}
+	if !strings.Contains(joined, "/opt/harness/harness-worker") {
+		t.Fatal("missing Go worker entrypoint")
+	}
+	if strings.Contains(joined, "GH_TOKEN=") || strings.Contains(joined, "GITHUB_TOKEN=") {
+		t.Fatal("token in argv")
+	}
+	leaky := append([]string{}, args...)
+	leaky = append(leaky, "--volume", "/var/run/docker.sock:/var/run/docker.sock")
+	if err := ValidateSkillHelperArgs(leaky); err == nil {
+		t.Fatal("socket mount must be rejected")
+	}
+}

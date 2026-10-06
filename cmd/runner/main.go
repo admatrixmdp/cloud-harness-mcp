@@ -28,8 +28,8 @@ func main() {
 		Long: `Owns Docker authority, SQLite state, GitHub App brokering, and cleanup.
 
 This process is the only Compose service that may mount the Docker socket.
-This slice implements workspace_open/list/status/close/lease_renew/recover/context/set_active/capabilities in-process
-(with a noop engine until Docker is wired) and fail-closed network policy.`,
+Workspace lifecycle stays fail-closed. skills_run after an owner grant launches a
+disposable UID 10001 helper; it never falls back to a local child process.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			healthcheck.MaybeExit(healthcheckURL, listen, "/healthz")
 			profile := protocol.NetworkProfile(os.Getenv("WORKSPACE_NETWORK_PROFILE"))
@@ -40,10 +40,16 @@ This slice implements workspace_open/list/status/close/lease_renew/recover/conte
 			if raw := os.Getenv("ALLOWED_GIT_HOSTS"); raw != "" {
 				hosts = strings.Split(raw, ",")
 			}
+			image := os.Getenv("EXECUTOR_IMAGE")
+			jobsRoot := os.Getenv("JOBS_ROOT")
+			docker := &sandbox.Engine{Image: image, InstanceID: os.Getenv("INSTANCE_ID")}
 			svc := runner.NewService(runner.Config{
 				AllowedGitHosts: hosts,
 				NetworkProfile:  profile,
-			}, nil, nil)
+				ExecutorImage:   image,
+				JobsRoot:        jobsRoot,
+				InstanceID:      os.Getenv("INSTANCE_ID"),
+			}, nil, nil).WithDocker(docker)
 			h := runner.Handler(runner.Options{ServiceToken: os.Getenv("RUNNER_SERVICE_TOKEN"), Service: svc})
 			slog.Info("runner listening", "addr", listen)
 			return http.ListenAndServe(listen, h)
