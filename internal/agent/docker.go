@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
@@ -16,10 +17,16 @@ type DockerInvoker interface {
 	Invoke(ctx context.Context, args []string, stdin string) (sandbox.Result, error)
 }
 
+// DockerSpawner starts a long-lived `docker run -i` for the JSONL protocol.
+type DockerSpawner interface {
+	Spawn(args []string, extraEnv []string) (*exec.Cmd, error)
+}
+
 // Launcher creates an internal per-agent network and a no-mount container.
 // Provider secrets, docker.sock, and host/repo mounts never appear on argv.
 type Launcher struct {
 	Docker     DockerInvoker
+	Spawn      DockerSpawner
 	InstanceID string
 	Image      string
 	GatewayURL string
@@ -30,6 +37,8 @@ type Launcher struct {
 type LaunchResult struct {
 	ContainerName string
 	NetworkName   string
+	Channel       *Channel
+	Wait          func() error
 }
 
 func (l *Launcher) names(agentID string) (container, network string) {
@@ -81,6 +90,32 @@ func (l *Launcher) Launch(ctx context.Context, agentID, workspaceID string, gene
 			_ = l.Cleanup(ctx, out)
 			return out, fmt.Errorf("%s: model gateway could not join the agent network", protocol.ErrorUnavailable)
 		}
+	}
+	if l.Spawn != nil {
+		cmd, err := l.Spawn.Spawn(args, nil)
+		if err != nil {
+			_ = l.Cleanup(ctx, out)
+			return out, err
+		}
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			_ = l.Cleanup(ctx, out)
+			return out, err
+		}
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			_ = stdin.Close()
+			_ = l.Cleanup(ctx, out)
+			return out, err
+		}
+		if err := cmd.Start(); err != nil {
+			_ = stdin.Close()
+			_ = l.Cleanup(ctx, out)
+			return out, err
+		}
+		out.Channel = NewChannel(stdin, stdout)
+		out.Wait = cmd.Wait
+		return out, nil
 	}
 	if res, err := l.Docker.Invoke(ctx, args, ""); err != nil {
 		_ = l.Cleanup(ctx, out)

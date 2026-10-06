@@ -79,6 +79,8 @@ type agentRecord struct {
 	containerName   string
 	networkName     string
 	leaseID         string
+	channel         *agent.Channel
+	usage           agent.Usage
 }
 
 type agentMessage struct {
@@ -235,35 +237,39 @@ func (h *agentHub) spawn(ctx context.Context, ws store.Record, in agentInput) pr
 	}
 	h.byID[rec.id] = rec
 	h.byKey[mapKey] = rec.id
-	h.launchOrFail(ctx, rec, ws)
+	h.launchOrFail(ctx, rec, ws, in.Prompt)
 	return protocol.Success("Agent spawn accepted", spawnView(rec, false))
 }
 
-func (h *agentHub) launchOrFail(ctx context.Context, rec *agentRecord, ws store.Record) {
+func (h *agentHub) launchOrFail(ctx context.Context, rec *agentRecord, ws store.Record, prompt string) {
 	if h.launcher == nil {
 		rec.status = "FAILED"
 		rec.terminalAt = time.Now().UTC()
 		rec.terminalReason = "agent runtime is not wired in this Go-port slice"
 		return
 	}
+	lease := ""
 	if h.gateway != nil {
 		ttl := time.Until(rec.expiresAt)
 		if ttl < time.Second {
 			ttl = time.Second
 		}
-		if _, err := h.gateway.Issue(ctx, agent.IssueInput{
+		token, err := h.gateway.Issue(ctx, agent.IssueInput{
 			LeaseID: rec.leaseID, AgentID: rec.id, ProfileID: rec.profileID,
 			TTL: ttl, MaxInputTokens: rec.budget.MaxInputTokens, MaxOutputTokens: rec.budget.MaxOutputTokens, MaxCostMicros: rec.budget.MaxCostMicros,
-		}); err != nil {
+		})
+		if err != nil {
 			rec.status = "FAILED"
 			rec.terminalAt = time.Now().UTC()
 			rec.terminalReason = "model gateway lease issue failed"
 			return
 		}
+		lease = token
 	}
 	got, err := h.launcher.Launch(ctx, rec.id, ws.ID, rec.generation)
 	rec.containerName = got.ContainerName
 	rec.networkName = got.NetworkName
+	rec.channel = got.Channel
 	if err != nil {
 		rec.status = "FAILED"
 		rec.terminalAt = time.Now().UTC()
@@ -274,8 +280,83 @@ func (h *agentHub) launchOrFail(ctx context.Context, rec *agentRecord, ws store.
 		}
 		return
 	}
+	if rec.channel != nil {
+		deadlineMs := int(time.Until(rec.expiresAt) / time.Millisecond)
+		if deadlineMs < 1_000 {
+			deadlineMs = 1_000
+		}
+		if err := rec.channel.Send(agent.StartRecord{
+			Type: "start", RequestID: rec.id, AgentID: rec.id, Prompt: prompt, Tools: rec.proxyOperations,
+			Gateway: agent.StartGateway{Profile: rec.profileID, Lease: lease},
+			Model: agent.StartModel{
+				ID: rec.profileID, Name: rec.profileID, API: "openai-completions",
+				ContextWindow: rec.budget.MaxInputTokens + rec.budget.MaxOutputTokens,
+				MaxTokens:     rec.budget.MaxOutputTokens,
+			},
+			Limits: agent.StartLimits{
+				DeadlineMs: deadlineMs, MaxEvents: 10_000, MaxOutputBytes: rec.budget.MaxOutputBytes,
+				MaxEventBytes: 65_536, MaxToolResultBytes: 4 * 1024 * 1024,
+			},
+		}); err != nil {
+			rec.status = "FAILED"
+			rec.terminalAt = time.Now().UTC()
+			rec.terminalReason = "agent protocol start failed"
+			rec.channel.CloseInput()
+			_ = h.launcher.Cleanup(ctx, got)
+			return
+		}
+		go h.consume(rec)
+	}
 	rec.status = "RUNNING"
 	rec.startedAt = time.Now().UTC()
+}
+
+func (h *agentHub) consume(rec *agentRecord) {
+	for rec.channel != nil {
+		out, err := rec.channel.Recv()
+		if err != nil {
+			h.mu.Lock()
+			if rec.status == "RUNNING" || rec.status == "SPAWNING" {
+				rec.status = "INTERRUPTED"
+				rec.terminalAt = time.Now().UTC()
+				rec.terminalReason = "agent runtime exited before terminal record"
+			}
+			h.mu.Unlock()
+			return
+		}
+		h.mu.Lock()
+		switch out.Type {
+		case "event":
+			rec.logs = appendLog(rec.logs, out.Event)
+		case "usage":
+			if out.Usage != nil {
+				rec.usage = *out.Usage
+			}
+		case "terminal":
+			rec.status = out.State
+			rec.terminalAt = time.Now().UTC()
+			rec.terminalReason = out.Error
+			if out.Usage != nil {
+				rec.usage = *out.Usage
+			}
+			h.mu.Unlock()
+			return
+		}
+		h.mu.Unlock()
+	}
+}
+
+func appendLog(dst, event []byte) []byte {
+	if len(event) == 0 {
+		return dst
+	}
+	if len(dst)+len(event)+1 > maxLogBytes {
+		return dst
+	}
+	if len(dst) > 0 {
+		dst = append(dst, '\n')
+	}
+	return append(dst, event...)
 }
 
 func (h *agentHub) status(ws store.Record, in agentInput) protocol.ToolResult {
@@ -388,11 +469,23 @@ func (h *agentHub) message(ws store.Record, in agentInput) protocol.ToolResult {
 		})
 	}
 	msg := agentMessage{agentID: rec.id, idempotencyKey: in.IdempotencyKey, state: "REJECTED", fingerprint: fp}
-	if rec.status == "RUNNING" || rec.status == "SPAWNING" {
+	if rec.channel != nil && rec.status == "RUNNING" {
+		if err := rec.channel.Send(agent.MessageRecord{Type: "message", RequestID: in.IdempotencyKey, Behavior: in.Mode, Text: in.Message}); err != nil {
+			msg.state = "UNKNOWN"
+		} else {
+			msg.state = "SENT"
+		}
+	} else if rec.status == "RUNNING" || rec.status == "SPAWNING" {
 		msg.state = "UNKNOWN"
 	}
 	rec.messages[in.IdempotencyKey] = msg
-	return protocol.Success("Agent message rejected", map[string]any{
+	label := "Agent message rejected"
+	if msg.state == "SENT" {
+		label = "Agent message accepted"
+	} else if msg.state == "UNKNOWN" {
+		label = "Agent message outcome unknown"
+	}
+	return protocol.Success(label, map[string]any{
 		"agentId": msg.agentID, "idempotencyKey": msg.idempotencyKey, "state": msg.state, "replayed": false,
 	})
 }
@@ -415,6 +508,10 @@ func (h *agentHub) cancel(ctx context.Context, ws store.Record, in agentInput) p
 		}
 		if rec.id == root.id || rec.parentAgentID == root.id {
 			if rec.status == "SPAWNING" || rec.status == "RUNNING" || rec.status == "CANCELLING" {
+				if rec.channel != nil {
+					_ = rec.channel.Send(agent.CancelRecord{Type: "cancel", RequestID: rec.id, Reason: in.Reason})
+					rec.channel.CloseInput()
+				}
 				rec.status = "CANCELLED"
 				rec.terminalAt = now
 				rec.terminalReason = in.Reason
@@ -544,7 +641,7 @@ func (r *agentRecord) public() map[string]any {
 		"terminalAt":      terminal,
 		"expiresAt":       r.expiresAt.UTC().Format(time.RFC3339Nano),
 		"budget":          r.budget,
-		"usage":           map[string]any{"inputTokens": 0, "outputTokens": 0, "costMicros": 0},
+		"usage":           map[string]any{"inputTokens": r.usage.Input, "outputTokens": r.usage.Output, "costMicros": int64(r.usage.Cost * 1_000_000)},
 		"terminalReason":  r.terminalReason,
 		"outcomeUnknown":  false,
 	}
