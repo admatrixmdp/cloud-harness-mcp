@@ -82,3 +82,85 @@ func TestDashboardPrivilegeGrantRPC(t *testing.T) {
 		t.Fatalf("%+v", approved)
 	}
 }
+
+func TestDashboardWorkspaceDetailAndCloseFenced(t *testing.T) {
+	jobs := t.TempDir()
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, JobsRoot: jobs}, nil, nil)
+	srv := httptest.NewServer(Handler(Options{ServiceToken: "runner-token", Service: svc}))
+	t.Cleanup(srv.Close)
+
+	openBody, _ := json.Marshal(protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-dash-detail-1","networkProfile":"network-none"}`),
+	})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/operations", bytes.NewReader(openBody))
+	req.Header.Set("Authorization", "Bearer runner-token")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var opened protocol.ToolResult
+	if err := json.NewDecoder(res.Body).Decode(&opened); err != nil || !opened.OK {
+		t.Fatalf("open %+v err %v", opened, err)
+	}
+	id := opened.Data.(map[string]any)["workspaceId"].(string)
+
+	detailBody, _ := json.Marshal(protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceDetail,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `"}`),
+	})
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/internal/dashboard-operations", bytes.NewReader(detailBody))
+	req.Header.Set("Authorization", "Bearer runner-token")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var detail protocol.ToolResult
+	if err := json.NewDecoder(res.Body).Decode(&detail); err != nil || !detail.OK {
+		t.Fatalf("detail %+v err %v", detail, err)
+	}
+	if detail.Data.(map[string]any)["generation"] == nil {
+		t.Fatal("detail must include generation for the cockpit fence")
+	}
+
+	staleBody, _ := json.Marshal(protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceCloseFenced,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","expectedGeneration":99}`),
+	})
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/internal/dashboard-operations", bytes.NewReader(staleBody))
+	req.Header.Set("Authorization", "Bearer runner-token")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var stale protocol.ToolResult
+	if err := json.NewDecoder(res.Body).Decode(&stale); err != nil {
+		t.Fatal(err)
+	}
+	if stale.OK || stale.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("stale %+v", stale)
+	}
+
+	closeBody, _ := json.Marshal(protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceCloseFenced,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","expectedGeneration":1}`),
+	})
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/internal/dashboard-operations", bytes.NewReader(closeBody))
+	req.Header.Set("Authorization", "Bearer runner-token")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var closed protocol.ToolResult
+	if err := json.NewDecoder(res.Body).Decode(&closed); err != nil || !closed.OK {
+		t.Fatalf("close %+v err %v", closed, err)
+	}
+}

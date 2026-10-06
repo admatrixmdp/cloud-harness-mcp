@@ -52,6 +52,7 @@ type Store interface {
 	PreferredWorkspace(ownerID string) (string, bool)
 	SetGitIdentity(ownerID, name, email string)
 	GitIdentity(ownerID string) (name, email string, ok bool)
+	ClaimForReaping(id string, generation int, force bool) bool
 }
 
 // Memory is a process-local store used until SQLite is wired.
@@ -214,4 +215,30 @@ func (m *Memory) GitIdentity(ownerID string) (string, string, bool) {
 		return "", "", false
 	}
 	return name, m.gitEmail[ownerID], true
+}
+
+var reapingStatuses = map[Status]struct{}{
+	StatusCreating:           {},
+	StatusActive:             {},
+	StatusFailed:             {},
+	StatusExpiredRecoverable: {},
+	StatusNetworkQuarantined: {},
+}
+
+// ClaimForReaping fences a workspace into REAPING and bumps generation.
+func (m *Memory) ClaimForReaping(id string, generation int, force bool) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok := m.byID[id]
+	if !ok || rec.Generation != generation {
+		return false
+	}
+	if _, allowed := reapingStatuses[rec.Status]; !allowed {
+		return false
+	}
+	_ = force
+	rec.Status = StatusReaping
+	rec.Generation++
+	rec.LastActivityAt = time.Now()
+	return true
 }

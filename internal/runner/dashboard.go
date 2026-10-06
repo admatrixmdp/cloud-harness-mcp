@@ -1,21 +1,26 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
 
-func (s *Service) dashboard(req protocol.RunnerRequest) protocol.ToolResult {
-	if s.grants == nil {
-		return protocol.Fail(protocol.ErrorUnavailable, "privilege grant store is unavailable", true)
-	}
+func (s *Service) dashboard(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
 	ownerID := req.OwnerID
 	if ownerID == "" {
 		return protocol.Fail(protocol.ErrorAuthenticationFailed, "authentication failed", false)
 	}
 	switch req.Operation {
+	case protocol.OpWorkspaceDetail:
+		return s.workspaceDetail(req)
+	case protocol.OpWorkspaceCloseFenced:
+		return s.closeFenced(ctx, req)
 	case protocol.OpPrivilegeGrantList:
+		if s.grants == nil {
+			return protocol.Fail(protocol.ErrorUnavailable, "privilege grant store is unavailable", true)
+		}
 		var input struct {
 			WorkspaceID string `json:"workspaceId"`
 		}
@@ -31,6 +36,9 @@ func (s *Service) dashboard(req protocol.RunnerRequest) protocol.ToolResult {
 		}
 		return protocol.Success("Privilege grants listed", map[string]any{"grants": out})
 	case protocol.OpPrivilegeGrantApprove:
+		if s.grants == nil {
+			return protocol.Fail(protocol.ErrorUnavailable, "privilege grant store is unavailable", true)
+		}
 		grantID := grantIDFrom(req.Input)
 		if grantID == "" {
 			return protocol.Fail(protocol.ErrorInvalidInput, "grantId is required", false)
@@ -44,6 +52,9 @@ func (s *Service) dashboard(req protocol.RunnerRequest) protocol.ToolResult {
 		}
 		return protocol.Success("Privilege grant approved", map[string]any{"grant": g.PublicJSON()})
 	case protocol.OpPrivilegeGrantReject:
+		if s.grants == nil {
+			return protocol.Fail(protocol.ErrorUnavailable, "privilege grant store is unavailable", true)
+		}
 		grantID := grantIDFrom(req.Input)
 		if grantID == "" {
 			return protocol.Fail(protocol.ErrorInvalidInput, "grantId is required", false)

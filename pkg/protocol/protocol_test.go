@@ -37,6 +37,12 @@ func TestAllOperationsMatchCatalogCount(t *testing.T) {
 	if !OpPrivilegeGrantApprove.Dashboard() || !OpPrivilegeGrantReject.Dashboard() {
 		t.Fatal("privilege_grant_approve/reject must be dashboard-only")
 	}
+	if !OpWorkspaceDetail.Dashboard() || OpWorkspaceDetail.Known() || OpWorkspaceDetail.Internal() {
+		t.Fatal("workspace_detail must be dashboard-only, not a public /mcp tool")
+	}
+	if !OpWorkspaceCloseFenced.Dashboard() || OpWorkspaceCloseFenced.Known() {
+		t.Fatal("workspace_close_fenced must be dashboard-only")
+	}
 }
 
 func TestOperationJSONIsBareString(t *testing.T) {

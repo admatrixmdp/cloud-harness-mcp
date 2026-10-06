@@ -55,6 +55,45 @@ func TestSQLiteRoundTripAndRejectsBridge(t *testing.T) {
 	}
 }
 
+func TestSQLiteClaimForReapingFencesGeneration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	now := time.Now()
+	rec := Record{
+		ID:             "ws_dddddddddddddddddddddddd",
+		OwnerID:        "owner",
+		IdempotencyKey: "open-reap-sql-1",
+		RepositoryURL:  "https://github.com/bestagentkits/cloud-harness-mcp",
+		Status:         StatusActive,
+		NetworkProfile: protocol.NetworkNone,
+		Generation:     3,
+		CreatedAt:      now,
+		LastActivityAt: now,
+		ExpiresAt:      now.Add(5 * time.Minute),
+		HardExpiresAt:  now.Add(15 * time.Minute),
+	}
+	if err := db.Put(rec); err != nil {
+		t.Fatal(err)
+	}
+	if db.ClaimForReaping(rec.ID, 2, true) {
+		t.Fatal("stale generation must fail")
+	}
+	if !db.ClaimForReaping(rec.ID, 3, true) {
+		t.Fatal("matching generation must claim")
+	}
+	got, ok := db.Get(rec.ID)
+	if !ok || got.Status != StatusReaping || got.Generation != 4 {
+		t.Fatalf("%+v", got)
+	}
+	if db.ClaimForReaping(rec.ID, 4, true) {
+		t.Fatal("REAPING must not be claimed again")
+	}
+}
+
 func TestSQLiteOwnerStateAndActivate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	db, err := OpenSQLite(path)

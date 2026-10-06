@@ -225,6 +225,20 @@ func (s *SQLite) SetGitIdentity(ownerID, name, email string) {
 		ON CONFLICT(owner_id) DO UPDATE SET git_author_name = excluded.git_author_name, git_author_email = excluded.git_author_email`, ownerID, name, email)
 }
 
+// ClaimForReaping fences a workspace into REAPING and bumps generation.
+func (s *SQLite) ClaimForReaping(id string, generation int, force bool) bool {
+	_ = force
+	now := time.Now().UnixMilli()
+	res, err := s.db.Exec(`UPDATE workspaces SET status = ?, generation = generation + 1, last_activity_at = ?
+		WHERE id = ? AND generation = ? AND status IN ('CREATING','ACTIVE','FAILED','EXPIRED_RECOVERABLE','NETWORK_QUARANTINED')`,
+		string(StatusReaping), now, id, generation)
+	if err != nil {
+		return false
+	}
+	n, err := res.RowsAffected()
+	return err == nil && n == 1
+}
+
 // GitIdentity returns the owner commit identity.
 func (s *SQLite) GitIdentity(ownerID string) (string, string, bool) {
 	var name, email sql.NullString

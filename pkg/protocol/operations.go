@@ -125,6 +125,8 @@ const (
 	OpPrivilegeGrantList    Operation = "privilege_grant_list"
 	OpPrivilegeGrantApprove Operation = "privilege_grant_approve"
 	OpPrivilegeGrantReject  Operation = "privilege_grant_reject"
+	OpWorkspaceDetail       Operation = "workspace_detail"
+	OpWorkspaceCloseFenced  Operation = "workspace_close_fenced"
 )
 
 // AllOperations is the ordered public MCP tool catalog from RunnerOperationSchema.
@@ -209,7 +211,7 @@ func (op Operation) Internal() bool {
 // Dashboard reports whether op is a runner-only dashboard-control RPC.
 func (op Operation) Dashboard() bool {
 	switch op {
-	case OpPrivilegeGrantList, OpPrivilegeGrantApprove, OpPrivilegeGrantReject:
+	case OpPrivilegeGrantList, OpPrivilegeGrantApprove, OpPrivilegeGrantReject, OpWorkspaceDetail, OpWorkspaceCloseFenced:
 		return true
 	default:
 		return false

@@ -222,7 +222,7 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.mcpGateway(req)
 	}
 	if req.Operation.Dashboard() {
-		return s.dashboard(req)
+		return s.dashboard(ctx, req)
 	}
 	if !req.Operation.Known() {
 		return protocol.Fail(protocol.ErrorInvalidInput, "unknown operation", false)
@@ -379,6 +379,13 @@ func (s *Service) open(ctx context.Context, req protocol.RunnerRequest) protocol
 		_ = s.store.Put(rec)
 		return failFrom(err)
 	}
+	if s.cfg.JobsRoot != "" {
+		if err := os.MkdirAll(filepath.Join(s.cfg.JobsRoot, rec.ID, "repo"), 0o700); err != nil {
+			rec.Status = store.StatusFailed
+			_ = s.store.Put(rec)
+			return protocol.Fail(protocol.ErrorUnavailable, "job path is unavailable", true)
+		}
+	}
 	name, err := s.engine.Create(ctx, rec)
 	if err != nil {
 		rec.Status = store.StatusFailed
@@ -458,15 +465,74 @@ func (s *Service) close(ctx context.Context, req protocol.RunnerRequest) protoco
 	if err := json.Unmarshal(req.Input, &input); err != nil || !protocol.ValidOpaqueID(protocol.PrefixWorkspace, input.WorkspaceID) {
 		return protocol.Fail(protocol.ErrorInvalidInput, "workspaceId is required", false)
 	}
-	rec, ok := s.store.Get(input.WorkspaceID)
-	if !ok {
-		return protocol.Fail(protocol.ErrorNotFound, "workspace not found", false)
+	rec, errRes := s.requireOwned(req.OwnerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
 	}
 	if rec.ContainerName != "" {
 		_ = s.engine.Remove(ctx, rec.ContainerName)
 	}
 	rec, _ = s.store.UpdateStatus(rec.ID, store.StatusClosed)
 	return protocol.Success("workspace closed", publicRecord(rec))
+}
+
+func (s *Service) workspaceDetail(req protocol.RunnerRequest) protocol.ToolResult {
+	var input idInput
+	if err := json.Unmarshal(req.Input, &input); err != nil || !protocol.ValidOpaqueID(protocol.PrefixWorkspace, input.WorkspaceID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "workspaceId is required", false)
+	}
+	rec, errRes := s.requireOwned(req.OwnerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	return protocol.Success("Workspace detail", publicRecord(rec))
+}
+
+type closeFencedInput struct {
+	WorkspaceID        string `json:"workspaceId"`
+	ExpectedGeneration int    `json:"expectedGeneration"`
+}
+
+func (s *Service) closeFenced(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
+	var input closeFencedInput
+	if err := json.Unmarshal(req.Input, &input); err != nil || !protocol.ValidOpaqueID(protocol.PrefixWorkspace, input.WorkspaceID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "workspaceId is required", false)
+	}
+	if input.ExpectedGeneration < 1 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "expectedGeneration is required", false)
+	}
+	rec, errRes := s.requireOwned(req.OwnerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	now := time.Now()
+	if rec.Status == store.StatusClosed || (rec.Status == store.StatusActive && !rec.ExpiresAt.After(now)) {
+		return protocol.Fail(protocol.ErrorExpired, "workspace expired", false)
+	}
+	if rec.Generation != input.ExpectedGeneration {
+		return protocol.Fail(protocol.ErrorConflict, "workspace lifecycle changed", false)
+	}
+	if !s.store.ClaimForReaping(rec.ID, input.ExpectedGeneration, true) {
+		current, ok := s.store.Get(rec.ID)
+		if !ok || current.Status == store.StatusClosed || (current.Status == store.StatusActive && !current.ExpiresAt.After(now)) {
+			return protocol.Fail(protocol.ErrorExpired, "workspace expired", false)
+		}
+		return protocol.Fail(protocol.ErrorConflict, "workspace lifecycle changed", true)
+	}
+	claimed, ok := s.store.Get(rec.ID)
+	if !ok {
+		return protocol.Fail(protocol.ErrorNotFound, "workspace not found", false)
+	}
+	if claimed.ContainerName != "" {
+		if err := s.engine.Remove(ctx, claimed.ContainerName); err != nil {
+			return protocol.Fail(protocol.ErrorUnavailable, "workspace executor could not be closed", true)
+		}
+	}
+	closed, ok := s.store.UpdateStatus(claimed.ID, store.StatusClosed)
+	if !ok || closed.Status != store.StatusClosed {
+		return protocol.Fail(protocol.ErrorConflict, "workspace could not be closed", true)
+	}
+	return protocol.Success("Workspace closed", publicRecord(closed))
 }
 
 type renewInput struct {

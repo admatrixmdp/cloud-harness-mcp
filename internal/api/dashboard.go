@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/auth"
@@ -33,6 +35,69 @@ func dashboardHandler(opts Options, sessions *Sessions) http.Handler {
 		proxyDashboard(w, r, opts.Runner, protocol.OpPrivilegeGrantReject, map[string]any{
 			"grantId": r.PathValue("grantId"),
 		})
+	})))))
+	mux.Handle("GET /api/v1/workspaces", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyDashboard(w, r, opts.Runner, protocol.OpWorkspaceList, pageQuery(r))
+	})))
+	mux.Handle("POST /api/v1/workspaces", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeObject(r)
+		if err != nil {
+			writeDashboardFail(w, protocol.Fail(protocol.ErrorInvalidInput, "The request could not be processed.", false))
+			return
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpWorkspaceOpen, body)
+	})))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyDashboard(w, r, opts.Runner, protocol.OpWorkspaceDetail, map[string]any{
+			"workspaceId": r.PathValue("workspaceId"),
+		})
+	})))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/files", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		input := pageQuery(r)
+		input["workspaceId"] = r.PathValue("workspaceId")
+		path := r.URL.Query().Get("path")
+		if path == "" {
+			path = "."
+		}
+		input["path"] = path
+		proxyDashboard(w, r, opts.Runner, protocol.OpFilesList, input)
+	})))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/files/content", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		input := map[string]any{
+			"workspaceId": r.PathValue("workspaceId"),
+			"path":        r.URL.Query().Get("path"),
+		}
+		if offset := queryInt(r, "offset"); offset > 0 {
+			input["offset"] = offset
+		}
+		if limit := queryInt(r, "limit"); limit > 0 {
+			input["limit"] = limit
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpFilesRead, input)
+	})))
+	mux.Handle("PUT /api/v1/workspaces/{workspaceId}/files/content", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyFileMutation(w, r, opts.Runner, protocol.OpFilesWrite)
+	})))))
+	mux.Handle("PATCH /api/v1/workspaces/{workspaceId}/files/content", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyFileMutation(w, r, opts.Runner, protocol.OpFilesApplyPatch)
+	})))))
+	mux.Handle("DELETE /api/v1/workspaces/{workspaceId}/files/content", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyFileMutation(w, r, opts.Runner, protocol.OpFilesDelete)
+	})))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/files/move", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyFileMutation(w, r, opts.Runner, protocol.OpFilesMove)
+	})))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/files/directory", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyFileMutation(w, r, opts.Runner, protocol.OpFilesMkdir)
+	})))))
+	mux.Handle("POST /api/v1/workspaces/{workspaceId}/close", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := decodeObject(r)
+		if err != nil {
+			writeDashboardFail(w, protocol.Fail(protocol.ErrorInvalidInput, "The request could not be processed.", false))
+			return
+		}
+		body["workspaceId"] = r.PathValue("workspaceId")
+		proxyDashboard(w, r, opts.Runner, protocol.OpWorkspaceCloseFenced, body)
 	})))))
 	return dashboardSecurity(opts.Security, mux)
 }
@@ -108,12 +173,17 @@ func proxyDashboard(w http.ResponseWriter, r *http.Request, runner *mcp.RunnerCl
 		writeDashboardFail(w, protocol.Fail(protocol.ErrorInvalidInput, "The request could not be processed.", false))
 		return
 	}
-	result := runner.CallInternal(r.Context(), op, raw)
+	var result protocol.ToolResult
+	if op.Dashboard() {
+		result = runner.CallInternal(r.Context(), op, raw)
+	} else {
+		result = runner.Call(r.Context(), op, raw)
+	}
 	if !result.OK {
 		writeDashboardFail(w, result)
 		return
 	}
-	data := projectGrant(op, result.Data)
+	data := projectDashboard(op, result.Data)
 	out := map[string]any{"data": data, "truncated": result.Truncated}
 	if result.Cursor != "" {
 		out["cursor"] = result.Cursor
@@ -121,18 +191,190 @@ func proxyDashboard(w http.ResponseWriter, r *http.Request, runner *mcp.RunnerCl
 	writeJSON(w, http.StatusOK, out)
 }
 
-func projectGrant(op protocol.Operation, data any) any {
+func projectDashboard(op protocol.Operation, data any) any {
 	obj, _ := data.(map[string]any)
 	if obj == nil {
-		return map[string]any{}
+		obj = map[string]any{}
 	}
 	switch op {
 	case protocol.OpPrivilegeGrantList:
 		return map[string]any{"grants": projectGrantList(obj["grants"])}
 	case protocol.OpPrivilegeGrantApprove, protocol.OpPrivilegeGrantReject:
 		return map[string]any{"grant": pickGrant(obj["grant"])}
+	case protocol.OpWorkspaceList:
+		return map[string]any{"workspaces": projectWorkspaceList(obj["workspaces"])}
+	case protocol.OpWorkspaceOpen, protocol.OpWorkspaceStatus, protocol.OpWorkspaceDetail, protocol.OpWorkspaceClose, protocol.OpWorkspaceCloseFenced, protocol.OpWorkspaceLeaseRenew, protocol.OpWorkspaceRecover:
+		return projectWorkspace(obj)
+	case protocol.OpFilesList:
+		return projectFilesList(obj)
+	case protocol.OpFilesRead:
+		return pickKeys(obj, "path", "content", "sha256", "bytes")
+	case protocol.OpFilesWrite:
+		return pickKeys(obj, "path", "bytes", "sha256")
+	case protocol.OpFilesApplyPatch:
+		return pickKeys(obj, "path", "sha256")
+	case protocol.OpFilesDelete:
+		return pickKeys(obj, "path", "type")
+	case protocol.OpFilesMove:
+		return pickKeys(obj, "source", "destination")
+	case protocol.OpFilesMkdir:
+		return pickKeys(obj, "path")
 	default:
 		return obj
+	}
+}
+
+func proxyFileMutation(w http.ResponseWriter, r *http.Request, runner *mcp.RunnerClient, op protocol.Operation) {
+	body, err := decodeObject(r)
+	if err != nil {
+		writeDashboardFail(w, protocol.Fail(protocol.ErrorInvalidInput, "The request could not be processed.", false))
+		return
+	}
+	body["workspaceId"] = r.PathValue("workspaceId")
+	proxyDashboard(w, r, runner, op, body)
+}
+
+func decodeObject(r *http.Request) (map[string]any, error) {
+	if r.Body == nil {
+		return map[string]any{}, nil
+	}
+	var obj map[string]any
+	if err := json.NewDecoder(io.LimitReader(r.Body, 12<<20)).Decode(&obj); err != nil {
+		if err == io.EOF {
+			return map[string]any{}, nil
+		}
+		return nil, err
+	}
+	if obj == nil {
+		obj = map[string]any{}
+	}
+	return obj, nil
+}
+
+func pageQuery(r *http.Request) map[string]any {
+	input := map[string]any{}
+	if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+		input["cursor"] = cursor
+	}
+	if limit := queryInt(r, "limit"); limit > 0 {
+		input["limit"] = limit
+	}
+	return input
+}
+
+func queryInt(r *http.Request, name string) int {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func projectWorkspaceList(raw any) []map[string]any {
+	switch rows := raw.(type) {
+	case []map[string]any:
+		out := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, projectWorkspace(row))
+		}
+		return out
+	case []any:
+		out := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			obj, _ := row.(map[string]any)
+			out = append(out, projectWorkspace(obj))
+		}
+		return out
+	default:
+		return []map[string]any{}
+	}
+}
+
+func projectWorkspace(obj map[string]any) map[string]any {
+	if obj == nil {
+		return map[string]any{}
+	}
+	out := pickKeys(obj, "workspaceId", "repositoryUrl", "ref", "status", "networkProfile", "createdAt", "lastActivityAt", "expiresAt", "canRenewLease", "leaseState")
+	if gen, ok := asInt(obj["generation"]); ok {
+		out["version"] = gen
+	}
+	if actions, ok := stringSlice(obj["availableActions"]); ok {
+		if len(actions) > 16 {
+			actions = actions[:16]
+		}
+		out["availableActions"] = actions
+	}
+	if status, _ := obj["status"].(string); status == "FAILED" {
+		out["error"] = "Workspace setup failed. Review runner logs."
+	}
+	return out
+}
+
+func projectFilesList(obj map[string]any) map[string]any {
+	entries := []map[string]any{}
+	switch rows := obj["entries"].(type) {
+	case []map[string]any:
+		for _, row := range rows {
+			entries = append(entries, pickKeys(row, "name", "type"))
+		}
+	case []any:
+		for _, row := range rows {
+			item, _ := row.(map[string]any)
+			entries = append(entries, pickKeys(item, "name", "type"))
+		}
+	}
+	return map[string]any{"path": obj["path"], "entries": entries}
+}
+
+func pickKeys(obj map[string]any, keys ...string) map[string]any {
+	out := map[string]any{}
+	if obj == nil {
+		return out
+	}
+	for _, k := range keys {
+		if v, ok := obj[k]; ok {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func asInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	case json.Number:
+		i, err := n.Int64()
+		return int(i), err == nil
+	default:
+		return 0, false
+	}
+}
+
+func stringSlice(v any) ([]string, bool) {
+	switch rows := v.(type) {
+	case []string:
+		return rows, true
+	case []any:
+		out := make([]string, 0, len(rows))
+		for _, row := range rows {
+			s, ok := row.(string)
+			if !ok {
+				continue
+			}
+			out = append(out, s)
+		}
+		return out, true
+	default:
+		return nil, false
 	}
 }
 
