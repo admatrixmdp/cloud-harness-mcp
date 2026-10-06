@@ -22,6 +22,7 @@ requireBoundary(compose.includes('test: ["CMD", "/ingress-proxy", "--healthcheck
 requireBoundary(compose.includes('test: ["CMD", "/runner", "--healthcheck"]'), 'compose.yaml runner must use the binary --healthcheck probe');
 requireBoundary(compose.includes('test: ["CMD", "/model-gateway", "--healthcheck"]'), 'compose.yaml model-gateway must use the distroless --healthcheck probe');
 requireBoundary(compose.includes('test: ["CMD", "/provisioning-proxy", "--healthcheck"]'), 'compose.yaml provisioning-proxy must use the distroless --healthcheck probe');
+requireBoundary(compose.includes('INSTANCE_ID: ${INSTANCE_ID:-local}'), 'compose.yaml runner must accept INSTANCE_ID so two socket-sharing projects cannot share a reaper label');
 requireBoundary(!compose.includes('dockerfile: docker/api.Dockerfile'), 'compose.yaml must not ship the TypeScript API image');
 requireBoundary(!compose.includes('dockerfile: docker/runner.Dockerfile'), 'compose.yaml must not ship the TypeScript runner image');
 requireBoundary(!compose.includes('dockerfile: docker/executor.Dockerfile'), 'compose.yaml must not ship the TypeScript executor image');

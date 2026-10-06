@@ -84,6 +84,8 @@ services:
       AGENT_IMAGE: ${AGENT_IMAGE:-cloud-harness-agent:local}
       AGENT_GATEWAY_URL: http://model-gateway:3210
       AGENT_PROFILES_FILE: /run/agent-config/profiles.json
+      # Scope Docker reaper labels when more than one Compose project mounts the socket.
+      INSTANCE_ID: ${INSTANCE_ID:-local}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOST_JOBS_ROOT:-/var/lib/cloud-harness/jobs}:${JOBS_ROOT:-/var/lib/cloud-harness/jobs}
