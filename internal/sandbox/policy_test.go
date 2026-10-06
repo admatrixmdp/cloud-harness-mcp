@@ -118,3 +118,25 @@ func TestSkillHelperArgsUnprivilegedNoSocket(t *testing.T) {
 		t.Fatal("socket mount must be rejected")
 	}
 }
+
+func TestWorkerExecArgsAreUnprivilegedStdinOnly(t *testing.T) {
+	args := WorkerExecArgs("cloud-harness-ws-test", "op_abcdefghijklmnopqrstuvwx")
+	if err := ValidateWorkerExecArgs(args); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "docker.sock") || strings.Contains(joined, "--privileged") {
+		t.Fatalf("leaky exec: %s", joined)
+	}
+	if strings.Contains(joined, "GH_TOKEN=") {
+		t.Fatal("token in argv")
+	}
+	if args[0] != "exec" || args[1] != "-i" {
+		t.Fatalf("must be docker exec -i: %v", args)
+	}
+	leaky := append([]string{}, args...)
+	leaky = append(leaky, "--privileged")
+	if err := ValidateWorkerExecArgs(leaky); err == nil {
+		t.Fatal("privileged exec must be rejected")
+	}
+}

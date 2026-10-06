@@ -245,6 +245,40 @@ func ValidateSkillHelperArgs(args []string) error {
 	return nil
 }
 
+// WorkerExecArgs is docker exec argv for the one-shot worker inside an executor.
+// The JSON payload rides stdin; argv never includes tokens or docker.sock.
+func WorkerExecArgs(containerName, operationID string) []string {
+	return []string{
+		"exec", "-i", containerName,
+		"/usr/bin/setsid", "--wait",
+		"/opt/harness/worker-runner.sh", operationID,
+	}
+}
+
+// ValidateWorkerExecArgs rejects privileged exec, sockets, and tokens in argv.
+func ValidateWorkerExecArgs(args []string) error {
+	if len(args) < 7 || args[0] != "exec" || args[1] != "-i" {
+		return fmt.Errorf("worker dispatch must use docker exec -i")
+	}
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "--privileged") {
+		return fmt.Errorf("worker exec must not be privileged")
+	}
+	if strings.Contains(strings.ToLower(joined), "docker.sock") {
+		return fmt.Errorf("docker socket must not appear in worker exec argv")
+	}
+	if strings.Contains(joined, "GH_TOKEN=") || strings.Contains(joined, "GITHUB_TOKEN=") {
+		return fmt.Errorf("worker exec argv must not contain tokens")
+	}
+	if !strings.Contains(joined, "/opt/harness/worker-runner.sh") {
+		return fmt.Errorf("worker exec must invoke worker-runner.sh")
+	}
+	if !strings.Contains(joined, "/usr/bin/setsid") {
+		return fmt.Errorf("worker exec must isolate the process group")
+	}
+	return nil
+}
+
 func contains(args []string, flag string) bool {
 	for _, a := range args {
 		if a == flag {

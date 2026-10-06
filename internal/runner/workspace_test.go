@@ -591,6 +591,82 @@ func TestRunWorkerConfinesPathsAndInjectsGitIdentity(t *testing.T) {
 	}
 }
 
+func TestRunWorkerDispatchesDockerExecWhenAttached(t *testing.T) {
+	jobs := t.TempDir()
+	var capturedArgs []string
+	var capturedStdin string
+	docker := &sandbox.Engine{
+		Run: func(_ context.Context, args []string, stdin string) (sandbox.Result, error) {
+			capturedArgs = append([]string{}, args...)
+			capturedStdin = stdin
+			return sandbox.Result{Stdout: `{"ok":true,"message":"files listed","data":{"entries":[]},"truncated":false}`}, nil
+		},
+	}
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, JobsRoot: jobs}, nil, nil).WithDocker(docker)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-worker-exec-1","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	id := open.Data.(map[string]any)["workspaceId"].(string)
+	listed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpFilesList,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","path":"."}`),
+	})
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	if err := sandbox.ValidateWorkerExecArgs(capturedArgs); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(capturedArgs, " ")
+	if !strings.Contains(joined, "exec") || !strings.Contains(joined, "worker-runner.sh") {
+		t.Fatalf("expected docker exec: %s", joined)
+	}
+	if strings.Contains(joined, "docker.sock") || strings.Contains(joined, "--privileged") {
+		t.Fatalf("leaky exec: %s", joined)
+	}
+	if !strings.Contains(capturedStdin, `"operation":"files_list"`) {
+		t.Fatalf("stdin: %s", capturedStdin)
+	}
+	data, _ := listed.Data.(map[string]any)
+	opID, _ := data["operationId"].(string)
+	if !protocol.ValidOpaqueID(protocol.PrefixOperation, opID) {
+		t.Fatalf("operationId %q", opID)
+	}
+	missing := NewService(Config{NetworkProfile: protocol.NetworkNone, JobsRoot: jobs}, nil, nil).WithDocker(&sandbox.Engine{
+		Run: func(context.Context, []string, string) (sandbox.Result, error) {
+			t.Fatal("must not exec without a container")
+			return sandbox.Result{}, nil
+		},
+	})
+	opened := missing.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-worker-exec-missing","networkProfile":"network-none"}`),
+	})
+	if !opened.OK {
+		t.Fatalf("open missing: %+v", opened)
+	}
+	wsID := opened.Data.(map[string]any)["workspaceId"].(string)
+	rec, ok := missing.store.Get(wsID)
+	if !ok {
+		t.Fatal("record")
+	}
+	rec.ContainerName = ""
+	if err := missing.store.Put(rec); err != nil {
+		t.Fatal(err)
+	}
+	blocked := missing.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpFilesList,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","path":"."}`),
+	})
+	if blocked.OK || blocked.Error.Code != protocol.ErrorUnavailable {
+		t.Fatalf("missing container: %+v", blocked)
+	}
+}
+
 func TestSecretsListReturnsMetadataNeverPlaintext(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

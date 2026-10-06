@@ -719,12 +719,84 @@ func (s *Service) requireActiveExecutor(rec store.Record) *protocol.ToolResult {
 		fail := protocol.Fail(protocol.ErrorUnavailable, "workspace executor is not configured", true)
 		return &fail
 	}
+	if s.docker != nil && rec.ContainerName == "" {
+		fail := protocol.Fail(protocol.ErrorUnavailable, "workspace executor is unavailable", true)
+		return &fail
+	}
 	return nil
 }
 
 func (s *Service) executeInJob(ctx context.Context, rec store.Record, op protocol.Operation, input json.RawMessage) protocol.ToolResult {
+	if s.docker != nil {
+		return s.execInContainer(ctx, rec, op, input)
+	}
 	root := filepath.Join(s.cfg.JobsRoot, rec.ID, "repo")
 	return (executor.Workspace{Root: root}).Execute(ctx, op, input)
+}
+
+func (s *Service) execInContainer(ctx context.Context, rec store.Record, op protocol.Operation, input json.RawMessage) protocol.ToolResult {
+	if rec.ContainerName == "" {
+		return protocol.Fail(protocol.ErrorUnavailable, "workspace executor is unavailable", true)
+	}
+	operationID := protocol.NewOpaqueID(protocol.PrefixOperation)
+	timeout := 65 * time.Second
+	if len(input) > 0 {
+		var fields struct {
+			TimeoutMs   int    `json:"timeoutMs"`
+			OperationID string `json:"operationId"`
+		}
+		if err := json.Unmarshal(input, &fields); err == nil {
+			if fields.TimeoutMs > 0 {
+				timeout = time.Duration(fields.TimeoutMs+5_000) * time.Millisecond
+			}
+			if protocol.ValidOpaqueID(protocol.PrefixOperation, fields.OperationID) {
+				operationID = fields.OperationID
+			}
+		}
+	}
+	var parsed any
+	if len(input) == 0 {
+		parsed = map[string]any{}
+	} else if err := json.Unmarshal(input, &parsed); err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid worker input", false)
+	}
+	payload, err := json.Marshal(map[string]any{"operation": op, "input": parsed})
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInternal, "worker payload is invalid", true)
+	}
+	args := sandbox.WorkerExecArgs(rec.ContainerName, operationID)
+	if err := sandbox.ValidateWorkerExecArgs(args); err != nil {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	res, err := s.docker.Invoke(runCtx, args, string(payload))
+	if err != nil {
+		return failFrom(err)
+	}
+	if res.ExitCode != 0 {
+		msg := strings.TrimSpace(res.Stderr)
+		if msg == "" {
+			msg = strings.TrimSpace(res.Stdout)
+		}
+		if msg == "" {
+			msg = "worker failed"
+		}
+		return protocol.Fail(protocol.ErrorInternal, "worker failed: "+msg, true)
+	}
+	raw := strings.TrimSpace(res.Stdout)
+	var got protocol.ToolResult
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		return protocol.Fail(protocol.ErrorInternal, "worker returned an invalid bounded result", true)
+	}
+	if data, ok := got.Data.(map[string]any); ok {
+		data["operationId"] = operationID
+		got.Data = data
+	}
+	if res.Truncated {
+		got.Truncated = true
+	}
+	return got
 }
 
 func (s *Service) withGitIdentity(ownerID string, input json.RawMessage) json.RawMessage {
