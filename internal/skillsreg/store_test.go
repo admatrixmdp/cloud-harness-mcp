@@ -85,3 +85,36 @@ func TestImportCancelConflict(t *testing.T) {
 		t.Fatal("terminal cancel")
 	}
 }
+
+func TestRegistryListReadsCacheNotCatalog(t *testing.T) {
+	store := openStore(t)
+	if err := store.UpsertCacheEntry(CacheEntry{
+		CacheKey: "tkc_registry", OwnerID: "owner", SourceIdentity: "registry:skills-sh:anthropics/skills",
+		ResolvedRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", AdapterVersion: 1, BundleSHA256: "b" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Status: "READY", ByteCount: 1024, FileCount: 3, CreatedAt: 1, LastUsedAt: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := store.ListRegistry("owner", "")
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("%v %#v", err, listed)
+	}
+	if listed[0]["cacheState"] != "READY" || listed[0]["lockState"] != "unlocked" || listed[0]["provider"] != "skills-sh" {
+		t.Fatalf("%#v", listed[0])
+	}
+	filtered, err := store.ListRegistry("owner", "skillx")
+	if err != nil || len(filtered) != 0 {
+		t.Fatalf("filter %#v", filtered)
+	}
+	if err := store.UpsertCatalogEntry("owner", "skills-sh", "anthropics/skills/pdf", "anthropics/skills/pdf", "", `{"action":"install"}`, 3); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := store.ListCatalogEntries("owner", "skills-sh")
+	if err != nil || len(catalog) != 1 || catalog[0].Slug != "anthropics/skills/pdf" {
+		t.Fatalf("%v %#v", err, catalog)
+	}
+	again, err := store.ListRegistry("owner", "")
+	if err != nil || len(again) != 1 {
+		t.Fatalf("catalog must not appear in list %#v", again)
+	}
+}

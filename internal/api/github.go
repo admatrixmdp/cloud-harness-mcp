@@ -192,6 +192,10 @@ func dashboardMessageFor(op protocol.Operation, code protocol.ErrorCode) string 
 		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
 			return "Toolkits preview is temporarily unavailable."
 		}
+	case protocol.OpToolkitRegistryList, protocol.OpToolkitRegistryUpdate, protocol.OpToolkitRegistryRefresh:
+		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
+			return "The toolkit registry is temporarily unavailable."
+		}
 	}
 	return dashboardMessage(code)
 }

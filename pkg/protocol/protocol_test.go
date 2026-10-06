@@ -76,6 +76,9 @@ func TestAllOperationsMatchCatalogCount(t *testing.T) {
 	if !OpSettingsGet.Dashboard() || OpSettingsUpdate.Known() || OpToolkitsList.Internal() || OpSettingsNetworkCheck.Known() {
 		t.Fatal("settings/toolkits dashboard ops must be dashboard-only, not public /mcp tools")
 	}
+	if !OpToolkitRegistryList.Dashboard() || OpToolkitRegistryUpdate.Known() || OpToolkitRegistryRefresh.Internal() {
+		t.Fatal("toolkit_registry_* dashboard ops must be dashboard-only, not public /mcp tools")
+	}
 }
 
 func TestOperationJSONIsBareString(t *testing.T) {

@@ -21,6 +21,7 @@ const (
 	PrefixSkillRevision         = "skrev"
 	PrefixSkillSet              = "skset"
 	PrefixSkillImportJob        = "skjob"
+	PrefixSkillCatalog          = "skc"
 	PrefixIntegrationCredential = "icr"
 	PrefixProject               = "prj"
 	PrefixEnvironment           = "env"

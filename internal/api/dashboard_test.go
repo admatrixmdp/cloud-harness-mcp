@@ -1472,3 +1472,43 @@ func TestDashboardSettingsAndToolkits(t *testing.T) {
 		t.Fatal("settings/toolkits dashboard ops must stay dashboard-only")
 	}
 }
+
+func TestDashboardToolkitRegistry(t *testing.T) {
+	h, _, _, _ := dashboardGitHubStores(t)
+	auth := map[string]string{"Authorization": "Bearer owner-secret"}
+	csrf, cookie := dashboardCSRF(t, h)
+	mut := map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+	}
+
+	listed := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/toolkit-registry", "", auth)
+	if listed.Code != 200 || !strings.Contains(listed.Body.String(), `"entries"`) || !strings.Contains(listed.Body.String(), `"presets"`) {
+		t.Fatalf("list %d %s", listed.Code, listed.Body.String())
+	}
+	if strings.Contains(listed.Body.String(), `"ownerId"`) {
+		t.Fatalf("leaked %s", listed.Body.String())
+	}
+
+	denied := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/toolkit-registry", `{"provider":"skills-sh","slug":"anthropics/skills/pdf","action":"install","expectedGeneration":0}`, map[string]string{
+		"Authorization": "Bearer owner-secret",
+	})
+	if denied.Code != http.StatusUnauthorized && denied.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf %d %s", denied.Code, denied.Body.String())
+	}
+
+	updated := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/toolkit-registry", `{"provider":"skills-sh","slug":"anthropics/skills/pdf","action":"install","expectedGeneration":0}`, mut)
+	if updated.Code != 200 || !strings.Contains(updated.Body.String(), `"action":"install"`) {
+		t.Fatalf("update %d %s", updated.Code, updated.Body.String())
+	}
+
+	refreshed := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/toolkit-registry/refresh", `{"provider":"skills-sh"}`, mut)
+	if refreshed.Code != 200 || !strings.Contains(refreshed.Body.String(), `"slug":"anthropics/skills/pdf"`) {
+		t.Fatalf("refresh %d %s", refreshed.Code, refreshed.Body.String())
+	}
+
+	if protocol.OpToolkitRegistryList.Known() || protocol.OpToolkitRegistryUpdate.Known() || !protocol.OpToolkitRegistryRefresh.Dashboard() {
+		t.Fatal("toolkit_registry_* must stay dashboard-only")
+	}
+}

@@ -283,6 +283,44 @@ CREATE TABLE IF NOT EXISTS skill_import_jobs (
   PRIMARY KEY (owner_id, id)
 );
 CREATE INDEX IF NOT EXISTS skill_import_jobs_state_idx ON skill_import_jobs(owner_id, state, updated_at DESC);
+CREATE TABLE IF NOT EXISTS skill_catalog_entries (
+  owner_id TEXT NOT NULL,
+  id TEXT NOT NULL,
+  provider TEXT NOT NULL CHECK (provider IN ('skills-sh','skillx')),
+  slug TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  fetched_at INTEGER NOT NULL,
+  PRIMARY KEY (owner_id, id),
+  UNIQUE (owner_id, provider, slug)
+);
+CREATE TABLE IF NOT EXISTS toolkit_cache_entries (
+  cache_key TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  source_identity TEXT NOT NULL,
+  resolved_revision TEXT NOT NULL,
+  adapter_version INTEGER NOT NULL,
+  bundle_sha256 TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('INITIALIZING','READY','FAILED')),
+  byte_count INTEGER NOT NULL,
+  file_count INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER NOT NULL,
+  error_summary TEXT
+);
+CREATE INDEX IF NOT EXISTS toolkit_cache_owner_lookup ON toolkit_cache_entries(owner_id, bundle_sha256);
+CREATE TABLE IF NOT EXISTS workspace_toolkits (
+  workspace_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL,
+  owner_id TEXT NOT NULL,
+  toolkit_id TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK(scope IN ('owner','workspace')),
+  requested_json TEXT NOT NULL,
+  resolved_json TEXT NOT NULL,
+  bundle_sha256 TEXT NOT NULL,
+  PRIMARY KEY(workspace_id, ordinal)
+);
 `); err != nil {
 		return nil, err
 	}
@@ -1112,6 +1150,211 @@ func (s *Store) CancelImport(ownerID, id string, now int64) (ImportJob, error) {
 		return ImportJob{}, err
 	}
 	return s.GetImport(ownerID, id)
+}
+
+type CatalogEntry struct {
+	ID          string
+	Provider    string
+	Slug        string
+	DisplayName string
+	Description string
+	FetchedAt   int64
+}
+
+func (e CatalogEntry) PublicJSON() map[string]any {
+	return map[string]any{
+		"id": e.ID, "provider": e.Provider, "slug": e.Slug,
+		"displayName": e.DisplayName, "description": e.Description, "fetchedAt": e.FetchedAt,
+	}
+}
+
+type CacheEntry struct {
+	CacheKey         string
+	OwnerID          string
+	SourceIdentity   string
+	ResolvedRevision string
+	AdapterVersion   int
+	BundleSHA256     string
+	Status           string
+	ByteCount        int
+	FileCount        int
+	CreatedAt        int64
+	LastUsedAt       int64
+	ErrorSummary     string
+}
+
+func (s *Store) UpsertCatalogEntry(ownerID, provider, slug, displayName, description, metadataJSON string, now int64) error {
+	if provider != "skills-sh" && provider != "skillx" {
+		return fmt.Errorf("%w: provider must be skills-sh or skillx", ErrInvalid)
+	}
+	if slug == "" || len(slug) > 300 {
+		return fmt.Errorf("%w: slug is invalid", ErrInvalid)
+	}
+	if displayName == "" {
+		displayName = slug
+	}
+	if metadataJSON == "" {
+		metadataJSON = "{}"
+	}
+	id := protocol.NewOpaqueID(protocol.PrefixSkillCatalog)
+	_, err := s.db.Exec(`INSERT INTO skill_catalog_entries
+		(owner_id, id, provider, slug, display_name, description, metadata_json, fetched_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(owner_id, provider, slug) DO UPDATE SET
+			display_name = excluded.display_name,
+			description = excluded.description,
+			metadata_json = excluded.metadata_json,
+			fetched_at = excluded.fetched_at`,
+		ownerID, id, provider, slug, displayName, description, metadataJSON, now)
+	return err
+}
+
+func (s *Store) ListCatalogEntries(ownerID, provider string) ([]CatalogEntry, error) {
+	query := `SELECT id, provider, slug, display_name, description, fetched_at FROM skill_catalog_entries WHERE owner_id = ?`
+	args := []any{ownerID}
+	if provider != "" {
+		query += ` AND provider = ?`
+		args = append(args, provider)
+	}
+	query += ` ORDER BY display_name`
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]CatalogEntry, 0)
+	for rows.Next() {
+		var e CatalogEntry
+		if err := rows.Scan(&e.ID, &e.Provider, &e.Slug, &e.DisplayName, &e.Description, &e.FetchedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpsertCacheEntry(entry CacheEntry) error {
+	_, err := s.db.Exec(`INSERT INTO toolkit_cache_entries (
+		cache_key, owner_id, source_identity, resolved_revision, adapter_version,
+		bundle_sha256, status, byte_count, file_count, created_at, last_used_at, error_summary)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(cache_key) DO UPDATE SET
+			status = excluded.status,
+			bundle_sha256 = excluded.bundle_sha256,
+			byte_count = excluded.byte_count,
+			file_count = excluded.file_count,
+			last_used_at = excluded.last_used_at,
+			error_summary = excluded.error_summary`,
+		entry.CacheKey, entry.OwnerID, entry.SourceIdentity, entry.ResolvedRevision, entry.AdapterVersion,
+		entry.BundleSHA256, entry.Status, entry.ByteCount, entry.FileCount, entry.CreatedAt, entry.LastUsedAt, nullIfEmpty(entry.ErrorSummary))
+	return err
+}
+
+func (s *Store) ListCacheEntries(ownerID string) ([]CacheEntry, error) {
+	rows, err := s.db.Query(`SELECT cache_key, owner_id, source_identity, resolved_revision, adapter_version,
+		bundle_sha256, status, byte_count, file_count, created_at, last_used_at, COALESCE(error_summary,'')
+		FROM toolkit_cache_entries WHERE owner_id = ? ORDER BY last_used_at DESC`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]CacheEntry, 0)
+	for rows.Next() {
+		var e CacheEntry
+		if err := rows.Scan(&e.CacheKey, &e.OwnerID, &e.SourceIdentity, &e.ResolvedRevision, &e.AdapterVersion,
+			&e.BundleSHA256, &e.Status, &e.ByteCount, &e.FileCount, &e.CreatedAt, &e.LastUsedAt, &e.ErrorSummary); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+type toolkitPin struct {
+	BundleSHA256 string
+	ResolvedJSON string
+}
+
+func (s *Store) listOwnerToolkitPins(ownerID string) ([]toolkitPin, error) {
+	rows, err := s.db.Query(`SELECT bundle_sha256, resolved_json FROM workspace_toolkits WHERE owner_id = ?`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]toolkitPin, 0)
+	for rows.Next() {
+		var pin toolkitPin
+		if err := rows.Scan(&pin.BundleSHA256, &pin.ResolvedJSON); err != nil {
+			return nil, err
+		}
+		out = append(out, pin)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListRegistry(ownerID, provider string) ([]map[string]any, error) {
+	entries, err := s.ListCacheEntries(ownerID)
+	if err != nil {
+		return nil, err
+	}
+	pins, err := s.listOwnerToolkitPins(ownerID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0)
+	for _, entry := range entries {
+		parts := strings.Split(entry.SourceIdentity, ":")
+		entryProvider := "toolkit"
+		slug := entry.SourceIdentity
+		if len(parts) >= 3 {
+			entryProvider = parts[1]
+			slug = strings.Join(parts[2:], ":")
+		} else if len(parts) == 2 {
+			entryProvider = parts[1]
+			slug = entry.SourceIdentity
+		}
+		if provider != "" && entryProvider != provider {
+			continue
+		}
+		skillCount := 0
+		locked := false
+		for _, pin := range pins {
+			if pin.BundleSHA256 != entry.BundleSHA256 {
+				continue
+			}
+			locked = true
+			var resolved struct {
+				SkillsCount int `json:"skillsCount"`
+			}
+			if err := json.Unmarshal([]byte(pin.ResolvedJSON), &resolved); err == nil && resolved.SkillsCount > 0 {
+				skillCount = resolved.SkillsCount
+			}
+		}
+		lockState := "unlocked"
+		if locked {
+			lockState = "locked"
+		}
+		out = append(out, map[string]any{
+			"id":           entry.CacheKey,
+			"provider":     entryProvider,
+			"slug":         slug,
+			"displayName":  slug,
+			"description":  "",
+			"fetchedAt":    entry.LastUsedAt,
+			"cacheState":   entry.Status,
+			"pinnedCommit": entry.ResolvedRevision,
+			"skillCount":   skillCount,
+			"lockState":    lockState,
+		})
+	}
+	return out, nil
+}
+
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // Now is unix-ms for tests.
