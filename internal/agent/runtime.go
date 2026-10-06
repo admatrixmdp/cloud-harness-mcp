@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -670,9 +671,22 @@ func validateGatewayURL(raw string) error {
 }
 
 func parseAssistant(raw []byte) (chatMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if bytes.HasPrefix(trimmed, []byte("data:")) || bytes.Contains(trimmed, []byte("\ndata:")) {
+		return parseAssistantSSE(trimmed)
+	}
+	return parseAssistantJSON(trimmed)
+}
+
+func parseAssistantJSON(raw []byte) (chatMessage, error) {
 	var envelope struct {
 		Choices []struct {
 			Message chatMessage `json:"message"`
+			Delta   *struct {
+				Role      string     `json:"role"`
+				Content   string     `json:"content"`
+				ToolCalls []toolCall `json:"tool_calls"`
+			} `json:"delta"`
 		} `json:"choices"`
 		OutputText string `json:"output_text"`
 	}
@@ -681,6 +695,14 @@ func parseAssistant(raw []byte) (chatMessage, error) {
 	}
 	if len(envelope.Choices) > 0 {
 		msg := envelope.Choices[0].Message
+		if envelope.Choices[0].Delta != nil {
+			if msg.Content == "" {
+				msg.Content = envelope.Choices[0].Delta.Content
+			}
+			if len(msg.ToolCalls) == 0 {
+				msg.ToolCalls = envelope.Choices[0].Delta.ToolCalls
+			}
+		}
 		msg.Role = "assistant"
 		return msg, nil
 	}
@@ -688,6 +710,82 @@ func parseAssistant(raw []byte) (chatMessage, error) {
 		return chatMessage{Role: "assistant", Content: envelope.OutputText}, nil
 	}
 	return chatMessage{Role: "assistant"}, nil
+}
+
+func parseAssistantSSE(raw []byte) (chatMessage, error) {
+	msg := chatMessage{Role: "assistant"}
+	calls := map[int]*toolCall{}
+	parsed := false
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		if bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Type     string `json:"type"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(payload, &chunk); err != nil {
+			return chatMessage{}, fmt.Errorf("model provider request failed")
+		}
+		parsed = true
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		delta := chunk.Choices[0].Delta
+		msg.Content += delta.Content
+		for _, call := range delta.ToolCalls {
+			existing, ok := calls[call.Index]
+			if !ok {
+				existing = &toolCall{ID: call.ID, Type: call.Type}
+				existing.Function.Name = call.Function.Name
+				existing.Function.Arguments = call.Function.Arguments
+				calls[call.Index] = existing
+				continue
+			}
+			if call.ID != "" {
+				existing.ID = call.ID
+			}
+			if call.Type != "" {
+				existing.Type = call.Type
+			}
+			if call.Function.Name != "" {
+				existing.Function.Name = call.Function.Name
+			}
+			existing.Function.Arguments += call.Function.Arguments
+		}
+	}
+	if !parsed {
+		return chatMessage{}, fmt.Errorf("model provider request failed")
+	}
+	if len(calls) > 0 {
+		keys := make([]int, 0, len(calls))
+		for k := range calls {
+			keys = append(keys, k)
+		}
+		sort.Ints(keys)
+		msg.ToolCalls = make([]toolCall, 0, len(keys))
+		for _, k := range keys {
+			msg.ToolCalls = append(msg.ToolCalls, *calls[k])
+		}
+	}
+	return msg, nil
 }
 
 func openaiTools(names []string) []map[string]any {

@@ -53,6 +53,46 @@ func TestSafePathSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestSymbolsSearchUsesCtagsNames(t *testing.T) {
+	requireUniversalCtags(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "symbols.ts"), []byte("export function harnessSymbol(): string { return \"harnessSymbol\"; }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := Workspace{Root: root}
+	got := ws.Execute(context.Background(), protocol.OpSymbolsSearch, json.RawMessage(`{"query":"harnessSymbol","path":".","language":"TypeScript","maxResults":10}`))
+	if !got.OK {
+		t.Fatalf("%+v", got)
+	}
+	raw, _ := json.Marshal(got.Data)
+	if !strings.Contains(string(raw), "harnessSymbol") {
+		t.Fatalf("symbols %+v", got.Data)
+	}
+}
+
+func TestFilesMkdirIsOwnerOnly(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{Root: root}
+	got := ws.Execute(context.Background(), protocol.OpFilesMkdir, json.RawMessage(`{"path":"scratch/nested","recursive":true}`))
+	if !got.OK {
+		t.Fatalf("%+v", got)
+	}
+	info, err := os.Stat(filepath.Join(root, "scratch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("scratch mode %o", info.Mode().Perm())
+	}
+	nested, err := os.Stat(filepath.Join(root, "scratch", "nested"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nested.Mode().Perm() != 0o700 {
+		t.Fatalf("nested mode %o", nested.Mode().Perm())
+	}
+}
+
 func TestFilesReadWriteRoundTrip(t *testing.T) {
 	root := t.TempDir()
 	ws := Workspace{Root: root}
@@ -236,7 +276,20 @@ func TestWriteBatchAndMoveStayConfined(t *testing.T) {
 	}
 }
 
+func requireUniversalCtags(t *testing.T) {
+	t.Helper()
+	bin, err := exec.LookPath("ctags")
+	if err != nil {
+		t.Skip("ctags is not installed")
+	}
+	out, _ := exec.Command(bin, "--version").CombinedOutput()
+	if !strings.Contains(strings.ToLower(string(out)), "universal ctags") {
+		t.Skip("universal-ctags is required (executor image has it; host BSD ctags does not)")
+	}
+}
+
 func TestSymbolsStayInsideWorkspace(t *testing.T) {
+	requireUniversalCtags(t)
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "FindMe.go"), []byte("package main"), 0o600); err != nil {
 		t.Fatal(err)

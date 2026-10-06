@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -168,6 +169,25 @@ func (g *Grant) reconcile(res Reservation, actual *ProviderUsage) ProviderUsage 
 }
 
 func usageFromProvider(raw []byte, profile Profile) *ProviderUsage {
+	trimmed := bytes.TrimSpace(raw)
+	if bytes.HasPrefix(trimmed, []byte("data:")) || bytes.Contains(trimmed, []byte("\ndata:")) {
+		var last []byte
+		for _, line := range bytes.Split(trimmed, []byte("\n")) {
+			line = bytes.TrimSpace(line)
+			if !bytes.HasPrefix(line, []byte("data:")) {
+				continue
+			}
+			payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+			if bytes.Equal(payload, []byte("[DONE]")) {
+				continue
+			}
+			last = payload
+		}
+		if len(last) == 0 {
+			return nil
+		}
+		trimmed = last
+	}
 	var envelope struct {
 		Usage *struct {
 			InputTokens      *int `json:"input_tokens"`
@@ -176,7 +196,7 @@ func usageFromProvider(raw []byte, profile Profile) *ProviderUsage {
 			CompletionTokens *int `json:"completion_tokens"`
 		} `json:"usage"`
 	}
-	if json.Unmarshal(raw, &envelope) != nil || envelope.Usage == nil {
+	if json.Unmarshal(trimmed, &envelope) != nil || envelope.Usage == nil {
 		return nil
 	}
 	in, out := -1, -1

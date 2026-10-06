@@ -73,6 +73,7 @@ RUN mkdir -p /workspace /opt/user-tools /var/cache/harness /tmp/cloud-harness-ho
   && chown -R 10001:10001 /workspace /opt/user-tools /var/cache/harness /tmp/cloud-harness-home
 
 COPY --from=build --chown=root:root /out/harness-worker /opt/harness/harness-worker
+COPY --chown=root:root worker/harness-worker.go.mjs /opt/harness/harness-worker.mjs
 COPY --chown=root:root worker/clone-helper.sh /opt/harness/clone-helper.sh
 COPY --chown=root:root worker/git-transfer-helper.sh /opt/harness/git-transfer-helper.sh
 COPY --chown=root:root worker/task-runner.sh /opt/harness/task-runner.sh
@@ -83,7 +84,7 @@ COPY --chown=root:root worker/bin/npx-dispatcher /opt/harness/bin/npx
 COPY --chown=root:root worker/bin/skills /opt/harness/bin/skills
 COPY --chown=root:root worker/bin/skillx /opt/harness/bin/skillx
 
-RUN chmod 0555 /opt/harness/harness-worker /opt/harness/*.sh \
+RUN chmod 0555 /opt/harness/harness-worker /opt/harness/harness-worker.mjs /opt/harness/*.sh \
   && chmod 0555 /opt/harness/bin/*
 
 USER 10001:10001

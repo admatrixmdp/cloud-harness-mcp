@@ -69,6 +69,7 @@ type pathInput struct {
 	Overwrite              bool     `json:"overwrite"`
 	ContentBase64          string   `json:"contentBase64"`
 	Query                  string   `json:"query"`
+	Language               string   `json:"language"`
 	Symbol                 string   `json:"symbol"`
 	Action                 string   `json:"action"`
 	Name                   string   `json:"name"`
@@ -447,10 +448,18 @@ func (w Workspace) mkdir(in pathInput) protocol.ToolResult {
 	if err != nil {
 		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
 	}
-	if err := os.MkdirAll(target, 0o755); err != nil {
+	// Match TypeScript worker: directories are owner-only (0o700).
+	if err := os.MkdirAll(target, 0o700); err != nil {
 		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
 	}
-	return protocol.Success("directory created", map[string]any{"path": in.Path})
+	info, err := os.Lstat(target)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	if !info.IsDir() {
+		return protocol.Fail(protocol.ErrorInvalidInput, "path exists and is not a directory", false)
+	}
+	return protocol.Success("Directory created", map[string]any{"path": in.Path})
 }
 
 func (w Workspace) writeBatch(in pathInput) protocol.ToolResult {
@@ -586,25 +595,60 @@ func (w Workspace) symbolsSearch(in pathInput) protocol.ToolResult {
 	if maxResults <= 0 {
 		maxResults = 100
 	}
+	ctagsBin, err := exec.LookPath("ctags")
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInternal, "symbol indexing failed", false)
+	}
+	args := []string{"--output-format=json", "--fields=+nK", "--extras=-F", "--recurse=yes", "--sort=no", "-f", "-"}
+	if in.Language != "" {
+		args = append(args, "--languages="+in.Language)
+	}
+	args = append(args, target)
+	cmd := exec.Command(ctagsBin, args...)
+	cmd.Dir = w.root()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = "symbol indexing failed"
+		}
+		return protocol.Fail(protocol.ErrorInternal, msg, false)
+	}
 	query := strings.ToLower(in.Query)
-	var symbols []map[string]any
-	_ = filepath.WalkDir(target, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || len(symbols) >= maxResults {
-			return nil
+	root := w.root()
+	symbols := make([]map[string]any, 0)
+	truncated := false
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.HasPrefix(line, "{") {
+			continue
 		}
-		rel, err := filepath.Rel(w.root(), path)
-		if err != nil {
-			return nil
+		var entry map[string]any
+		if json.Unmarshal([]byte(line), &entry) != nil {
+			continue
 		}
-		name := d.Name()
-		if !strings.Contains(strings.ToLower(name), query) {
-			return nil
+		name, _ := entry["name"].(string)
+		if name == "" || !strings.Contains(strings.ToLower(name), query) {
+			continue
 		}
-		symbols = append(symbols, map[string]any{"name": name, "path": filepath.ToSlash(rel), "kind": "file"})
-		return nil
-	})
+		path, _ := entry["path"].(string)
+		if path != "" && strings.HasPrefix(path, root+"/") {
+			path = path[len(root)+1:]
+		}
+		symbols = append(symbols, map[string]any{
+			"name":     name,
+			"path":     path,
+			"line":     entry["line"],
+			"kind":     entry["kind"],
+			"language": entry["language"],
+			"scope":    entry["scope"],
+		})
+		if len(symbols) >= maxResults {
+			truncated = true
+			break
+		}
+	}
 	result := protocol.Success(fmt.Sprintf("Found %d symbol definitions", len(symbols)), map[string]any{"symbols": symbols})
-	result.Truncated = len(symbols) >= maxResults
+	result.Truncated = truncated
 	return result
 }
 

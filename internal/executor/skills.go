@@ -392,8 +392,12 @@ func copySkillTree(src, dst string) error {
 			}
 			return os.Symlink(relTarget, target)
 		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
 		if d.IsDir() {
-			return os.MkdirAll(target, 0o700)
+			return os.MkdirAll(target, info.Mode().Perm())
 		}
 		if !d.Type().IsRegular() {
 			return fmt.Errorf("unsupported special directory entry %s", rel)
@@ -406,7 +410,7 @@ func copySkillTree(src, dst string) error {
 			return err
 		}
 		defer in.Close()
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o700)
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
 		if err != nil {
 			return err
 		}

@@ -375,6 +375,22 @@ func (a *atomicInt) add() int { return int(a.v.Add(1)) }
 
 func (a *atomicInt) value() int { return int(a.v.Load()) }
 
+func TestParseAssistantSSEToolCall(t *testing.T) {
+	raw := []byte("data: " + `{"choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_fake_write","type":"function","function":{"name":"files_write","arguments":"{\"path\":\"pi-agent-proof.txt\"}"}}]}}]}` + "\n\n" +
+		"data: " + `{"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}` + "\n\n" +
+		"data: [DONE]\n\n")
+	msg, err := parseAssistant(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Function.Name != "files_write" {
+		t.Fatalf("%+v", msg.ToolCalls)
+	}
+	if !strings.Contains(msg.ToolCalls[0].Function.Arguments, "pi-agent-proof.txt") {
+		t.Fatalf("arguments %q", msg.ToolCalls[0].Function.Arguments)
+	}
+}
+
 func TestValidateGatewayURLRejectsSecrets(t *testing.T) {
 	if err := validateGatewayURL("http://x/sk-live"); err == nil {
 		t.Fatal("credential URL")
