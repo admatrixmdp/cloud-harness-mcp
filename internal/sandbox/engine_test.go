@@ -25,12 +25,12 @@ func TestCreateExecutorRejectsSocket(t *testing.T) {
 }
 
 func TestCreateExecutorUsesPolicy(t *testing.T) {
-	var got []string
+	var calls [][]string
 	eng := Engine{
 		Image:      "cloud-harness-executor:local",
 		InstanceID: "inst",
 		Run: func(_ context.Context, args []string, stdin string) (Result, error) {
-			got = append([]string{}, args...)
+			calls = append(calls, append([]string{}, args...))
 			if stdin != "" {
 				t.Fatal("create must not send a token on stdin")
 			}
@@ -49,10 +49,13 @@ func TestCreateExecutorUsesPolicy(t *testing.T) {
 	if name != "cloud-harness-ws-test" {
 		t.Fatalf("name %s", name)
 	}
-	if err := ValidateCreateArgs(got); err != nil {
+	if len(calls) < 2 || calls[0][0] != "create" || calls[1][0] != "start" || calls[1][1] != name {
+		t.Fatalf("create then start: %v", calls)
+	}
+	if err := ValidateCreateArgs(calls[0]); err != nil {
 		t.Fatal(err)
 	}
-	joined := strings.Join(got, " ")
+	joined := strings.Join(calls[0], " ")
 	if strings.Contains(joined, "docker.sock") || strings.Contains(joined, "--network bridge") {
 		t.Fatalf("unsafe args: %s", joined)
 	}

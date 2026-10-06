@@ -158,14 +158,17 @@ func TestProductionServiceCloneThenCreateMountsRepoNotSocket(t *testing.T) {
 	if !got.OK {
 		t.Fatalf("%+v", got)
 	}
-	if len(calls) < 2 {
-		t.Fatalf("expected clone then create, got %d: %v", len(calls), calls)
+	if len(calls) < 3 {
+		t.Fatalf("expected clone then create then start, got %d: %v", len(calls), calls)
 	}
 	if !strings.Contains(strings.Join(calls[0], " "), "clone-helper.sh") {
 		t.Fatalf("first call should clone: %v", calls[0])
 	}
 	if calls[1][0] != "create" {
 		t.Fatalf("second call should create: %v", calls[1])
+	}
+	if calls[2][0] != "start" {
+		t.Fatalf("third call should start: %v", calls[2])
 	}
 	joined := strings.Join(calls[1], " ")
 	if strings.Contains(joined, "docker.sock") || strings.Contains(joined, "--network bridge") {
@@ -178,12 +181,12 @@ func TestProductionServiceCloneThenCreateMountsRepoNotSocket(t *testing.T) {
 }
 
 func TestDockerEngineCreateMountsJobRepo(t *testing.T) {
-	var got []string
+	var calls [][]string
 	inner := &sandbox.Engine{
 		Image:      "cloud-harness-executor:local",
 		InstanceID: "inst",
 		Run: func(_ context.Context, args []string, stdin string) (sandbox.Result, error) {
-			got = append([]string{}, args...)
+			calls = append(calls, append([]string{}, args...))
 			if stdin != "" {
 				t.Fatal("create must not send a token on stdin")
 			}
@@ -201,7 +204,10 @@ func TestDockerEngineCreateMountsJobRepo(t *testing.T) {
 	if !strings.HasPrefix(name, "cloud-harness-ws-") {
 		t.Fatalf("name %s", name)
 	}
-	joined := strings.Join(got, " ")
+	if len(calls) < 2 || calls[0][0] != "create" || calls[1][0] != "start" {
+		t.Fatalf("create then start: %v", calls)
+	}
+	joined := strings.Join(calls[0], " ")
 	if !strings.Contains(joined, "/var/lib/cloud-harness/jobs/ws_abcdefghijklmnopqrstuvwx/repo:/workspace:rw") {
 		t.Fatalf("missing mount: %s", joined)
 	}

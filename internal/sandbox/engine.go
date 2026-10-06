@@ -101,7 +101,9 @@ func (w *limitWriter) Write(p []byte) (int, error) {
 	return w.buf.Write(p)
 }
 
-// CreateExecutor builds docker create argv from Cloud Harness policy and runs it.
+// CreateExecutor builds docker create argv from Cloud Harness policy, then
+// starts the container. TypeScript createExecutor does the same: docker exec
+// cannot talk to a created-but-stopped executor.
 func (e Engine) CreateExecutor(ctx context.Context, spec ExecutorSpec) (string, error) {
 	if spec.Image == "" {
 		spec.Image = e.Image
@@ -119,6 +121,15 @@ func (e Engine) CreateExecutor(ctx context.Context, spec ExecutorSpec) (string, 
 	}
 	if res.ExitCode != 0 {
 		return "", fmt.Errorf("%s: executor creation failed", protocol.ErrorUnavailable)
+	}
+	started, err := e.runner()(ctx, []string{"start", spec.Name}, "")
+	if err != nil {
+		_, _ = e.runner()(ctx, []string{"rm", "--force", spec.Name}, "")
+		return "", err
+	}
+	if started.ExitCode != 0 {
+		_, _ = e.runner()(ctx, []string{"rm", "--force", spec.Name}, "")
+		return "", fmt.Errorf("%s: executor start failed", protocol.ErrorUnavailable)
 	}
 	return spec.Name, nil
 }
