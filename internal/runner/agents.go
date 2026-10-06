@@ -21,6 +21,7 @@ const (
 	maxPromptBytes        = 131_072
 	maxMessageBytes       = 65_536
 	maxLogBytes           = 262_144
+	maxToolResultText     = 2 * 1024 * 1024
 )
 
 var allowedProxyOps = map[string]struct{}{
@@ -97,10 +98,12 @@ type agentHub struct {
 	launcher *agent.Launcher
 	gateway  *agent.ControlClient
 	profiles map[string]agent.Profile
+	exec     func(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult
+	seenReq  map[string]struct{}
 }
 
 func newAgentHub() *agentHub {
-	return &agentHub{byID: map[string]*agentRecord{}, byKey: map[string]string{}}
+	return &agentHub{byID: map[string]*agentRecord{}, byKey: map[string]string{}, seenReq: map[string]struct{}{}}
 }
 
 func (h *agentHub) withRuntime(launcher *agent.Launcher, gateway *agent.ControlClient, profiles map[string]agent.Profile) *agentHub {
@@ -328,10 +331,17 @@ func (h *agentHub) consume(rec *agentRecord) {
 		switch out.Type {
 		case "event":
 			rec.logs = appendLog(rec.logs, out.Event)
+			h.mu.Unlock()
 		case "usage":
 			if out.Usage != nil {
 				rec.usage = *out.Usage
 			}
+			h.mu.Unlock()
+		case "tool_request":
+			h.mu.Unlock()
+			h.proxyTool(rec, out)
+		case "tool_cancel":
+			h.mu.Unlock()
 		case "terminal":
 			rec.status = out.State
 			rec.terminalAt = time.Now().UTC()
@@ -341,9 +351,85 @@ func (h *agentHub) consume(rec *agentRecord) {
 			}
 			h.mu.Unlock()
 			return
+		default:
+			h.mu.Unlock()
 		}
-		h.mu.Unlock()
 	}
+}
+
+func (h *agentHub) proxyTool(rec *agentRecord, out agent.OutputRecord) {
+	if rec.channel == nil {
+		return
+	}
+	reply := func(msg string, isError bool) {
+		_ = rec.channel.Send(agent.ToolResultRecord{
+			Type: "tool_result", RequestID: out.RequestID, Final: true, IsError: isError,
+			Content: []agent.ToolResultText{{Type: "text", Text: msg}},
+		})
+	}
+	if rec.status != "RUNNING" || rec.channel == nil {
+		reply(toolErrorJSON("agent tool execution lost its lifecycle fence"), true)
+		return
+	}
+	granted := false
+	for _, op := range rec.proxyOperations {
+		if op == out.Operation {
+			granted = true
+			break
+		}
+	}
+	if !granted {
+		reply(toolErrorJSON("proxy operation is not granted"), true)
+		return
+	}
+	h.mu.Lock()
+	key := rec.id + "\x00" + out.RequestID
+	if _, dup := h.seenReq[key]; dup {
+		h.mu.Unlock()
+		reply(toolErrorJSON("duplicate proxy request ID"), true)
+		return
+	}
+	h.seenReq[key] = struct{}{}
+	h.mu.Unlock()
+	if _, ok := allowedProxyOps[out.Operation]; !ok {
+		reply(toolErrorJSON("proxy operation is not granted"), true)
+		return
+	}
+	input := map[string]any{}
+	if len(out.Input) > 0 {
+		_ = json.Unmarshal(out.Input, &input)
+	}
+	input["workspaceId"] = rec.workspaceID
+	raw, _ := json.Marshal(input)
+	if h.exec == nil {
+		reply(toolErrorJSON("proxy tool execution failed"), true)
+		return
+	}
+	result := h.exec(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: rec.ownerID, Operation: protocol.Operation(out.Operation), Input: raw,
+	})
+	h.mu.Lock()
+	still := rec.status == "RUNNING"
+	h.mu.Unlock()
+	if !still {
+		reply(toolErrorJSON("agent tool execution lost its lifecycle fence"), true)
+		return
+	}
+	serialized, err := json.Marshal(result)
+	if err != nil || len(serialized) > maxToolResultText {
+		reply(toolErrorJSON("tool result exceeded the agent protocol bound"), true)
+		return
+	}
+	reply(string(serialized), !result.OK)
+}
+
+func toolErrorJSON(message string) string {
+	raw, _ := json.Marshal(map[string]any{
+		"ok": false, "message": message,
+		"error":     map[string]any{"code": "TOOL_ERROR", "message": message, "retryable": false},
+		"truncated": false,
+	})
+	return string(raw)
 }
 
 func appendLog(dst, event []byte) []byte {

@@ -183,7 +183,9 @@ func NewService(cfg Config, st store.Store, engine Engine) *Service {
 	if engine == nil {
 		engine = noopEngine{}
 	}
-	return &Service{cfg: cfg.withDefaults(), store: st, engine: engine, agents: newAgentHub(), mcpGW: newMCPGatewayHub()}
+	svc := &Service{cfg: cfg.withDefaults(), store: st, engine: engine, agents: newAgentHub(), mcpGW: newMCPGatewayHub()}
+	svc.agents.exec = svc.Execute
+	return svc
 }
 
 type openInput struct {
