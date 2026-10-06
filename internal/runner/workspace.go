@@ -26,6 +26,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/typesafe"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
 
@@ -100,6 +101,7 @@ type Service struct {
 	docker    *sandbox.Engine
 	mcpGW     *mcpGatewayHub
 	mcpStore  *mcpgw.Store
+	typesafe  *typesafe.Suggester
 }
 
 // WithCloner clones through a helper container after executor create.
@@ -156,6 +158,13 @@ func (s *Service) WithDocker(engine *sandbox.Engine) *Service {
 // store keep the in-memory hub. Traces stay unwired in this slice.
 func (s *Service) WithMCPGateway(store *mcpgw.Store) *Service {
 	s.mcpStore = store
+	return s
+}
+
+// WithTypeSafe attaches the HTTPS skill suggester. Without a key the runner
+// stays fail-closed with zero outbound calls.
+func (s *Service) WithTypeSafe(engine *typesafe.Suggester) *Service {
+	s.typesafe = engine
 	return s
 }
 
@@ -656,8 +665,6 @@ func (s *Service) runSkillHelper(ctx context.Context, rec store.Record, input js
 	return got
 }
 
-const typesafeEgressCeiling = 8192
-
 func (s *Service) skillSuggest(req protocol.RunnerRequest) protocol.ToolResult {
 	var input struct {
 		Prompt      string `json:"prompt"`
@@ -671,27 +678,63 @@ func (s *Service) skillSuggest(req protocol.RunnerRequest) protocol.ToolResult {
 	if strings.TrimSpace(input.Prompt) == "" {
 		return protocol.Fail(protocol.ErrorInvalidInput, "prompt is required", false)
 	}
-	if len([]byte(input.Prompt)) > typesafeEgressCeiling {
+	if len([]byte(input.Prompt)) > typesafe.MaxEgressCeiling {
 		return protocol.Fail(protocol.ErrorInvalidInput, "the prompt exceeds the egress byte bound", false)
 	}
-	reason := "not_configured"
+	engine := s.typeSafeEngine()
 	if input.WorkspaceID == "" {
-		reason = "empty_roster"
-	} else if rec, errRes := s.resolveWorkspace(req.OwnerID, input.WorkspaceID); errRes != nil {
-		return *errRes
-	} else if rec.Status != store.StatusActive {
-		reason = "empty_roster"
-	} else {
-		reason = "not_configured"
+		return noneSuggestion("empty_roster")
 	}
-	return protocol.Success("No suggestion", map[string]any{
-		"suggested":      nil,
-		"reason":         reason,
-		"cached":         false,
-		"latencyMs":      0,
-		"outboundCalls":  0,
-		"redactionCount": 0,
-	})
+	rec, errRes := s.resolveWorkspace(req.OwnerID, input.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	if rec.Status != store.StatusActive {
+		return noneSuggestion("empty_roster")
+	}
+	if engine == nil {
+		return noneSuggestion("not_configured")
+	}
+	roster, digest := s.workspaceRoster(rec)
+	outcome := engine.Suggest(context.Background(), req.OwnerID, rec.ID, input.Prompt, digest, roster)
+	data := outcome.Data()
+	raw, _ := json.Marshal(data)
+	if strings.Contains(string(raw), input.Prompt) {
+		return noneSuggestion("redaction_failed")
+	}
+	message := "No suggestion"
+	if outcome.Suggested != nil {
+		message = "Suggested " + outcome.Suggested.Name
+	}
+	return protocol.Success(message, data)
+}
+
+func noneSuggestion(reason string) protocol.ToolResult {
+	return protocol.Success("No suggestion", typesafe.None(reason).Data())
+}
+
+func (s *Service) typeSafeEngine() *typesafe.Suggester {
+	if s.typesafe != nil {
+		return s.typesafe
+	}
+	key := strings.TrimSpace(os.Getenv("TYPESAFE_API_KEY"))
+	if key == "" {
+		return nil
+	}
+	s.typesafe = typesafe.New(typesafe.Config{APIKey: func() string { return key }})
+	return s.typesafe
+}
+
+func (s *Service) workspaceRoster(rec store.Record) ([]typesafe.RosterEntry, string) {
+	if s.cfg.JobsRoot == "" {
+		return nil, ""
+	}
+	root := filepath.Join(s.cfg.JobsRoot, rec.ID, "repo")
+	roster, digest, err := executor.Workspace{Root: root}.SkillRoster()
+	if err != nil {
+		return nil, ""
+	}
+	return roster, digest
 }
 
 func (s *Service) runWorker(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {

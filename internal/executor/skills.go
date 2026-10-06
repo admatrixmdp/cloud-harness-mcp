@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/typesafe"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
 
@@ -484,6 +485,22 @@ func (w Workspace) skillEntries() ([]skillEntry, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// SkillRoster is the TypeSafe ranking inventory (today worker skills_roster).
+func (w Workspace) SkillRoster() ([]typesafe.RosterEntry, string, error) {
+	entries, err := w.skillEntries()
+	if err != nil {
+		return nil, "", err
+	}
+	files := make([]typesafe.SkillFile, 0, len(entries))
+	for _, entry := range entries {
+		files = append(files, typesafe.SkillFile{
+			Name: entry.Name, Source: entry.Source, File: entry.File, ContentSHA256: entry.ContentSHA256,
+		})
+	}
+	roster, digest := typesafe.RosterFromSkills(files)
+	return roster, digest, nil
 }
 
 func skillBundleDigest(skillDir string) (string, error) {

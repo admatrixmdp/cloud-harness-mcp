@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +23,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/typesafe"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 
 	_ "modernc.org/sqlite"
@@ -1430,6 +1433,69 @@ func TestSkillSuggestIsFailClosedWithoutTypeSafe(t *testing.T) {
 	})
 	if over.OK || over.Error.Code != protocol.ErrorInvalidInput {
 		t.Fatalf("oversize: %+v", over)
+	}
+}
+
+func TestSkillSuggestTypeSafeHTTPSNeverEchoesPrompt(t *testing.T) {
+	jobs := t.TempDir()
+	calls := 0
+	engine := typesafe.New(typesafe.Config{
+		APIKey: func() string { return "ts_live_key" },
+		RoundTrip: func(req *http.Request) (*http.Response, error) {
+			calls++
+			body, _ := io.ReadAll(req.Body)
+			if strings.Contains(string(body), "ts_live_key") {
+				t.Fatal("api key in outbound body")
+			}
+			if req.Header.Get("Authorization") != "Bearer ts_live_key" {
+				t.Fatalf("authorization %q", req.Header.Get("Authorization"))
+			}
+			answers := map[string]any{
+				"skill":                             map[string]any{"type": "choice", "choice": "tdd"},
+				"acts_on_user_system":               map[string]any{"type": "noul", "noul": 1.0},
+				"would_follow_documented_procedure": map[string]any{"type": "noul", "noul": 1.0},
+				"prose_suffices":                    map[string]any{"type": "noul", "noul": 0.0},
+			}
+			if calls == 2 {
+				answers["fits::tdd"] = map[string]any{"type": "noul", "noul": 0.9}
+			}
+			raw, _ := json.Marshal(map[string]any{"answers": answers, "usage": map[string]any{"input_tokens": 10, "output_tokens": 4}})
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(raw)), Header: make(http.Header)}, nil
+		},
+	})
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, JobsRoot: jobs}, nil, nil).WithTypeSafe(engine)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"suggest-https-001","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	wsID := open.Data.(map[string]any)["workspaceId"].(string)
+	skillDir := filepath.Join(jobs, wsID, "repo", ".cloud-harness", "skills", "tdd")
+	if err := os.MkdirAll(skillDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\ndescription: test driven development\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSkillSuggest,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","prompt":"Please refactor the authentication middleware."}`),
+	})
+	if !got.OK {
+		t.Fatalf("%+v", got)
+	}
+	raw, _ := json.Marshal(got)
+	if strings.Contains(string(raw), "authentication middleware") || strings.Contains(string(raw), "ts_live_key") {
+		t.Fatalf("leaked %s", raw)
+	}
+	suggested, _ := got.Data.(map[string]any)["suggested"].(map[string]any)
+	if suggested["name"] != "tdd" {
+		t.Fatalf("suggested %+v calls=%d", got.Data, calls)
+	}
+	if calls != 2 {
+		t.Fatalf("calls %d", calls)
 	}
 }
 
