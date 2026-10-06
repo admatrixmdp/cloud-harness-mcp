@@ -214,6 +214,12 @@ const (
 	OpSkillSetUpdate      Operation = "skill_set_update"
 	OpSkillSetDelete      Operation = "skill_set_delete"
 	OpSkillSetPreview     Operation = "skill_set_preview"
+
+	OpToolkitsList         Operation = "toolkits_list"
+	OpToolkitsPreview      Operation = "toolkits_preview"
+	OpSettingsGet          Operation = "settings_get"
+	OpSettingsUpdate       Operation = "settings_update"
+	OpSettingsNetworkCheck Operation = "settings_network_check"
 )
 
 // AllOperations is the ordered public MCP tool catalog from RunnerOperationSchema.
@@ -317,7 +323,8 @@ func (op Operation) Dashboard() bool {
 		OpSkillUsage, OpSkillSearch,
 		OpSkillRevisionList, OpSkillRevisionGet, OpSkillRevisionDiff, OpSkillRevisionCreate, OpSkillRevisionFork,
 		OpSkillImportStart, OpSkillImportStatus, OpSkillImportCancel,
-		OpSkillSetList, OpSkillSetGet, OpSkillSetCreate, OpSkillSetUpdate, OpSkillSetDelete, OpSkillSetPreview:
+		OpSkillSetList, OpSkillSetGet, OpSkillSetCreate, OpSkillSetUpdate, OpSkillSetDelete, OpSkillSetPreview,
+		OpToolkitsList, OpToolkitsPreview, OpSettingsGet, OpSettingsUpdate, OpSettingsNetworkCheck:
 		return true
 	default:
 		return false

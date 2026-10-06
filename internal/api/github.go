@@ -173,6 +173,25 @@ func dashboardMessageFor(op protocol.Operation, code protocol.ErrorCode) string 
 		if code == protocol.ErrorConflict {
 			return "This skill set is still used by a workspace."
 		}
+	case protocol.OpSettingsGet, protocol.OpSettingsUpdate:
+		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
+			return "Instance settings are temporarily unavailable."
+		}
+		if op == protocol.OpSettingsUpdate && code == protocol.ErrorInvalidInput {
+			return "The default network profile must be network-none or dependency-access."
+		}
+	case protocol.OpSettingsNetworkCheck:
+		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
+			return "The egress readiness check is temporarily unavailable."
+		}
+	case protocol.OpToolkitsList:
+		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
+			return "Toolkits list is temporarily unavailable."
+		}
+	case protocol.OpToolkitsPreview:
+		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
+			return "Toolkits preview is temporarily unavailable."
+		}
 	}
 	return dashboardMessage(code)
 }

@@ -57,16 +57,19 @@ func (noopEngine) Remove(context.Context, string) error { return nil }
 
 // Config is the runner workspace policy.
 type Config struct {
-	AllowedGitHosts []string
-	NetworkProfile  protocol.NetworkProfile
-	IdleTTL         time.Duration
-	WallTTL         time.Duration
-	InstanceID      string
-	Attestor        sandbox.Attestor
-	JobsRoot        string
-	ExecutorImage   string
-	GitHubApp       git.AppConfig
-	HTTP            *http.Client
+	AllowedGitHosts          []string
+	NetworkProfile           protocol.NetworkProfile
+	IdleTTL                  time.Duration
+	WallTTL                  time.Duration
+	InstanceID               string
+	Attestor                 sandbox.Attestor
+	JobsRoot                 string
+	ExecutorImage            string
+	GitHubApp                git.AppConfig
+	HTTP                     *http.Client
+	AgentKitKeyID            string
+	AgentKitPublicKey        string
+	AgentKitCredentialSecret string
 }
 
 func (c Config) withDefaults() Config {
@@ -370,7 +373,7 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 	case protocol.OpWorkspaceCapabilities:
 		return protocol.Success("workspace capabilities", map[string]any{
 			"networkProfiles":       []string{string(protocol.NetworkNone), string(protocol.DependencyAccess)},
-			"defaultNetworkProfile": string(s.cfg.NetworkProfile),
+			"defaultNetworkProfile": string(s.resolvedDefaultNetworkProfile()),
 		})
 	default:
 		return protocol.Fail(protocol.ErrorUnavailable, "Go-port runner has not implemented "+string(req.Operation)+" yet", true)
@@ -394,7 +397,7 @@ func (s *Service) open(ctx context.Context, req protocol.RunnerRequest) protocol
 	if err != nil {
 		return failFrom(err)
 	}
-	profile := s.cfg.NetworkProfile
+	profile := s.resolvedDefaultNetworkProfile()
 	if input.NetworkProfile != "" {
 		profile = protocol.NetworkProfile(input.NetworkProfile)
 		if !profile.Valid() {

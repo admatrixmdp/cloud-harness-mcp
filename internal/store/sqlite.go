@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS owner_state (
   git_author_name TEXT,
   git_author_email TEXT
 );
+CREATE TABLE IF NOT EXISTS instance_settings (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  default_network_profile TEXT CHECK(default_network_profile IS NULL OR default_network_profile IN ('network-none','dependency-access')),
+  updated_at INTEGER NOT NULL
+);
 `); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -249,6 +254,33 @@ func (s *SQLite) GitIdentity(ownerID string) (string, string, bool) {
 		return "", "", false
 	}
 	return name.String, email.String, true
+}
+
+// DefaultNetworkProfile is the operator-selected instance default, if any.
+func (s *SQLite) DefaultNetworkProfile() (protocol.NetworkProfile, bool) {
+	var profile sql.NullString
+	if err := s.db.QueryRow(`SELECT default_network_profile FROM instance_settings WHERE id = 1`).Scan(&profile); err != nil {
+		return "", false
+	}
+	if !profile.Valid {
+		return "", false
+	}
+	p := protocol.NetworkProfile(profile.String)
+	if !p.Valid() {
+		return "", false
+	}
+	return p, true
+}
+
+// SetDefaultNetworkProfile persists the operator default, or clears it with nil.
+func (s *SQLite) SetDefaultNetworkProfile(value *protocol.NetworkProfile, updatedAt time.Time) {
+	var stored any
+	if value != nil {
+		stored = string(*value)
+	}
+	_, _ = s.db.Exec(`INSERT INTO instance_settings(id, default_network_profile, updated_at) VALUES (1, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET default_network_profile = excluded.default_network_profile, updated_at = excluded.updated_at`,
+		stored, updatedAt.UnixMilli())
 }
 
 func (s *SQLite) scanOne(query string, args ...any) (Record, bool) {

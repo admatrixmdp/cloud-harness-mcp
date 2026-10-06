@@ -214,3 +214,34 @@ VALUES ('ws_eeeeeeeeeeeeeeeeeeeeeeee','owner','open-legacy-1','https://github.co
 		t.Fatalf("migrated put %+v", again)
 	}
 }
+
+func TestSQLiteInstanceNetworkDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.db")
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, ok := db.DefaultNetworkProfile(); ok {
+		t.Fatal("unset default")
+	}
+	none := protocol.NetworkNone
+	db.SetDefaultNetworkProfile(&none, time.Now())
+	got, ok := db.DefaultNetworkProfile()
+	if !ok || got != protocol.NetworkNone {
+		t.Fatalf("%v %v", got, ok)
+	}
+	reopened, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	again, ok := reopened.DefaultNetworkProfile()
+	if !ok || again != protocol.NetworkNone {
+		t.Fatalf("persist %v %v", again, ok)
+	}
+	reopened.SetDefaultNetworkProfile(nil, time.Now())
+	if _, ok := reopened.DefaultNetworkProfile(); ok {
+		t.Fatal("cleared default")
+	}
+}

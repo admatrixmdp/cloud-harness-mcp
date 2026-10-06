@@ -53,16 +53,19 @@ type Store interface {
 	SetGitIdentity(ownerID, name, email string)
 	GitIdentity(ownerID string) (name, email string, ok bool)
 	ClaimForReaping(id string, generation int, force bool) bool
+	DefaultNetworkProfile() (protocol.NetworkProfile, bool)
+	SetDefaultNetworkProfile(value *protocol.NetworkProfile, updatedAt time.Time)
 }
 
 // Memory is a process-local store used until SQLite is wired.
 type Memory struct {
-	mu        sync.Mutex
-	byID      map[string]*Record
-	byIdem    map[string]*Record
-	preferred map[string]string
-	gitName   map[string]string
-	gitEmail  map[string]string
+	mu             sync.Mutex
+	byID           map[string]*Record
+	byIdem         map[string]*Record
+	preferred      map[string]string
+	gitName        map[string]string
+	gitEmail       map[string]string
+	defaultProfile *protocol.NetworkProfile
 }
 
 // NewMemory returns an empty in-process workspace store.
@@ -241,4 +244,27 @@ func (m *Memory) ClaimForReaping(id string, generation int, force bool) bool {
 	rec.Generation++
 	rec.LastActivityAt = time.Now()
 	return true
+}
+
+// DefaultNetworkProfile is the operator-selected instance default, if any.
+func (m *Memory) DefaultNetworkProfile() (protocol.NetworkProfile, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.defaultProfile == nil {
+		return "", false
+	}
+	return *m.defaultProfile, true
+}
+
+// SetDefaultNetworkProfile persists the operator default, or clears it with nil.
+func (m *Memory) SetDefaultNetworkProfile(value *protocol.NetworkProfile, updatedAt time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_ = updatedAt
+	if value == nil {
+		m.defaultProfile = nil
+		return
+	}
+	cp := *value
+	m.defaultProfile = &cp
 }

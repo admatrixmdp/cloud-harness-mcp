@@ -115,6 +115,9 @@ func TestInternalGatewayOpsStayOffPublicCatalog(t *testing.T) {
 	if protocol.OpSkillList.Known() || protocol.OpSkillCreateCustom.Known() || protocol.OpSkillSetPreview.Known() {
 		t.Fatal("skill dashboard ops must not be public /mcp tools")
 	}
+	if protocol.OpToolkitsList.Known() || protocol.OpSettingsGet.Known() || protocol.OpSettingsUpdate.Known() || protocol.OpSettingsNetworkCheck.Known() {
+		t.Fatal("settings/toolkits dashboard ops must not be public /mcp tools")
+	}
 	if len(protocol.AllOperations) != 92 {
 		t.Fatalf("AllOperations = %d", len(protocol.AllOperations))
 	}

@@ -1415,3 +1415,60 @@ func TestDashboardSkillsRegistry(t *testing.T) {
 		t.Fatal("skill dashboard ops must stay dashboard-only")
 	}
 }
+
+func TestDashboardSettingsAndToolkits(t *testing.T) {
+	h, _, _, _ := dashboardGitHubStores(t)
+	auth := map[string]string{"Authorization": "Bearer owner-secret"}
+	csrf, cookie := dashboardCSRF(t, h)
+	mut := map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+	}
+
+	read := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/settings", "", auth)
+	if read.Code != 200 || !strings.Contains(read.Body.String(), `"source":"environment"`) {
+		t.Fatalf("get %d %s", read.Code, read.Body.String())
+	}
+
+	denied := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/settings", `{"defaultNetworkProfile":"network-none"}`, map[string]string{
+		"Authorization": "Bearer owner-secret",
+	})
+	if denied.Code != http.StatusUnauthorized && denied.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf %d %s", denied.Code, denied.Body.String())
+	}
+
+	saved := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/settings", `{"defaultNetworkProfile":"network-none"}`, mut)
+	if saved.Code != 200 || !strings.Contains(saved.Body.String(), `"source":"setting"`) {
+		t.Fatalf("save %d %s", saved.Code, saved.Body.String())
+	}
+
+	reset := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/settings", `{"defaultNetworkProfile":null}`, mut)
+	if reset.Code != 200 || !strings.Contains(reset.Body.String(), `"source":"environment"`) {
+		t.Fatalf("reset %d %s", reset.Code, reset.Body.String())
+	}
+
+	rejected := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/settings", `{"defaultNetworkProfile":"local-host"}`, mut)
+	if rejected.Code != http.StatusBadRequest {
+		t.Fatalf("local-host %d %s", rejected.Code, rejected.Body.String())
+	}
+
+	checked := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/settings/network-check", `{}`, mut)
+	if checked.Code != 200 || !strings.Contains(checked.Body.String(), `"ready":false`) {
+		t.Fatalf("check %d %s", checked.Code, checked.Body.String())
+	}
+
+	listed := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/toolkits", "", auth)
+	if listed.Code != 200 || !strings.Contains(listed.Body.String(), `"id":"mattpocock/skills"`) || strings.Contains(listed.Body.String(), `"credential":`) {
+		t.Fatalf("toolkits %d %s", listed.Code, listed.Body.String())
+	}
+
+	preview := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/toolkits/preview", `{"toolkits":[{"kind":"preset","id":"mattpocock/skills"}]}`, mut)
+	if preview.Code != 200 || !strings.Contains(preview.Body.String(), `"requestFingerprint"`) {
+		t.Fatalf("preview %d %s", preview.Code, preview.Body.String())
+	}
+
+	if protocol.OpSettingsGet.Known() || protocol.OpToolkitsList.Known() || !protocol.OpSettingsUpdate.Dashboard() {
+		t.Fatal("settings/toolkits dashboard ops must stay dashboard-only")
+	}
+}

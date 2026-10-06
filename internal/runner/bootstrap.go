@@ -147,14 +147,17 @@ func ProductionService(getenv Env) (*Service, error) {
 	}
 	docker := &sandbox.Engine{Image: image, InstanceID: instanceID}
 	cfg := Config{
-		AllowedGitHosts: csvEnv(getenv, "ALLOWED_GIT_HOSTS", "github.com"),
-		NetworkProfile:  profile,
-		IdleTTL:         durationSeconds(getenv, "WORKSPACE_IDLE_TTL_SECONDS", 5*time.Minute),
-		WallTTL:         durationSeconds(getenv, "WORKSPACE_WALL_TTL_SECONDS", 15*time.Minute),
-		InstanceID:      instanceID,
-		JobsRoot:        jobsRoot,
-		ExecutorImage:   image,
-		GitHubApp:       githubAppFromEnv(getenv),
+		AllowedGitHosts:          csvEnv(getenv, "ALLOWED_GIT_HOSTS", "github.com"),
+		NetworkProfile:           profile,
+		IdleTTL:                  durationSeconds(getenv, "WORKSPACE_IDLE_TTL_SECONDS", 5*time.Minute),
+		WallTTL:                  durationSeconds(getenv, "WORKSPACE_WALL_TTL_SECONDS", 15*time.Minute),
+		InstanceID:               instanceID,
+		JobsRoot:                 jobsRoot,
+		ExecutorImage:            image,
+		GitHubApp:                githubAppFromEnv(getenv),
+		AgentKitKeyID:            strings.TrimSpace(getenv("AGENTKIT_REGISTRY_KEY_ID")),
+		AgentKitPublicKey:        strings.TrimSpace(getenv("AGENTKIT_REGISTRY_PUBLIC_KEY")),
+		AgentKitCredentialSecret: strings.TrimSpace(getenv("AGENTKIT_REGISTRY_CREDENTIAL_SECRET")),
 	}
 	var st store.Store
 	var sqlite *store.SQLite

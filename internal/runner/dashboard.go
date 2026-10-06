@@ -52,6 +52,8 @@ func (s *Service) dashboard(ctx context.Context, req protocol.RunnerRequest) pro
 		protocol.OpSkillImportStart, protocol.OpSkillImportStatus, protocol.OpSkillImportCancel,
 		protocol.OpSkillSetList, protocol.OpSkillSetGet, protocol.OpSkillSetCreate, protocol.OpSkillSetUpdate, protocol.OpSkillSetDelete, protocol.OpSkillSetPreview:
 		return s.skillsDashboard(req)
+	case protocol.OpToolkitsList, protocol.OpToolkitsPreview, protocol.OpSettingsGet, protocol.OpSettingsUpdate, protocol.OpSettingsNetworkCheck:
+		return s.settingsDashboard(ctx, req)
 	case protocol.OpPrivilegeGrantList:
 		if s.grants == nil {
 			return protocol.Fail(protocol.ErrorUnavailable, "privilege grant store is unavailable", true)
