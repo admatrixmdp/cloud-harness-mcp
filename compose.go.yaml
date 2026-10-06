@@ -74,3 +74,9 @@ services:
     build:
       context: .
       dockerfile: docker/go-agent.Dockerfile
+
+  network-guard-image:
+    image: cloud-harness-network-guard:local
+    build:
+      context: .
+      dockerfile: docker/go-network-guard.Dockerfile

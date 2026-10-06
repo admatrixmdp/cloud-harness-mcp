@@ -10,7 +10,7 @@ patterns only — **do not copy GoClaw source into this repository**.
 ## Layout
 
 ```
-cmd/<binary>/          Cobra mains (cloud-harness-mcp, runner, ingress-proxy, provisioning-proxy, model-gateway, agent-runtime)
+cmd/<binary>/          Cobra mains (cloud-harness-mcp, runner, ingress-proxy, provisioning-proxy, model-gateway, agent-runtime, network-guard)
 internal/<pkg>/        private implementation
 pkg/protocol/          public MCP/result/id wire types (packages/contracts)
 ```
