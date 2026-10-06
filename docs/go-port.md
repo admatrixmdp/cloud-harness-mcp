@@ -80,11 +80,10 @@ tag (`go test -tags docker ./internal/sandbox`) and must not weaken host-side
 policy assertions when the daemon is unavailable.
 
 `compose.yaml` ships Go images (`docker/go-*.Dockerfile`) and distroless
-healthchecks (`--healthcheck`). Production services on a parallel Compose
-project (`cloud-harness-mcp-go`, loopback `13101`) come up healthy on those
-binaries with a 92-tool public catalog. The ChatGPT-facing stack in
-`Documents/cloud harness mcp` can remain TypeScript until that checkout is
-redeployed. `compose.go.yaml` is a no-op kept so older docs cannot inject
-ports/socket/secrets. `scripts/verify-go-compose-overlay.mjs` asserts
-production services are Go, the overlay stays empty, `gateway-test` still
-uses the TypeScript model-gateway image, and the runner accepts `INSTANCE_ID`.
+healthchecks (`--healthcheck`). The runner mounts `SECRET_KEYRING_FILE` from
+`HOST_SECRETS_ROOT` (API still blanks inherited keyring env). `compose.go.yaml`
+is a no-op kept so older docs cannot inject ports/socket/secrets.
+`scripts/verify-go-compose-overlay.mjs` asserts production services are Go,
+the overlay stays empty, `gateway-test` still uses the TypeScript
+model-gateway image, the runner accepts `INSTANCE_ID`, and the secret-keyring
+mount stays runner-only.

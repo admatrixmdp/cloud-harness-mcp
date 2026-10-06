@@ -84,6 +84,7 @@ services:
       AGENT_IMAGE: ${AGENT_IMAGE:-cloud-harness-agent:local}
       AGENT_GATEWAY_URL: http://model-gateway:3210
       AGENT_PROFILES_FILE: /run/agent-config/profiles.json
+      SECRET_KEYRING_FILE: /run/cloud-harness-secrets/secret-keyring.json
       # Scope Docker reaper labels when more than one Compose project mounts the socket.
       INSTANCE_ID: ${INSTANCE_ID:-local}
     volumes:
@@ -94,6 +95,7 @@ services:
       - ${HOST_REPO_CACHE_ROOT:-/var/lib/cloud-harness/cache/repos}:${REPO_CACHE_ROOT:-/var/lib/cloud-harness/cache/repos}
       - ${HOST_TOOLKIT_CACHE_ROOT:-/var/lib/cloud-harness/cache/toolkits}:${TOOLKIT_CACHE_ROOT:-/var/lib/cloud-harness/cache/toolkits}
       - ${AGENT_PROFILES_HOST_FILE:-./config/runner-agent-profiles.json}:/run/agent-config/profiles.json:ro
+      - ${HOST_SECRETS_ROOT:-./.cloud-harness-state/secrets}:/run/cloud-harness-secrets:ro
     networks: [control, runner-egress]
     depends_on:
       model-gateway:

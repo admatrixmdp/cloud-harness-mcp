@@ -23,6 +23,8 @@ requireBoundary(compose.includes('test: ["CMD", "/runner", "--healthcheck"]'), '
 requireBoundary(compose.includes('test: ["CMD", "/model-gateway", "--healthcheck"]'), 'compose.yaml model-gateway must use the distroless --healthcheck probe');
 requireBoundary(compose.includes('test: ["CMD", "/provisioning-proxy", "--healthcheck"]'), 'compose.yaml provisioning-proxy must use the distroless --healthcheck probe');
 requireBoundary(compose.includes('INSTANCE_ID: ${INSTANCE_ID:-local}'), 'compose.yaml runner must accept INSTANCE_ID so two socket-sharing projects cannot share a reaper label');
+requireBoundary(compose.includes('SECRET_KEYRING_FILE: /run/cloud-harness-secrets/secret-keyring.json'), 'compose.yaml runner must pin SECRET_KEYRING_FILE to the runner-only mount');
+requireBoundary(compose.includes('${HOST_SECRETS_ROOT:-./.cloud-harness-state/secrets}:/run/cloud-harness-secrets:ro'), 'compose.yaml runner must mount the host secret-keyring directory read-only');
 requireBoundary(!compose.includes('dockerfile: docker/api.Dockerfile'), 'compose.yaml must not ship the TypeScript API image');
 requireBoundary(!compose.includes('dockerfile: docker/runner.Dockerfile'), 'compose.yaml must not ship the TypeScript runner image');
 requireBoundary(!compose.includes('dockerfile: docker/executor.Dockerfile'), 'compose.yaml must not ship the TypeScript executor image');
