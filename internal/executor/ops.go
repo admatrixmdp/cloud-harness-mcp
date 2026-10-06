@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
 
@@ -30,9 +31,13 @@ type Request struct {
 
 // Workspace is a confined executor root.
 type Workspace struct {
-	Root      string
-	Container string
-	Spawn     func(args []string, extraEnv []string) (*exec.Cmd, error)
+	Root        string
+	Container   string
+	Spawn       func(args []string, extraEnv []string) (*exec.Cmd, error)
+	OwnerID     string
+	WorkspaceID string
+	BootID      string
+	TaskStore   store.TaskStore
 }
 
 func (w Workspace) root() string {

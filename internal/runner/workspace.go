@@ -104,6 +104,8 @@ type Service struct {
 	mcpStore  *mcpgw.Store
 	typesafe  *typesafe.Suggester
 	gitOps    store.GitOpStore
+	tasks     store.TaskStore
+	bootID    string
 }
 
 // WithAgents attaches the Docker subagent launcher and optional gateway control client.
@@ -188,8 +190,13 @@ func NewService(cfg Config, st store.Store, engine Engine) *Service {
 	svc.agents.exec = svc.Execute
 	if sqlite, ok := st.(*store.SQLite); ok {
 		svc.gitOps = sqlite
+		svc.tasks = sqlite
+		svc.bootID = svc.cfg.InstanceID
+		_ = sqlite.ReconcileStaleTasks(svc.bootID, 0)
 	} else {
 		svc.gitOps = &store.MemoryGitOps{}
+		svc.tasks = &store.MemoryTasks{}
+		svc.bootID = svc.cfg.InstanceID
 	}
 	return svc
 }
@@ -796,7 +803,7 @@ func (s *Service) runInteractive(ctx context.Context, req protocol.RunnerRequest
 		return *fail
 	}
 	root := filepath.Join(s.cfg.JobsRoot, rec.ID, "repo")
-	ws := executor.Workspace{Root: root}
+	ws := executor.Workspace{Root: root, OwnerID: rec.OwnerID, WorkspaceID: rec.ID, BootID: s.bootID, TaskStore: s.tasks}
 	if s.docker != nil {
 		if rec.ContainerName == "" {
 			return protocol.Fail(protocol.ErrorUnavailable, "workspace executor is unavailable", true)

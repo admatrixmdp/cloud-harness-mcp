@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
 
@@ -29,6 +30,15 @@ type taskRecord struct {
 	status      string
 	exitCode    any
 	createdAt   int64
+	startedAt   int64
+	finishedAt  int64
+	generation  int
+	ownerID     string
+	workspaceID string
+	bootID      string
+	key         string
+	logPath     string
+	durables    store.TaskStore
 	relCwd      string
 	container   string
 	spawn       func(args []string, extraEnv []string) (*exec.Cmd, error)
@@ -64,7 +74,7 @@ func taskFingerprint(command, cwd string, timeoutMs int, dependsOn []string) str
 	return hex.EncodeToString(sum[:])
 }
 
-func (h *taskHub) run(root, command, cwd, key string, timeoutMs int, dependsOn []string, container string, spawn func(args []string, extraEnv []string) (*exec.Cmd, error)) protocol.ToolResult {
+func (h *taskHub) run(root, command, cwd, key string, timeoutMs int, dependsOn []string, container string, spawn func(args []string, extraEnv []string) (*exec.Cmd, error), ownerID, workspaceID, bootID string, durables store.TaskStore) protocol.ToolResult {
 	if strings.TrimSpace(command) == "" || len(command) > 32_768 {
 		return protocol.Fail(protocol.ErrorInvalidInput, "command is required", false)
 	}
@@ -94,6 +104,15 @@ func (h *taskHub) run(root, command, cwd, key string, timeoutMs int, dependsOn [
 	}
 	fp := taskFingerprint(command, relCwd, timeoutMs, dependsOn)
 	mapKey := root + ":" + key
+	if durables != nil && workspaceID != "" {
+		if existing, ok := durables.GetTaskByKey(ownerID, workspaceID, key); ok {
+			if existing.RequestFingerprint != fp {
+				return protocol.Fail(protocol.ErrorConflict, "Idempotency key reused with different task parameters", false)
+			}
+			rec := h.hydrate(existing, root, durables)
+			return protocol.Success("Idempotent task result", rec.view())
+		}
+	}
 	h.mu.Lock()
 	if priorID, ok := h.byKey[mapKey]; ok {
 		rec := h.byID[priorID]
@@ -121,8 +140,12 @@ func (h *taskHub) run(root, command, cwd, key string, timeoutMs int, dependsOn [
 			return protocol.Fail(protocol.ErrorNotFound, "task dependency "+dep+" not found", false)
 		}
 	}
+	if bootID == "" {
+		bootID = "local"
+	}
+	id := protocol.NewOpaqueID(protocol.PrefixTask)
 	rec := &taskRecord{
-		id:          protocol.NewOpaqueID(protocol.PrefixTask),
+		id:          id,
 		root:        root,
 		command:     command,
 		cwd:         absCwd,
@@ -135,10 +158,18 @@ func (h *taskHub) run(root, command, cwd, key string, timeoutMs int, dependsOn [
 		status:      "queued",
 		exitCode:    nil,
 		createdAt:   time.Now().UnixMilli(),
+		generation:  1,
+		ownerID:     ownerID,
+		workspaceID: workspaceID,
+		bootID:      bootID,
+		key:         key,
+		logPath:     ".chm/tasks/" + id + ".log",
+		durables:    durables,
 	}
 	h.byID[rec.id] = rec
 	h.byKey[mapKey] = rec.id
 	h.mu.Unlock()
+	rec.persist(true)
 	h.reconcile(root)
 	return protocol.Success("Task started", rec.view())
 }
@@ -172,7 +203,9 @@ func (h *taskHub) reconcile(root string) {
 		if blocked {
 			rec.mu.Lock()
 			rec.status = "blocked"
+			rec.finishedAt = time.Now().UnixMilli()
 			rec.mu.Unlock()
+			rec.persist(false)
 			continue
 		}
 		if ready {
@@ -188,23 +221,29 @@ func (h *taskHub) startLocked(rec *taskRecord) {
 		return
 	}
 	rec.status = "running"
+	rec.startedAt = time.Now().UnixMilli()
 	timeout := time.Duration(rec.timeoutMs) * time.Millisecond
 	cmd, err := startTaskCmd(rec)
 	if err != nil {
 		rec.status = "failed"
 		rec.exitCode = 1
+		rec.finishedAt = time.Now().UnixMilli()
 		rec.mu.Unlock()
+		rec.persist(false)
 		return
 	}
 	cmd.Stdout = rec
 	cmd.Stderr = rec
 	rec.cmd = cmd
 	rec.mu.Unlock()
+	rec.persist(false)
 	if err := cmd.Start(); err != nil {
 		rec.mu.Lock()
 		rec.status = "failed"
 		rec.exitCode = 1
+		rec.finishedAt = time.Now().UnixMilli()
 		rec.mu.Unlock()
+		rec.persist(false)
 		return
 	}
 	go func() {
@@ -220,8 +259,10 @@ func (h *taskHub) startLocked(rec *taskRecord) {
 			if rec.status == "running" {
 				rec.status = "failed"
 				rec.exitCode = 124
+				rec.finishedAt = time.Now().UnixMilli()
 			}
 			rec.mu.Unlock()
+			rec.persist(false)
 			h.reconcile(rec.root)
 			return
 		}
@@ -237,8 +278,10 @@ func (h *taskHub) startLocked(rec *taskRecord) {
 				rec.status = "failed"
 				rec.exitCode = 1
 			}
+			rec.finishedAt = time.Now().UnixMilli()
 		}
 		rec.mu.Unlock()
+		rec.persist(false)
 		h.reconcile(rec.root)
 	}()
 }
@@ -282,12 +325,14 @@ func (h *taskHub) cancel(root, id string) protocol.ToolResult {
 	rec.mu.Lock()
 	if rec.status == "queued" || rec.status == "running" {
 		rec.status = "cancelled"
+		rec.finishedAt = time.Now().UnixMilli()
 		if rec.cmd != nil && rec.cmd.Process != nil {
 			_ = rec.cmd.Process.Kill()
 		}
 	}
 	view := rec.unlockedView()
 	rec.mu.Unlock()
+	rec.persist(false)
 	h.reconcile(root)
 	return protocol.Success("Task cancelled", view)
 }
@@ -465,8 +510,61 @@ func startTaskCmd(rec *taskRecord) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
+func (r *taskRecord) persist(insert bool) {
+	if r.durables == nil || r.workspaceID == "" {
+		return
+	}
+	r.mu.Lock()
+	var exit *int
+	if code, ok := r.exitCode.(int); ok {
+		v := code
+		exit = &v
+	}
+	rec := store.DurableTask{
+		ID: r.id, WorkspaceID: r.workspaceID, OwnerID: r.ownerID, Command: r.command, Cwd: r.relCwd,
+		Status: store.DurableStatus(r.status), IdempotencyKey: r.key, RequestFingerprint: r.fingerprint,
+		BootID: r.bootID, ExitCode: exit, TimeoutMs: r.timeoutMs, LogPath: r.logPath,
+		OutputBytes: r.buf.Len(), CreatedAt: r.createdAt, StartedAt: r.startedAt, FinishedAt: r.finishedAt,
+		Generation: r.generation, DependsOn: append([]string{}, r.dependsOn...),
+	}
+	r.mu.Unlock()
+	if insert {
+		_ = r.durables.PutTask(rec)
+		return
+	}
+	if r.durables.UpdateTask(rec) {
+		r.mu.Lock()
+		r.generation++
+		r.mu.Unlock()
+	}
+}
+
+func (h *taskHub) hydrate(row store.DurableTask, root string, durables store.TaskStore) *taskRecord {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if existing := h.byID[row.ID]; existing != nil {
+		return existing
+	}
+	rec := &taskRecord{
+		id: row.ID, root: root, command: row.Command, relCwd: row.Cwd, timeoutMs: row.TimeoutMs,
+		dependsOn: append([]string{}, row.DependsOn...), fingerprint: row.RequestFingerprint,
+		status: store.LiveStatus(row.Status), createdAt: row.CreatedAt, startedAt: row.StartedAt,
+		finishedAt: row.FinishedAt, generation: row.Generation, ownerID: row.OwnerID,
+		workspaceID: row.WorkspaceID, bootID: row.BootID, key: row.IdempotencyKey,
+		logPath: row.LogPath, durables: durables,
+	}
+	if row.ExitCode != nil {
+		rec.exitCode = *row.ExitCode
+	}
+	h.byID[rec.id] = rec
+	if row.IdempotencyKey != "" {
+		h.byKey[root+":"+row.IdempotencyKey] = rec.id
+	}
+	return rec
+}
+
 func (w Workspace) tasksRun(in pathInput) protocol.ToolResult {
-	return tasks.run(w.root(), in.Command, in.Cwd, in.IdempotencyKey, in.TimeoutMs, in.DependsOn, w.Container, w.Spawn)
+	return tasks.run(w.root(), in.Command, in.Cwd, in.IdempotencyKey, in.TimeoutMs, in.DependsOn, w.Container, w.Spawn, w.OwnerID, w.WorkspaceID, w.BootID, w.TaskStore)
 }
 
 func (w Workspace) tasksStatus(in pathInput) protocol.ToolResult {
