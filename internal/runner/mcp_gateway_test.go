@@ -88,7 +88,7 @@ func replaceTool(t *testing.T, svc *Service, owner, serverID, upstream, perm str
 }
 
 func TestInternalGatewayOpsStayOffPublicCatalog(t *testing.T) {
-	if protocol.OpMCPGatewayCatalog.Known() || protocol.OpMCPServerGetCredentials.Known() || protocol.OpMCPGatewayTraceAppend.Known() || protocol.OpMCPGatewayTraceList.Known() {
+	if protocol.OpMCPGatewayCatalog.Known() || protocol.OpMCPServerGetCredentials.Known() || protocol.OpMCPGatewayTraceAppend.Known() || protocol.OpMCPGatewayTraceList.Known() || protocol.OpMCPServerConnectionResult.Known() {
 		t.Fatal("internal MCP gateway ops must not be public /mcp tools")
 	}
 	if protocol.OpMCPServerList.Known() || protocol.OpMCPServerGet.Known() || protocol.OpMCPServerUpdate.Known() || protocol.OpMCPServerDelete.Known() || protocol.OpMCPServerSetEnabled.Known() {
@@ -187,6 +187,33 @@ func TestDashboardMCPServerLifecycle(t *testing.T) {
 	})
 	if missing.OK || missing.Error == nil || missing.Error.Code != protocol.ErrorNotFound {
 		t.Fatalf("deleted get: %+v", missing)
+	}
+}
+
+func TestDashboardMCPConnectionResult(t *testing.T) {
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)
+	id := seedGateway(t, svc, "owner-a", "github", "https://example.com/mcp", "allow", map[string]string{"authorization": "Bearer super-secret-token"})
+	got := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner-a", Operation: protocol.OpMCPServerConnectionResult,
+		Input: json.RawMessage(`{"serverId":"` + id + `","status":"error","error":"Authorization: Bearer super-secret-token refused"}`),
+	})
+	if !got.OK {
+		t.Fatalf("%+v", got)
+	}
+	data := got.Data.(map[string]any)
+	errText, _ := data["lastError"].(string)
+	if strings.Contains(errText, "super-secret-token") {
+		t.Fatalf("secret leaked in lastError %q", errText)
+	}
+	if data["status"] != "error" || !strings.Contains(errText, "[REDACTED]") {
+		t.Fatalf("%+v", data)
+	}
+	missing := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner-a", Operation: protocol.OpMCPServerConnectionResult,
+		Input: json.RawMessage(`{"serverId":"mcps_` + strings.Repeat("z", 24) + `","status":"error","error":"nope"}`),
+	})
+	if missing.OK || missing.Error == nil || missing.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("missing %+v", missing)
 	}
 }
 

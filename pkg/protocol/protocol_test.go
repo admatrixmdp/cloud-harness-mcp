@@ -28,6 +28,9 @@ func TestAllOperationsMatchCatalogCount(t *testing.T) {
 	if !OpMCPServerSetPermissions.Internal() || OpMCPServerSetPermissions.Known() {
 		t.Fatal("mcp_server_set_permissions must be runner-internal, not a public /mcp tool")
 	}
+	if !OpMCPServerConnectionResult.Internal() || OpMCPServerConnectionResult.Known() || OpMCPServerConnectionResult.Dashboard() {
+		t.Fatal("mcp_server_connection_result must be runner-internal, not a public /mcp tool")
+	}
 	if !OpMCPGatewayTraceAppend.Internal() || OpMCPGatewayTraceAppend.Known() || !OpMCPGatewayTraceList.Internal() || OpMCPGatewayTraceList.Known() {
 		t.Fatal("mcp_gateway_trace_* must be runner-internal, not a public /mcp tool")
 	}

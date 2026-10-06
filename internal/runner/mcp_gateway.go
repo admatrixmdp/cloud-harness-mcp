@@ -107,6 +107,8 @@ func (h *mcpGatewayHub) handle(req protocol.RunnerRequest) protocol.ToolResult {
 		return h.replaceTools(principal, req.Input)
 	case protocol.OpMCPServerSetPermissions:
 		return h.setPermissions(principal, req.Input)
+	case protocol.OpMCPServerConnectionResult:
+		return h.recordConnectionResult(principal, req.Input)
 	case protocol.OpMCPGatewayTraceAppend:
 		return h.appendTrace(principal, req.Input)
 	case protocol.OpMCPGatewayTraceList:
@@ -351,6 +353,53 @@ func (h *mcpGatewayHub) replaceTools(principal string, raw json.RawMessage) prot
 		out = append(out, toolView(rec, tool))
 	}
 	return protocol.Success("MCP tools replaced", map[string]any{"tools": out, "toolCount": len(in.Tools)})
+}
+
+func validGatewayStatus(status string) bool {
+	switch status {
+	case "unknown", "connected", "connecting", "disconnected", "error", "disabled":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *mcpGatewayHub) recordConnectionResult(principal string, raw json.RawMessage) protocol.ToolResult {
+	var in struct {
+		ServerID string  `json:"serverId"`
+		Status   string  `json:"status"`
+		Error    *string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid connection result input", false)
+	}
+	if !protocol.ValidOpaqueID(protocol.PrefixMCPServer, in.ServerID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "serverId is required", false)
+	}
+	status := strings.TrimSpace(in.Status)
+	if !validGatewayStatus(status) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "status is invalid", false)
+	}
+	now := time.Now().UnixMilli()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rec := h.byID[in.ServerID]
+	if rec == nil || rec.PrincipalID != principal {
+		return protocol.Fail(protocol.ErrorConflict, "resource generation changed or resource is unavailable", false)
+	}
+	rec.Status = status
+	rec.LastCheckedAt = now
+	if status == "connected" {
+		rec.LastConnectedAt = now
+		rec.LastError = ""
+	} else if in.Error != nil {
+		rec.LastError = mcpgw.ScrubCredentialText(*in.Error, nil)
+		if len(rec.LastError) > 500 {
+			rec.LastError = rec.LastError[:500]
+		}
+	}
+	rec.UpdatedAt = now
+	return protocol.Success("MCP connection result recorded", serverView(rec))
 }
 
 func (h *mcpGatewayHub) setPermissions(principal string, raw json.RawMessage) protocol.ToolResult {

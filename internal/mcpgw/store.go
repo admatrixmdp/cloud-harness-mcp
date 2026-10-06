@@ -156,6 +156,8 @@ func (s *Store) Handle(req protocol.RunnerRequest) protocol.ToolResult {
 		return s.replaceTools(principal, req.Input)
 	case protocol.OpMCPServerSetPermissions:
 		return s.setPermissions(principal, req.Input)
+	case protocol.OpMCPServerConnectionResult:
+		return s.recordConnectionResult(principal, req.Input)
 	case protocol.OpMCPGatewayTraceAppend:
 		return s.appendTrace(principal, req.Input)
 	case protocol.OpMCPGatewayTraceList:
@@ -215,6 +217,12 @@ type credentialsInput struct {
 	ServerID string `json:"serverId"`
 	ToolName string `json:"toolName"`
 	Purpose  string `json:"purpose"`
+}
+
+type connectionResultInput struct {
+	ServerID string  `json:"serverId"`
+	Status   string  `json:"status"`
+	Error    *string `json:"error"`
 }
 
 type setPermissionsInput struct {
@@ -422,6 +430,55 @@ func (s *Store) replaceTools(principal string, raw json.RawMessage) protocol.Too
 		return protocol.Fail(protocol.ErrorInternal, err.Error(), true)
 	}
 	return protocol.Success("MCP tools replaced", map[string]any{"tools": tools, "toolCount": len(in.Tools)})
+}
+
+func validGatewayStatus(status string) bool {
+	switch status {
+	case "unknown", "connected", "connecting", "disconnected", "error", "disabled":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Store) recordConnectionResult(principal string, raw json.RawMessage) protocol.ToolResult {
+	var in connectionResultInput
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, "invalid connection result input", false)
+	}
+	if !protocol.ValidOpaqueID(protocol.PrefixMCPServer, in.ServerID) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "serverId is required", false)
+	}
+	status := strings.TrimSpace(in.Status)
+	if !validGatewayStatus(status) {
+		return protocol.Fail(protocol.ErrorInvalidInput, "status is invalid", false)
+	}
+	rec, err := s.loadServer(principal, in.ServerID)
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), true)
+	}
+	if rec == nil {
+		return protocol.Fail(protocol.ErrorConflict, "resource generation changed or resource is unavailable", false)
+	}
+	now := time.Now().UnixMilli()
+	var lastErr any
+	if in.Error != nil && strings.TrimSpace(*in.Error) != "" {
+		lastErr = scrubStoredError(*in.Error, nil)
+	}
+	if _, err := s.db.Exec(`UPDATE mcp_gateway_servers
+		SET status = ?, last_error = ?, last_checked_at = ?,
+		    last_connected_at = CASE WHEN ? = 'connected' THEN ? ELSE last_connected_at END,
+		    updated_at = ?
+		WHERE principal_id = ? AND id = ? AND state = 'ACTIVE'`,
+		status, lastErr, now, status, now, now, principal, in.ServerID); err != nil {
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), true)
+	}
+	updated, err := s.loadServer(principal, in.ServerID)
+	if err != nil || updated == nil {
+		return protocol.Fail(protocol.ErrorInternal, "MCP connection result did not persist", true)
+	}
+	count, _ := s.toolCount(principal, in.ServerID)
+	return protocol.Success("MCP connection result recorded", serverView(*updated, count, nil))
 }
 
 func (s *Store) setPermissions(principal string, raw json.RawMessage) protocol.ToolResult {

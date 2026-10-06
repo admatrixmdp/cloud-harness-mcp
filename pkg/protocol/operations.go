@@ -113,13 +113,14 @@ const (
 	OpAgentList    Operation = "agent_list"
 
 	// Internal runner RPC for /mcp-gateway. Never listed on public /mcp.
-	OpMCPGatewayCatalog       Operation = "mcp_gateway_catalog"
-	OpMCPServerGetCredentials Operation = "mcp_server_get_credentials"
-	OpMCPServerCreate         Operation = "mcp_server_create"
-	OpMCPServerReplaceTools   Operation = "mcp_server_replace_tools"
-	OpMCPServerSetPermissions Operation = "mcp_server_set_permissions"
-	OpMCPGatewayTraceAppend   Operation = "mcp_gateway_trace_append"
-	OpMCPGatewayTraceList     Operation = "mcp_gateway_trace_list"
+	OpMCPGatewayCatalog         Operation = "mcp_gateway_catalog"
+	OpMCPServerGetCredentials   Operation = "mcp_server_get_credentials"
+	OpMCPServerCreate           Operation = "mcp_server_create"
+	OpMCPServerReplaceTools     Operation = "mcp_server_replace_tools"
+	OpMCPServerSetPermissions   Operation = "mcp_server_set_permissions"
+	OpMCPServerConnectionResult Operation = "mcp_server_connection_result"
+	OpMCPGatewayTraceAppend     Operation = "mcp_gateway_trace_append"
+	OpMCPGatewayTraceList       Operation = "mcp_gateway_trace_list"
 
 	// Dashboard-only runner RPCs. Never listed on public /mcp.
 	OpPrivilegeGrantList    Operation = "privilege_grant_list"
@@ -305,7 +306,7 @@ func (op Operation) Known() bool {
 // Internal reports whether op is a runner-only MCP-gateway RPC.
 func (op Operation) Internal() bool {
 	switch op {
-	case OpMCPGatewayCatalog, OpMCPServerGetCredentials, OpMCPServerCreate, OpMCPServerReplaceTools, OpMCPServerSetPermissions, OpMCPGatewayTraceAppend, OpMCPGatewayTraceList:
+	case OpMCPGatewayCatalog, OpMCPServerGetCredentials, OpMCPServerCreate, OpMCPServerReplaceTools, OpMCPServerSetPermissions, OpMCPServerConnectionResult, OpMCPGatewayTraceAppend, OpMCPGatewayTraceList:
 		return true
 	default:
 		return false

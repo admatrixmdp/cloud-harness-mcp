@@ -116,3 +116,27 @@ func TestCredentialsStayOnConfiguredPath(t *testing.T) {
 		t.Fatal("credential attached to non-endpoint path")
 	}
 }
+
+func TestListToolsPostsToolsList(t *testing.T) {
+	var method string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var rpc map[string]any
+		_ = json.Unmarshal(raw, &rpc)
+		method, _ = rpc["method"].(string)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0", "id": 1,
+			"result": map[string]any{"tools": []map[string]any{{"name": "issue_create", "description": "create"}}},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	endpoint, _ := url.Parse(srv.URL)
+	client := DownstreamClient{Endpoint: endpoint, HTTP: srv.Client()}
+	tools, fail, ok := client.ListTools(t.Context())
+	if !ok {
+		t.Fatalf("%+v", fail)
+	}
+	if method != "tools/list" || len(tools) != 1 || tools[0].Name != "issue_create" {
+		t.Fatalf("method %q tools %+v", method, tools)
+	}
+}

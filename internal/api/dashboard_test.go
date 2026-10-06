@@ -57,6 +57,10 @@ func dashboardStores(t *testing.T) (http.Handler, *grants.Store, *audit.Store) {
 }
 
 func dashboardGitHubStores(t *testing.T) (http.Handler, *grants.Store, *audit.Store, *githubapp.Store) {
+	return dashboardGitHubStoresWith(t, nil)
+}
+
+func dashboardGitHubStoresWith(t *testing.T, tweak func(*Options)) (http.Handler, *grants.Store, *audit.Store, *githubapp.Store) {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "grants.sqlite"))
 	if err != nil {
@@ -121,7 +125,7 @@ func dashboardGitHubStores(t *testing.T) (http.Handler, *grants.Store, *audit.St
 		WithGitHub(gh, stubGitHubVerifier{}).WithMetadata(meta).WithSecrets(sec).WithModels(modelStore).WithSkills(skillStore).WithIntegrations(intStore)
 	inner := httptest.NewServer(runner.Handler(runner.Options{Service: svc}))
 	t.Cleanup(inner.Close)
-	h := Handler(Options{
+	opts := Options{
 		BearerToken: "owner-secret",
 		OwnerID:     "owner",
 		Runner:      &mcp.RunnerClient{BaseURL: inner.URL, OwnerID: "owner"},
@@ -129,7 +133,11 @@ func dashboardGitHubStores(t *testing.T) (http.Handler, *grants.Store, *audit.St
 		MCPGatewayResolve: func(string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP("93.184.216.34")}, nil
 		},
-	})
+	}
+	if tweak != nil {
+		tweak(&opts)
+	}
+	h := Handler(opts)
 	return h, store, aud, gh
 }
 
@@ -1613,5 +1621,74 @@ func TestDashboardSkillArchiveUpload(t *testing.T) {
 	}
 	if protocol.OpSkillArchiveImport.Known() || !protocol.OpSkillArchiveImport.Dashboard() {
 		t.Fatal("skill_archive_import must stay dashboard-only")
+	}
+}
+
+func TestDashboardMCPProbeTestAndRefresh(t *testing.T) {
+	downstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&map[string]any{})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0", "id": 1,
+			"result": map[string]any{"tools": []map[string]any{{"name": "issue_create", "description": "create"}}},
+		})
+	}))
+	t.Cleanup(downstream.Close)
+	h, _, _, _ := dashboardGitHubStoresWith(t, func(opts *Options) {
+		opts.MCPGatewayAllowInsecureHTTP = true
+		opts.MCPGatewayAllowPrivateEndpoints = true
+	})
+	csrf, cookie := dashboardCSRF(t, h)
+	mut := map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+	}
+
+	info := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/mcp-gateway", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if info.Code != 200 || !strings.Contains(info.Body.String(), `"endpoint":"/mcp-gateway"`) || !strings.Contains(info.Body.String(), "https://dashboard.example/mcp-gateway") {
+		t.Fatalf("gateway info %d %s", info.Code, info.Body.String())
+	}
+
+	created := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/mcp-servers", `{"name":"github","transport":"streamable-http","endpoint":"`+downstream.URL+`/mcp","headers":[{"name":"Authorization","value":"Bearer probe-secret-token"}],"permissionDefault":"deny","enabled":true,"expectedGeneration":0}`, mut)
+	if created.Code != 200 {
+		t.Fatalf("create %d %s", created.Code, created.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+
+	denied := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/mcp-servers/"+envelope.Data.ID+"/test", `{}`, map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Content-Type":  "application/json",
+	})
+	if denied.Code != http.StatusUnauthorized && denied.Code != http.StatusForbidden {
+		t.Fatalf("csrf %d %s", denied.Code, denied.Body.String())
+	}
+
+	tested := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/mcp-servers/"+envelope.Data.ID+"/test", `{}`, mut)
+	if tested.Code != 200 || !strings.Contains(tested.Body.String(), `"status":"connected"`) || strings.Contains(tested.Body.String(), "probe-secret-token") {
+		t.Fatalf("test %d %s", tested.Code, tested.Body.String())
+	}
+	if !strings.Contains(tested.Body.String(), `"toolCount":1`) {
+		t.Fatalf("tool count %s", tested.Body.String())
+	}
+
+	refreshed := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/mcp-servers/"+envelope.Data.ID+"/refresh", `{}`, mut)
+	if refreshed.Code != 200 || !strings.Contains(refreshed.Body.String(), `"status":"connected"`) {
+		t.Fatalf("refresh %d %s", refreshed.Code, refreshed.Body.String())
+	}
+
+	missing := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/mcp-servers/mcps_"+strings.Repeat("z", 24)+"/test", `{}`, mut)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing %d %s", missing.Code, missing.Body.String())
+	}
+
+	if protocol.OpMCPServerConnectionResult.Known() || !protocol.OpMCPServerConnectionResult.Internal() {
+		t.Fatal("mcp_server_connection_result must stay runner-internal")
 	}
 }

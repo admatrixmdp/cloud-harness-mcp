@@ -239,6 +239,7 @@ func dashboardHandler(opts Options, sessions *Sessions) http.Handler {
 		delete(body, "default")
 		proxyDashboard(w, r, opts.Runner, protocol.OpMCPServerSetPermissions, mergeServerID(body, serverID))
 	})))))
+	registerDashboardMCPProbe(mux, opts, sessions)
 	mux.Handle("GET /api/v1/audit", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxyDashboard(w, r, opts.Runner, protocol.OpAuditList, pageQuery(r))
 	})))
@@ -639,6 +640,8 @@ func projectDashboard(op protocol.Operation, data any) any {
 		}
 	case protocol.OpMCPServerCreate, protocol.OpMCPServerUpdate, protocol.OpMCPServerSetEnabled, protocol.OpMCPServerSetPermissions, protocol.OpMCPServerDelete:
 		return projectMCPServer(obj)
+	case protocol.OpMCPServerConnectionResult:
+		return projectMCPConnection(obj)
 	case protocol.OpMCPGatewayTraceList:
 		return map[string]any{"traces": projectObjects(obj["traces"], "id", "serverId", "serverName", "tool", "operation", "clientId", "durationMs", "status", "errorCode", "errorMessage", "requestBytes", "responseBytes", "createdAt")}
 	case protocol.OpAuditList:

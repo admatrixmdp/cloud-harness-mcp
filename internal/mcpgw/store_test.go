@@ -84,6 +84,47 @@ func TestStorePersistsCatalogAndPermissions(t *testing.T) {
 	}
 }
 
+func TestStoreRecordsConnectionResultWithoutLeakingSecrets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcpgw.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	create, _ := json.Marshal(map[string]any{
+		"name": "github", "transport": "streamable-http", "endpoint": "https://example.com/mcp",
+		"headers":           []map[string]any{{"name": "authorization", "value": "Bearer persist-token"}},
+		"permissionDefault": "deny", "enabled": true, "expectedGeneration": 0,
+	})
+	created := store.Handle(protocol.RunnerRequest{Version: 2, OwnerID: "owner-a", Operation: protocol.OpMCPServerCreate, Input: create})
+	if !created.OK {
+		t.Fatalf("create: %+v", created)
+	}
+	id := created.Data.(map[string]any)["id"].(string)
+	raw, _ := json.Marshal(map[string]any{
+		"serverId": id, "status": "error", "error": "Authorization: Bearer persist-token refused",
+	})
+	got := store.Handle(protocol.RunnerRequest{Version: 2, OwnerID: "owner-a", Operation: protocol.OpMCPServerConnectionResult, Input: raw})
+	if !got.OK {
+		t.Fatalf("%+v", got)
+	}
+	data := got.Data.(map[string]any)
+	errText, _ := data["lastError"].(string)
+	if strings.Contains(errText, "persist-token") {
+		t.Fatalf("secret leaked in lastError %q", errText)
+	}
+	if data["status"] != "error" || !strings.Contains(errText, "[REDACTED]") {
+		t.Fatalf("%+v", data)
+	}
+	if protocol.OpMCPServerConnectionResult.Known() || !protocol.OpMCPServerConnectionResult.Internal() {
+		t.Fatal("mcp_server_connection_result must stay runner-internal")
+	}
+}
+
 func TestStorePersistsTracesAndScrubsSecrets(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mcpgw.sqlite")
 	db, err := sql.Open("sqlite", path)

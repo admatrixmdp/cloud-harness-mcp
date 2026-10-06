@@ -87,28 +87,31 @@ func attachHeaders(req *http.Request, endpoint *url.URL, headers map[string]stri
 	}
 }
 
-// Call posts one MCP tools/call. Denied tools never reach this client.
-func (c DownstreamClient) Call(ctx context.Context, tool string, arguments map[string]any) protocol.ToolResult {
+type rpcEnvelope struct {
+	Result json.RawMessage `json:"result"`
+	Error  *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func (c DownstreamClient) postRPC(ctx context.Context, method string, params map[string]any) (rpcEnvelope, string, protocol.ToolResult, bool) {
 	if c.Endpoint == nil {
-		return protocol.Fail(protocol.ErrorUnavailable, "downstream MCP execute is not wired in this Go-port slice", true)
-	}
-	if arguments == nil {
-		arguments = map[string]any{}
+		return rpcEnvelope{}, "", protocol.Fail(protocol.ErrorUnavailable, "downstream MCP execute is not wired in this Go-port slice", true), false
 	}
 	payload, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
-		"method":  "tools/call",
-		"params":  map[string]any{"name": tool, "arguments": arguments},
+		"method":  method,
+		"params":  params,
 	})
 	if err != nil {
-		return protocol.Fail(protocol.ErrorInternal, "failed to encode downstream call", false)
+		return rpcEnvelope{}, "", protocol.Fail(protocol.ErrorInternal, "failed to encode downstream call", false), false
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout())
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Endpoint.String(), bytes.NewReader(payload))
 	if err != nil {
-		return protocol.Fail(protocol.ErrorUnavailable, "downstream MCP is unavailable", true)
+		return rpcEnvelope{}, "", protocol.Fail(protocol.ErrorUnavailable, "downstream MCP is unavailable", true), false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	attachHeaders(req, c.Endpoint, c.Headers)
@@ -116,30 +119,37 @@ func (c DownstreamClient) Call(ctx context.Context, tool string, arguments map[s
 	if err != nil {
 		msg := sanitizeText(err.Error(), secretsFrom(c.Headers))
 		if strings.Contains(err.Error(), redirectRefused) || (strings.Contains(msg, "redirect") && strings.Contains(msg, "refused")) {
-			return protocol.Fail(protocol.ErrorUnavailable, redirectRefused, false)
+			return rpcEnvelope{}, "", protocol.Fail(protocol.ErrorUnavailable, redirectRefused, false), false
 		}
-		return protocol.Fail(protocol.ErrorUnavailable, "downstream MCP is unavailable", true)
+		return rpcEnvelope{}, msg, protocol.Fail(protocol.ErrorUnavailable, "downstream MCP is unavailable", true), false
 	}
 	defer res.Body.Close()
 	if res.StatusCode >= 300 && res.StatusCode < 400 {
-		return protocol.Fail(protocol.ErrorUnavailable, redirectRefused, false)
+		return rpcEnvelope{}, "", protocol.Fail(protocol.ErrorUnavailable, redirectRefused, false), false
 	}
 	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
-		return protocol.Fail(protocol.ErrorUnavailable, "downstream MCP is unavailable", true)
+		return rpcEnvelope{}, "", protocol.Fail(protocol.ErrorUnavailable, "downstream MCP is unavailable", true), false
 	}
 	redacted := sanitizeText(string(raw), secretsFrom(c.Headers))
-	var rpc struct {
-		Result json.RawMessage `json:"result"`
-		Error  *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
+	var rpc rpcEnvelope
 	if err := json.Unmarshal([]byte(redacted), &rpc); err != nil {
-		return protocol.Fail(protocol.ErrorUnavailable, "downstream MCP returned an invalid envelope", true)
+		return rpcEnvelope{}, redacted, protocol.Fail(protocol.ErrorUnavailable, "downstream MCP returned an invalid envelope", true), false
 	}
 	if rpc.Error != nil {
-		return protocol.Fail(protocol.ErrorExecutionFailed, sanitizeText(rpc.Error.Message, secretsFrom(c.Headers)), false)
+		return rpc, redacted, protocol.Fail(protocol.ErrorExecutionFailed, sanitizeText(rpc.Error.Message, secretsFrom(c.Headers)), false), false
+	}
+	return rpc, redacted, protocol.ToolResult{}, true
+}
+
+// Call posts one MCP tools/call. Denied tools never reach this client.
+func (c DownstreamClient) Call(ctx context.Context, tool string, arguments map[string]any) protocol.ToolResult {
+	if arguments == nil {
+		arguments = map[string]any{}
+	}
+	rpc, redacted, fail, ok := c.postRPC(ctx, "tools/call", map[string]any{"name": tool, "arguments": arguments})
+	if !ok {
+		return fail
 	}
 	var result protocol.ToolResult
 	if len(rpc.Result) > 0 {
@@ -148,4 +158,32 @@ func (c DownstreamClient) Call(ctx context.Context, tool string, arguments map[s
 		}
 	}
 	return protocol.Success("downstream tool result", map[string]any{"raw": json.RawMessage(redacted)})
+}
+
+// UpstreamTool is the subset of a downstream tools/list row the probe reads.
+type UpstreamTool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema any            `json:"inputSchema"`
+	Annotations map[string]any `json:"annotations"`
+}
+
+// ListTools posts one MCP tools/list. Credentials attach only to the configured origin.
+func (c DownstreamClient) ListTools(ctx context.Context) ([]UpstreamTool, protocol.ToolResult, bool) {
+	rpc, _, fail, ok := c.postRPC(ctx, "tools/list", map[string]any{})
+	if !ok {
+		return nil, fail, false
+	}
+	var listed struct {
+		Tools []UpstreamTool `json:"tools"`
+	}
+	if len(rpc.Result) > 0 {
+		if err := json.Unmarshal(rpc.Result, &listed); err != nil {
+			return nil, protocol.Fail(protocol.ErrorUnavailable, "downstream MCP returned an invalid envelope", true), false
+		}
+	}
+	if listed.Tools == nil {
+		listed.Tools = []UpstreamTool{}
+	}
+	return listed.Tools, protocol.ToolResult{}, true
 }

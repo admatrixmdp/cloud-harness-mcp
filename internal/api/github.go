@@ -80,6 +80,13 @@ func projectGitHubStatus(obj map[string]any) map[string]any {
 
 func dashboardMessageFor(op protocol.Operation, code protocol.ErrorCode) string {
 	switch op {
+	case protocol.OpMCPServerConnectionResult:
+		if code == protocol.ErrorNotFound || code == protocol.ErrorForbidden {
+			return "unknown or inaccessible MCP server"
+		}
+		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
+			return "The MCP gateway is temporarily unavailable."
+		}
 	case protocol.OpGitHubStatus, protocol.OpGitHubSetupBegin:
 		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
 			return githubUnavailable
