@@ -143,6 +143,12 @@ const (
 	OpKnowledgeDashboardGraph      Operation = "knowledge_dashboard_graph"
 	OpKnowledgeDashboardLinkCreate Operation = "knowledge_dashboard_link_create"
 	OpKnowledgeDashboardLinkDelete Operation = "knowledge_dashboard_link_delete"
+
+	OpArtifactList     Operation = "artifact_list"
+	OpArtifactSnapshot Operation = "artifact_snapshot"
+	OpArtifactRead     Operation = "artifact_read"
+	OpArtifactRestore  Operation = "artifact_restore"
+	OpArtifactDelete   Operation = "artifact_delete"
 )
 
 // AllOperations is the ordered public MCP tool catalog from RunnerOperationSchema.
@@ -231,7 +237,8 @@ func (op Operation) Dashboard() bool {
 		OpMCPServerList, OpMCPServerGet, OpMCPServerUpdate, OpMCPServerDelete, OpMCPServerSetEnabled,
 		OpKnowledgeDashboardList, OpKnowledgeDashboardGet, OpKnowledgeDashboardCreate, OpKnowledgeDashboardUpdate,
 		OpKnowledgeDashboardDelete, OpKnowledgeDashboardSearch, OpKnowledgeDashboardGraph,
-		OpKnowledgeDashboardLinkCreate, OpKnowledgeDashboardLinkDelete:
+		OpKnowledgeDashboardLinkCreate, OpKnowledgeDashboardLinkDelete,
+		OpArtifactList, OpArtifactSnapshot, OpArtifactRead, OpArtifactRestore, OpArtifactDelete:
 		return true
 	default:
 		return false

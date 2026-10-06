@@ -52,6 +52,12 @@ func TestAllOperationsMatchCatalogCount(t *testing.T) {
 	if !OpKnowledgeDashboardList.Dashboard() || OpKnowledgeDashboardList.Known() || OpKnowledgeDashboardCreate.Internal() {
 		t.Fatal("knowledge_dashboard_* must be dashboard-only, not public knowledge_* tools")
 	}
+	if !OpArtifactList.Dashboard() || OpArtifactList.Known() || OpArtifactList.Internal() || OpArtifactsList.Dashboard() {
+		t.Fatal("artifact_list must be dashboard-only; public artifacts_list stays on /mcp")
+	}
+	if !OpArtifactSnapshot.Dashboard() || OpArtifactRead.Known() || OpArtifactRestore.Internal() || OpArtifactDelete.Known() {
+		t.Fatal("artifact_snapshot/read/restore/delete must be dashboard-only")
+	}
 }
 
 func TestOperationJSONIsBareString(t *testing.T) {

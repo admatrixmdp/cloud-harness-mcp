@@ -233,6 +233,125 @@ func dashboardHandler(opts Options, sessions *Sessions) http.Handler {
 		delete(body, "default")
 		proxyDashboard(w, r, opts.Runner, protocol.OpMCPServerSetPermissions, mergeServerID(body, serverID))
 	})))))
+	mux.Handle("GET /api/v1/artifacts", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyDashboard(w, r, opts.Runner, protocol.OpArtifactList, pageQuery(r))
+	})))
+	mux.Handle("POST /api/v1/artifacts", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpArtifactSnapshot, body)
+	})))))
+	mux.Handle("GET /api/v1/artifacts/{artifactId}/download", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		downloadArtifact(w, r, opts.Runner)
+	})))
+	mux.Handle("GET /api/v1/artifacts/{artifactId}", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		artifactID, ok := requireArtifactID(w, r)
+		if !ok {
+			return
+		}
+		input := map[string]any{"artifactId": artifactID}
+		if offset := queryInt(r, "offset"); offset > 0 {
+			input["offset"] = offset
+		}
+		if limit := queryInt(r, "limit"); limit > 0 {
+			input["limit"] = limit
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpArtifactRead, input)
+	})))
+	mux.Handle("POST /api/v1/artifacts/{artifactId}/restore", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		artifactID, ok := requireArtifactID(w, r)
+		if !ok {
+			return
+		}
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		body["artifactId"] = artifactID
+		proxyDashboard(w, r, opts.Runner, protocol.OpArtifactRestore, body)
+	})))))
+	mux.Handle("DELETE /api/v1/artifacts/{artifactId}", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		artifactID, ok := requireArtifactID(w, r)
+		if !ok {
+			return
+		}
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		body["artifactId"] = artifactID
+		proxyDashboard(w, r, opts.Runner, protocol.OpArtifactDelete, body)
+	})))))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/artifacts", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		listWorkspaceArtifacts(w, r, opts.Runner)
+	})))
+	mux.Handle("GET /api/v1/agents", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		listDashboardAgents(w, r, opts.Runner)
+	})))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/agents", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		input := map[string]any{"workspaceId": r.PathValue("workspaceId")}
+		if status := r.URL.Query().Get("status"); status != "" {
+			input["status"] = status
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpAgentList, input)
+	})))
+	mux.Handle("GET /api/v1/agents/{agentId}/logs", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		agentID, ok := requireAgentID(w, r)
+		if !ok {
+			return
+		}
+		input := map[string]any{"agentId": agentID}
+		if workspaceID := r.URL.Query().Get("workspaceId"); workspaceID != "" {
+			input["workspaceId"] = workspaceID
+		}
+		if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+			input["cursor"] = cursor
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpAgentLogs, input)
+	})))
+	mux.Handle("GET /api/v1/agents/{agentId}", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		agentID, ok := requireAgentID(w, r)
+		if !ok {
+			return
+		}
+		input := map[string]any{"agentId": agentID}
+		if workspaceID := r.URL.Query().Get("workspaceId"); workspaceID != "" {
+			input["workspaceId"] = workspaceID
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpAgentStatus, input)
+	})))
+	mux.Handle("POST /api/v1/agents/{agentId}/messages", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		agentID, ok := requireAgentID(w, r)
+		if !ok {
+			return
+		}
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		body["agentId"] = agentID
+		proxyDashboard(w, r, opts.Runner, protocol.OpAgentMessage, body)
+	})))))
+	mux.Handle("POST /api/v1/agents/{agentId}/cancel", sessions.verify(requirePrincipal(requireJSON(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		agentID, ok := requireAgentID(w, r)
+		if !ok {
+			return
+		}
+		body, ok := decodeMutation(w, r)
+		if !ok {
+			return
+		}
+		body["agentId"] = agentID
+		proxyDashboard(w, r, opts.Runner, protocol.OpAgentCancel, body)
+	})))))
+	mux.Handle("GET /api/v1/activity", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeActivity(w, r, opts.Runner, "")
+	})))
+	mux.Handle("GET /api/v1/workspaces/{workspaceId}/activity", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeActivity(w, r, opts.Runner, r.PathValue("workspaceId"))
+	})))
 	return dashboardSecurity(opts.Security, mux)
 }
 
@@ -382,6 +501,33 @@ func projectDashboard(op protocol.Operation, data any) any {
 		return projectMCPServer(obj)
 	case protocol.OpMCPGatewayTraceList:
 		return map[string]any{"traces": projectObjects(obj["traces"], "id", "serverId", "serverName", "tool", "operation", "clientId", "durationMs", "status", "errorCode", "errorMessage", "requestBytes", "responseBytes", "createdAt")}
+	case protocol.OpArtifactList:
+		return map[string]any{"artifacts": projectObjects(obj["artifacts"], artifactKeys...)}
+	case protocol.OpArtifactSnapshot, protocol.OpArtifactDelete:
+		return pickKeys(obj, artifactKeys...)
+	case protocol.OpArtifactRead:
+		return pickKeys(obj, "artifactId", "logicalName", "offset", "bytesReturned", "totalBytes", "sha256", "eof", "content")
+	case protocol.OpArtifactRestore:
+		return pickKeys(obj, "artifactId", "workspaceId", "path", "sizeBytes", "sha256")
+	case protocol.OpAgentList:
+		return map[string]any{"agents": projectAgents(obj["agents"])}
+	case protocol.OpAgentStatus:
+		if nested, ok := obj["agent"].(map[string]any); ok {
+			return projectAgent(nested)
+		}
+		return projectAgent(obj)
+	case protocol.OpAgentLogs:
+		return map[string]any{
+			"agentId":            obj["agentId"],
+			"cursor":             obj["cursor"],
+			"nextCursor":         obj["nextCursor"],
+			"retainedBaseCursor": obj["retainedBaseCursor"],
+			"truncated":          obj["truncated"] == true,
+			"hasMore":            obj["hasMore"] == true,
+			"events":             projectAgentLogEvents(obj["events"]),
+		}
+	case protocol.OpAgentMessage, protocol.OpAgentCancel:
+		return pickKeys(obj, "agentId", "status", "state", "replayed", "affectedAgentIds")
 	default:
 		return obj
 	}

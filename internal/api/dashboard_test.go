@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/knowledge"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcp"
@@ -41,8 +42,12 @@ func dashboardFixture(t *testing.T) (http.Handler, *grants.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	art, err := artifacts.Open(db, artifacts.Options{Root: filepath.Join(t.TempDir(), "objects-root")})
+	if err != nil {
+		t.Fatal(err)
+	}
 	svc := runner.NewService(runner.Config{NetworkProfile: protocol.NetworkNone, JobsRoot: t.TempDir()}, nil, nil).
-		WithGrants(store).WithKnowledge(kn).WithMCPGateway(gw)
+		WithGrants(store).WithKnowledge(kn).WithMCPGateway(gw).WithArtifacts(art)
 	inner := httptest.NewServer(runner.Handler(runner.Options{Service: svc}))
 	t.Cleanup(inner.Close)
 	h := Handler(Options{
@@ -485,5 +490,124 @@ func TestDashboardMCPServersAndKnowledge(t *testing.T) {
 	removed := dashboardDo(t, h, http.MethodDelete, "/dashboard/api/v1/knowledge/"+id, `{"expectedGeneration":2}`, auth)
 	if removed.Code != 200 || !strings.Contains(removed.Body.String(), `"deleted":true`) {
 		t.Fatalf("knowledge delete %d %s", removed.Code, removed.Body.String())
+	}
+}
+
+func TestDashboardArtifactsAndAgents(t *testing.T) {
+	h, _ := dashboardFixture(t)
+	csrf, cookie := dashboardCSRF(t, h)
+	auth := map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+	}
+
+	opened := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/workspaces", `{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-art-dash-1","networkProfile":"network-none"}`, auth)
+	if opened.Code != 200 {
+		t.Fatalf("open %d %s", opened.Code, opened.Body.String())
+	}
+	var openedBody struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(opened.Body.Bytes(), &openedBody); err != nil {
+		t.Fatal(err)
+	}
+	wsID, _ := openedBody.Data["workspaceId"].(string)
+	if wsID == "" {
+		t.Fatalf("open body %s", opened.Body.String())
+	}
+
+	write := dashboardDo(t, h, http.MethodPut, "/dashboard/api/v1/workspaces/"+wsID+"/files/content", `{"path":"analysis.json","content":"snapshot-bytes"}`, auth)
+	if write.Code != 200 {
+		t.Fatalf("write %d %s", write.Code, write.Body.String())
+	}
+
+	denied := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/artifacts", `{"workspaceId":"`+wsID+`","path":"analysis.json","logicalName":"analysis.json","expectedGeneration":0}`, map[string]string{
+		"Authorization": "Bearer owner-secret",
+	})
+	if denied.Code != http.StatusUnauthorized {
+		t.Fatalf("missing csrf %d %s", denied.Code, denied.Body.String())
+	}
+
+	created := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/artifacts", `{"workspaceId":"`+wsID+`","path":"analysis.json","logicalName":"analysis.json","expectedGeneration":0}`, auth)
+	if created.Code != 200 {
+		t.Fatalf("snapshot %d %s", created.Code, created.Body.String())
+	}
+	var createdBody struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &createdBody); err != nil {
+		t.Fatal(err)
+	}
+	artID, _ := createdBody.Data["artifactId"].(string)
+	if !protocol.ValidOpaqueID(protocol.PrefixArtifact, artID) {
+		t.Fatalf("artifact id %q body %s", artID, created.Body.String())
+	}
+	if createdBody.Data["principalId"] != nil {
+		t.Fatal("principalId must not reach the browser")
+	}
+
+	listed := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/artifacts", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if listed.Code != 200 || !strings.Contains(listed.Body.String(), artID) {
+		t.Fatalf("list %d %s", listed.Code, listed.Body.String())
+	}
+
+	scoped := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/workspaces/"+wsID+"/artifacts", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if scoped.Code != 200 || !strings.Contains(scoped.Body.String(), artID) {
+		t.Fatalf("workspace artifacts %d %s", scoped.Code, scoped.Body.String())
+	}
+
+	read := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/artifacts/"+artID, "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if read.Code != 200 || !strings.Contains(read.Body.String(), `"content"`) {
+		t.Fatalf("read %d %s", read.Code, read.Body.String())
+	}
+
+	download := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/artifacts/"+artID+"/download", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if download.Code != 200 {
+		t.Fatalf("download %d %s", download.Code, download.Body.String())
+	}
+	if download.Header().Get("Content-Type") != "application/octet-stream" {
+		t.Fatalf("download content-type %s", download.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(download.Header().Get("Content-Disposition"), "analysis.json") {
+		t.Fatalf("disposition %s", download.Header().Get("Content-Disposition"))
+	}
+	if download.Body.String() != "snapshot-bytes" {
+		t.Fatalf("download body %q", download.Body.String())
+	}
+
+	short := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/artifacts/art_tooshort", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if short.Code != http.StatusBadRequest {
+		t.Fatalf("short artifact id %d %s", short.Code, short.Body.String())
+	}
+
+	stale := dashboardDo(t, h, http.MethodDelete, "/dashboard/api/v1/artifacts/"+artID, `{"expectedGeneration":99}`, auth)
+	if stale.Code != http.StatusConflict && stale.Code != http.StatusNotFound {
+		t.Fatalf("stale delete %d %s", stale.Code, stale.Body.String())
+	}
+
+	deleted := dashboardDo(t, h, http.MethodDelete, "/dashboard/api/v1/artifacts/"+artID, `{"expectedGeneration":1}`, auth)
+	if deleted.Code != 200 {
+		t.Fatalf("delete %d %s", deleted.Code, deleted.Body.String())
+	}
+
+	agents := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/agents", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if agents.Code != 200 || !strings.Contains(agents.Body.String(), `"agents"`) {
+		t.Fatalf("agents %d %s", agents.Code, agents.Body.String())
+	}
+
+	scopedAgents := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/workspaces/"+wsID+"/agents", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if scopedAgents.Code != 200 || !strings.Contains(scopedAgents.Body.String(), `"agents"`) {
+		t.Fatalf("workspace agents %d %s", scopedAgents.Code, scopedAgents.Body.String())
+	}
+
+	activity := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/activity", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if activity.Code != 200 || !strings.Contains(activity.Body.String(), `"events"`) {
+		t.Fatalf("activity %d %s", activity.Code, activity.Body.String())
+	}
+
+	wsActivity := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/workspaces/"+wsID+"/activity", "", map[string]string{"Authorization": "Bearer owner-secret"})
+	if wsActivity.Code != 200 || !strings.Contains(wsActivity.Body.String(), `"events"`) {
+		t.Fatalf("workspace activity %d %s", wsActivity.Code, wsActivity.Body.String())
 	}
 }

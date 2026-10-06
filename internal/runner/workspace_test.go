@@ -940,6 +940,66 @@ func TestArtifactsSnapshotListReadRestoreDelete(t *testing.T) {
 	}
 }
 
+func TestDashboardArtifactAliasesReusePublicStore(t *testing.T) {
+	jobs := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "artifacts-dash.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	art, err := artifacts.Open(db, artifacts.Options{Root: filepath.Join(t.TempDir(), "objects-root")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, JobsRoot: jobs}, nil, nil).WithArtifacts(art)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-art-dash","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	id := open.Data.(map[string]any)["workspaceId"].(string)
+	repo := filepath.Join(jobs, id, "repo")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "note.txt"), []byte("dashboard artifact"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpArtifactSnapshot,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","path":"note.txt","logicalName":"note.txt"}`),
+	})
+	if !snap.OK {
+		t.Fatalf("snapshot: %+v", snap)
+	}
+	artID := snap.Data.(map[string]any)["artifactId"].(string)
+	listed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpArtifactList, Input: json.RawMessage(`{}`),
+	})
+	if !listed.OK {
+		t.Fatalf("list: %+v", listed)
+	}
+	read := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpArtifactRead,
+		Input: json.RawMessage(`{"artifactId":"` + artID + `"}`),
+	})
+	if !read.OK {
+		t.Fatalf("read: %+v", read)
+	}
+	if protocol.OpArtifactList.Known() || !protocol.OpArtifactList.Dashboard() {
+		t.Fatal("artifact_list must stay dashboard-only")
+	}
+	del := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpArtifactDelete,
+		Input: json.RawMessage(`{"artifactId":"` + artID + `","expectedGeneration":1}`),
+	})
+	if !del.OK {
+		t.Fatalf("delete: %+v", del)
+	}
+}
+
 func TestMemoriesWriteListReadDeleteOnRunner(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "mem.sqlite"))
 	if err != nil {

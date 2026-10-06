@@ -23,6 +23,16 @@ func (s *Service) dashboard(ctx context.Context, req protocol.RunnerRequest) pro
 		protocol.OpKnowledgeDashboardUpdate, protocol.OpKnowledgeDashboardDelete, protocol.OpKnowledgeDashboardSearch,
 		protocol.OpKnowledgeDashboardGraph, protocol.OpKnowledgeDashboardLinkCreate, protocol.OpKnowledgeDashboardLinkDelete:
 		return s.knowledgeDashboard(req)
+	case protocol.OpArtifactList:
+		return s.artifactsList(req)
+	case protocol.OpArtifactSnapshot:
+		return s.artifactsSnapshot(req)
+	case protocol.OpArtifactRead:
+		return s.artifactsRead(req)
+	case protocol.OpArtifactRestore:
+		return s.artifactsRestore(ctx, req)
+	case protocol.OpArtifactDelete:
+		return s.artifactsDelete(req)
 	case protocol.OpPrivilegeGrantList:
 		if s.grants == nil {
 			return protocol.Fail(protocol.ErrorUnavailable, "privilege grant store is unavailable", true)
