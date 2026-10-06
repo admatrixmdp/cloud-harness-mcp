@@ -8,8 +8,13 @@ import (
 )
 
 // Handler serves /healthz and lease-gated model routes. Provider credentials
-// never appear in logs or responses.
+// never appear in logs or responses. live is the apply_snapshot table.
 func Handler(reg *Registry, profiles map[string]Profile) http.Handler {
+	return HandlerWithLive(reg, profiles, nil)
+}
+
+// HandlerWithLive looks up snapshot profiles after the static catalog.
+func HandlerWithLive(reg *Registry, profiles map[string]Profile, live *LiveRegistry) http.Handler {
 	if reg == nil {
 		reg = NewRegistry()
 	}
@@ -20,18 +25,22 @@ func Handler(reg *Registry, profiles map[string]Profile) http.Handler {
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
-		serveLease(w, r, reg, profiles, "/v1/chat/completions")
+		serveLease(w, r, reg, profiles, live, "/v1/chat/completions")
 	})
 	mux.HandleFunc("POST /v1/responses", func(w http.ResponseWriter, r *http.Request) {
-		serveLease(w, r, reg, profiles, "/v1/responses")
+		serveLease(w, r, reg, profiles, live, "/v1/responses")
 	})
 	return mux
 }
 
-func serveLease(w http.ResponseWriter, r *http.Request, reg *Registry, profiles map[string]Profile, path string) {
+func serveLease(w http.ResponseWriter, r *http.Request, reg *Registry, profiles map[string]Profile, live *LiveRegistry, path string) {
 	profileID := r.Header.Get("x-model-profile")
 	agentID := r.Header.Get("x-agent-id")
-	if _, ok := profiles[profileID]; !ok || !ValidAgentID(agentID) {
+	profile, ok := profiles[profileID]
+	if !ok && live != nil {
+		profile, ok = live.Profile(profileID)
+	}
+	if !ok || !ValidAgentID(agentID) {
 		writeErr(w, http.StatusUnauthorized, "invalid_gateway_lease")
 		return
 	}
@@ -47,7 +56,6 @@ func serveLease(w http.ResponseWriter, r *http.Request, reg *Registry, profiles 
 		writeErr(w, http.StatusUnauthorized, "invalid_gateway_lease")
 		return
 	}
-	profile := profiles[profileID]
 	if !profile.hasUpstream() {
 		writeErr(w, http.StatusServiceUnavailable, "upstream_not_wired")
 		return

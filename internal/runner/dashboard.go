@@ -45,7 +45,7 @@ func (s *Service) dashboard(ctx context.Context, req protocol.RunnerRequest) pro
 	case protocol.OpModelCredentialList, protocol.OpModelCredentialCreate, protocol.OpModelCredentialRotate, protocol.OpModelCredentialDelete,
 		protocol.OpModelProfileList, protocol.OpModelProfileCreate, protocol.OpModelProfileUpdate, protocol.OpModelProfileActivate, protocol.OpModelProfileDisable, protocol.OpModelProfileDelete,
 		protocol.OpModelConfigStatus:
-		return s.modelsDashboard(req)
+		return s.modelsDashboard(ctx, req)
 	case protocol.OpSkillList, protocol.OpSkillGet, protocol.OpSkillCreateCustom, protocol.OpSkillUpdate, protocol.OpSkillArchive, protocol.OpSkillRestore, protocol.OpSkillBulk,
 		protocol.OpSkillUsage, protocol.OpSkillSearch,
 		protocol.OpSkillRevisionList, protocol.OpSkillRevisionGet, protocol.OpSkillRevisionDiff, protocol.OpSkillRevisionCreate, protocol.OpSkillRevisionFork,

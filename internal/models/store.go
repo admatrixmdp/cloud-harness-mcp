@@ -900,6 +900,176 @@ func (s *Store) DeleteProfile(principalID, id string, expectedGeneration int) er
 	return tx.Commit()
 }
 
+// ExportCredential is a decrypted provider secret for apply_snapshot only.
+// Callers must not log Secret or include it in MCP/dashboard JSON.
+type ExportCredential struct {
+	Provider string
+	AuthMode string
+	Secret   string
+}
+
+// ExportSnapshot is the runner-internal gateway payload. Dashboard ops never return it.
+type ExportSnapshot struct {
+	Credentials map[string]ExportCredential
+	Profiles    map[string]json.RawMessage
+}
+
+// ExportSnapshot decrypts active credentials for the live gateway. Do not log.
+func (s *Store) ExportSnapshot(principalID string) (ExportSnapshot, error) {
+	out := ExportSnapshot{
+		Credentials: map[string]ExportCredential{},
+		Profiles:    map[string]json.RawMessage{},
+	}
+	var (
+		profileRows *sql.Rows
+		err         error
+	)
+	if principalID == "" {
+		profileRows, err = s.db.Query(`SELECT id, principal_id, active_revision_id FROM agent_model_profiles WHERE status = 'ACTIVE'`)
+	} else {
+		profileRows, err = s.db.Query(`SELECT id, principal_id, active_revision_id FROM agent_model_profiles WHERE principal_id = ? AND status = 'ACTIVE'`, principalID)
+	}
+	if err != nil {
+		return ExportSnapshot{}, err
+	}
+	defer profileRows.Close()
+	revisionIDs := map[string]struct{}{}
+	for profileRows.Next() {
+		var id, owner string
+		var active sql.NullString
+		if err := profileRows.Scan(&id, &owner, &active); err != nil {
+			return ExportSnapshot{}, err
+		}
+		if active.Valid && active.String != "" {
+			revisionIDs[active.String] = struct{}{}
+		}
+	}
+	if err := profileRows.Err(); err != nil {
+		return ExportSnapshot{}, err
+	}
+	agentQuery := `SELECT DISTINCT profile_id FROM agents WHERE status NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'LIMIT_EXCEEDED', 'INTERRUPTED')`
+	var agentRows *sql.Rows
+	if principalID == "" {
+		agentRows, err = s.db.Query(agentQuery)
+	} else {
+		agentRows, err = s.db.Query(agentQuery+` AND owner_id = ?`, principalID)
+	}
+	if err == nil {
+		defer agentRows.Close()
+		for agentRows.Next() {
+			var profileID string
+			if err := agentRows.Scan(&profileID); err != nil {
+				return ExportSnapshot{}, err
+			}
+			if strings.HasPrefix(profileID, "rev_") {
+				revisionIDs[profileID] = struct{}{}
+			}
+		}
+	} else if !strings.Contains(err.Error(), "no such table") {
+		return ExportSnapshot{}, err
+	}
+	credentialIDs := map[string]struct{}{}
+	for revID := range revisionIDs {
+		rev, err := s.loadRevisionByID(revID)
+		if err != nil {
+			return ExportSnapshot{}, err
+		}
+		if rev == nil {
+			continue
+		}
+		raw, err := json.Marshal(map[string]any{
+			"id":                 rev.ID,
+			"profileId":          rev.ProfileID,
+			"principalId":        rev.PrincipalID,
+			"credentialId":       rev.CredentialID,
+			"model":              rev.Model,
+			"apiMode":            rev.APIMode,
+			"downstreamPath":     rev.DownstreamPath,
+			"upstreamUrl":        rev.UpstreamURL,
+			"pricing":            rev.Pricing,
+			"limits":             rev.Limits,
+			"maxProxyOperations": rev.MaxProxyOperations,
+			"digest":             rev.Digest,
+			"createdAt":          rev.CreatedAt,
+		})
+		if err != nil {
+			return ExportSnapshot{}, err
+		}
+		out.Profiles[rev.ID] = raw
+		if rev.CredentialID != "" {
+			credentialIDs[rev.CredentialID] = struct{}{}
+		}
+	}
+	var credRows *sql.Rows
+	if principalID == "" {
+		credRows, err = s.db.Query(`SELECT id, principal_id, provider, auth_mode, active_version, status FROM model_provider_credentials`)
+	} else {
+		credRows, err = s.db.Query(`SELECT id, principal_id, provider, auth_mode, active_version, status FROM model_provider_credentials WHERE principal_id = ?`, principalID)
+	}
+	if err != nil {
+		return ExportSnapshot{}, err
+	}
+	defer credRows.Close()
+	for credRows.Next() {
+		var id, owner, provider, authMode, status string
+		var version int
+		if err := credRows.Scan(&id, &owner, &provider, &authMode, &version, &status); err != nil {
+			return ExportSnapshot{}, err
+		}
+		if status != "ACTIVE" {
+			if _, ok := credentialIDs[id]; !ok {
+				continue
+			}
+		}
+		secret, err := s.decryptVersion(owner, id, version)
+		if err != nil {
+			continue
+		}
+		out.Credentials[id] = ExportCredential{Provider: provider, AuthMode: authMode, Secret: secret}
+	}
+	return out, credRows.Err()
+}
+
+func (s *Store) loadRevisionByID(id string) (*Revision, error) {
+	if id == "" {
+		return nil, nil
+	}
+	var rev Revision
+	var opsJSON string
+	var inMicros, outMicros, maxIn, maxOut, maxCost int
+	err := s.db.QueryRow(`SELECT id, profile_id, principal_id, credential_id, model, api_mode, downstream_path, upstream_url,
+		input_micros_per_million, output_micros_per_million, max_input_tokens, max_output_tokens, max_cost_micros,
+		max_proxy_operations_json, digest, created_at
+		FROM agent_model_profile_revisions WHERE id = ?`, id).
+		Scan(&rev.ID, &rev.ProfileID, &rev.PrincipalID, &rev.CredentialID, &rev.Model, &rev.APIMode, &rev.DownstreamPath, &rev.UpstreamURL,
+			&inMicros, &outMicros, &maxIn, &maxOut, &maxCost, &opsJSON, &rev.Digest, &rev.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal([]byte(opsJSON), &rev.MaxProxyOperations)
+	if rev.MaxProxyOperations == nil {
+		rev.MaxProxyOperations = []string{}
+	}
+	rev.Pricing = map[string]any{"inputMicrosPerMillionTokens": inMicros, "outputMicrosPerMillionTokens": outMicros}
+	rev.Limits = map[string]any{"maxInputTokens": maxIn, "maxOutputTokens": maxOut, "maxCostMicros": maxCost}
+	return &rev, nil
+}
+
+func (s *Store) decryptVersion(principalID, id string, version int) (string, error) {
+	var enc secrets.Encrypted
+	if err := s.db.QueryRow(`SELECT key_version, nonce, ciphertext, auth_tag FROM model_provider_credential_versions
+		WHERE principal_id = ? AND credential_id = ? AND version = ?`,
+		principalID, id, version).Scan(&enc.KeyVersion, &enc.Nonce, &enc.Ciphertext, &enc.AuthTag); err != nil {
+		return "", err
+	}
+	return s.keyring.DecryptString(enc, secrets.Context{
+		PrincipalID: principalID, EnvironmentID: credentialEnvironment, Name: id, Version: version,
+	})
+}
+
 // DecryptCredential returns plaintext for gateway snapshot only. Callers must not log it.
 func (s *Store) DecryptCredential(principalID, id string) (string, error) {
 	c, err := s.credential(principalID, id)

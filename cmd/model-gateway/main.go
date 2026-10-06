@@ -55,11 +55,12 @@ lease token and a per-agent internal network. The Unix control socket (mode
 				}
 			}
 			reg := agent.NewRegistry()
-			h := agent.Handler(reg, profiles)
+			live := agent.NewLiveRegistry(os.Getenv("MODEL_GATEWAY_MODE") == "test")
+			h := agent.HandlerWithLive(reg, profiles, live)
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			if sock := os.Getenv("MODEL_GATEWAY_CONTROL_SOCKET"); sock != "" {
-				ctrl := &agent.ControlServer{Path: sock, Registry: reg, Profiles: profiles}
+				ctrl := &agent.ControlServer{Path: sock, Registry: reg, Live: live, Profiles: profiles}
 				go func() {
 					if err := ctrl.ListenAndServe(ctx); err != nil {
 						slog.Error("model-gateway control socket failed", "err", err)

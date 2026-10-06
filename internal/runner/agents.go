@@ -93,6 +93,13 @@ type agentMessage struct {
 	fingerprint    string
 }
 
+type gatewaySyncState struct {
+	synced bool
+	bootID string
+	time   int64
+	err    string
+}
+
 type agentHub struct {
 	mu       sync.Mutex
 	byID     map[string]*agentRecord
@@ -103,6 +110,7 @@ type agentHub struct {
 	models   *models.Store
 	exec     func(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult
 	seenReq  map[string]struct{}
+	lastSync gatewaySyncState
 }
 
 func newAgentHub() *agentHub {
