@@ -1392,6 +1392,52 @@ func TestWorkspaceFinalizePreflightAndLocalCommit(t *testing.T) {
 	}
 }
 
+func TestWorkspaceFinalizeIdempotencyReplayAndConflict(t *testing.T) {
+	jobs := t.TempDir()
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, JobsRoot: jobs}, nil, nil)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"finalize-open-idemp","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	wsID := open.Data.(map[string]any)["workspaceId"].(string)
+	root := filepath.Join(jobs, wsID, "repo")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepo(t, root)
+	if err := os.WriteFile(filepath.Join(root, "note.txt"), []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceFinalize,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","commitMessage":"feat: one","push":false,"idempotencyKey":"finalize-once-01"}`),
+	})
+	if !first.OK {
+		t.Fatalf("first: %+v", first)
+	}
+	sha := first.Data.(map[string]any)["commitSha"].(string)
+	replay := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceFinalize,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","commitMessage":"feat: one","push":false,"idempotencyKey":"finalize-once-01"}`),
+	})
+	if !replay.OK {
+		t.Fatalf("replay: %+v", replay)
+	}
+	if replay.Data.(map[string]any)["commitSha"] != sha {
+		t.Fatalf("replay sha %+v", replay.Data)
+	}
+	conflict := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceFinalize,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","commitMessage":"feat: other","push":false,"idempotencyKey":"finalize-once-01"}`),
+	})
+	if conflict.OK || conflict.Error.Code != protocol.ErrorConflict {
+		t.Fatalf("conflict: %+v", conflict)
+	}
+}
+
 func TestSkillSuggestIsFailClosedWithoutTypeSafe(t *testing.T) {
 	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil)
 	none := svc.Execute(context.Background(), protocol.RunnerRequest{

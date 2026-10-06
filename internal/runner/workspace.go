@@ -103,6 +103,7 @@ type Service struct {
 	mcpGW     *mcpGatewayHub
 	mcpStore  *mcpgw.Store
 	typesafe  *typesafe.Suggester
+	gitOps    store.GitOpStore
 }
 
 // WithAgents attaches the Docker subagent launcher and optional gateway control client.
@@ -185,6 +186,11 @@ func NewService(cfg Config, st store.Store, engine Engine) *Service {
 	}
 	svc := &Service{cfg: cfg.withDefaults(), store: st, engine: engine, agents: newAgentHub(), mcpGW: newMCPGatewayHub()}
 	svc.agents.exec = svc.Execute
+	if sqlite, ok := st.(*store.SQLite); ok {
+		svc.gitOps = sqlite
+	} else {
+		svc.gitOps = &store.MemoryGitOps{}
+	}
 	return svc
 }
 
@@ -2621,6 +2627,33 @@ func (s *Service) finalize(ctx context.Context, req protocol.RunnerRequest) prot
 	if fail := s.requireActiveExecutor(rec); fail != nil {
 		return *fail
 	}
+	fingerprint := ""
+	if input.IdempotencyKey != "" {
+		if !protocol.ValidIdempotencyKey(input.IdempotencyKey) {
+			return protocol.Fail(protocol.ErrorInvalidInput, "idempotencyKey is required", false)
+		}
+		raw, _ := json.Marshal(map[string]any{
+			"commitMessage": input.CommitMessage, "branch": input.Branch, "paths": input.Paths, "all": all,
+			"push": pushWantedFor(input.Push), "authorName": input.AuthorName, "authorEmail": input.AuthorEmail,
+		})
+		sum := sha256.Sum256(raw)
+		fingerprint = hex.EncodeToString(sum[:])
+		action, existing := s.gitOps.AcquireGitOp(store.GitOpRecord{
+			OwnerID: rec.OwnerID, WorkspaceID: rec.ID, IdempotencyKey: input.IdempotencyKey,
+			Operation: store.GitOpFinalize, RequestFingerprint: fingerprint, CreatedAt: time.Now().UTC(),
+		})
+		switch action {
+		case store.GitOpReplaySucceeded:
+			if msg, data, ok := store.ReplayResult(existing.ResultJSON); ok {
+				return protocol.Success(msg, data)
+			}
+			return protocol.Success("Workspace finalize replayed", map[string]any{"replayed": true, "commitSha": existing.LocalCommitSHA})
+		case store.GitOpFingerprintConflict:
+			return protocol.Fail(protocol.ErrorConflict, "Idempotency key reused with different finalize parameters", false)
+		case store.GitOpInFlight:
+			return protocol.Fail(protocol.ErrorConflict, "workspace_finalize is already in flight for this idempotency key", true)
+		}
+	}
 	checkDiff := true
 	if input.Preflight != nil && input.Preflight.CheckDiff != nil {
 		checkDiff = *input.Preflight.CheckDiff
@@ -2684,13 +2717,13 @@ func (s *Service) finalize(ctx context.Context, req protocol.RunnerRequest) prot
 					fail.Error.ResumeAction = "Call git_push or workspace_finalize to retry push"
 				}
 				_ = out
-				return fail
+				return s.finishFinalize(input, fail, "")
 			}
 			pushed = true
 		}
-		return protocol.Success(fmt.Sprintf("Workspace already clean and finalized at %s", shortSHA(sha)), map[string]any{
+		return s.finishFinalize(input, protocol.Success(fmt.Sprintf("Workspace already clean and finalized at %s", shortSHA(sha)), map[string]any{
 			"commitSha": sha, "branch": branch, "pushed": pushed, "alreadyFinalized": true, "finalStatus": status.Data,
-		})
+		}), sha)
 	}
 	addInput, _ := json.Marshal(map[string]any{"all": all, "paths": input.Paths})
 	staged := s.executeInJob(ctx, rec, protocol.OpGitAdd, addInput)
@@ -2698,7 +2731,7 @@ func (s *Service) finalize(ctx context.Context, req protocol.RunnerRequest) prot
 		fail := protocol.Fail(protocol.ErrorConflict, staged.Message, true)
 		fail.Data = map[string]any{"step": "stage", "error": staged.Message}
 		fail.Message = "Failed to stage changes"
-		return fail
+		return s.finishFinalize(input, fail, "")
 	}
 	commitInput := s.withGitIdentity(req.OwnerID, mustJSON(map[string]any{
 		"message": input.CommitMessage, "authorName": input.AuthorName, "authorEmail": input.AuthorEmail, "all": false,
@@ -2708,7 +2741,7 @@ func (s *Service) finalize(ctx context.Context, req protocol.RunnerRequest) prot
 		fail := protocol.Fail(protocol.ErrorConflict, committed.Message, true)
 		fail.Data = map[string]any{"step": "commit", "error": committed.Message}
 		fail.Message = "Commit failed: " + committed.Message
-		return fail
+		return s.finishFinalize(input, fail, "")
 	}
 	sha := headCommit(s.executeInJob(ctx, rec, protocol.OpGitLog, json.RawMessage(`{}`)))
 	pushed := false
@@ -2723,7 +2756,7 @@ func (s *Service) finalize(ctx context.Context, req protocol.RunnerRequest) prot
 				fail.Error.ResumeAction = "Call git_push or workspace_finalize to retry push"
 			}
 			_ = out
-			return fail
+			return s.finishFinalize(input, fail, sha)
 		}
 		pushed = true
 		pushData = out
@@ -2733,9 +2766,44 @@ func (s *Service) finalize(ctx context.Context, req protocol.RunnerRequest) prot
 	if pushed {
 		msg = "Workspace finalized and pushed to " + branch
 	}
-	return protocol.Success(msg, map[string]any{
+	return s.finishFinalize(input, protocol.Success(msg, map[string]any{
 		"commitSha": sha, "branch": branch, "pushed": pushed, "pushResult": pushData, "finalStatus": finalStatus.Data,
-	})
+	}), sha)
+}
+
+func pushWantedFor(push *bool) bool {
+	if push == nil {
+		return true
+	}
+	return *push
+}
+
+func (s *Service) finishFinalize(input finalizeInput, result protocol.ToolResult, sha string) protocol.ToolResult {
+	if s.gitOps == nil || input.IdempotencyKey == "" {
+		return result
+	}
+	status := store.GitOpSucceeded
+	resultJSON, errorJSON := "", ""
+	if result.OK {
+		raw, _ := json.Marshal(map[string]any{"message": result.Message, "data": result.Data})
+		resultJSON = string(raw)
+	} else {
+		status = store.GitOpFailed
+		if result.Error != nil && result.Error.Code == protocol.ErrorConflict {
+			status = store.GitOpConflict
+		}
+		raw, _ := json.Marshal(map[string]any{"message": result.Message, "error": result.Error})
+		errorJSON = string(raw)
+	}
+	_ = s.gitOps.FinishGitOp(s.storeOwner(input), input.WorkspaceID, input.IdempotencyKey, status, resultJSON, errorJSON, sha)
+	return result
+}
+
+func (s *Service) storeOwner(input finalizeInput) string {
+	if rec, ok := s.store.Get(input.WorkspaceID); ok {
+		return rec.OwnerID
+	}
+	return ""
 }
 
 func markersIn(output string) bool {
