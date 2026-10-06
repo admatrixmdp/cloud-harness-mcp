@@ -67,6 +67,9 @@ func TestAllOperationsMatchCatalogCount(t *testing.T) {
 	if !OpProjectList.Dashboard() || OpProjectList.Known() || OpSecretCreate.Internal() || OpGlobalSecretList.Known() {
 		t.Fatal("project/environment/secret dashboard ops must be dashboard-only, not public /mcp tools")
 	}
+	if !OpModelCredentialList.Dashboard() || OpModelCredentialCreate.Known() || OpModelProfileList.Internal() || OpModelConfigStatus.Known() {
+		t.Fatal("model credential/profile dashboard ops must be dashboard-only, not public /mcp tools")
+	}
 }
 
 func TestOperationJSONIsBareString(t *testing.T) {

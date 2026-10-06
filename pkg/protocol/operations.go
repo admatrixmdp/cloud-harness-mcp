@@ -178,6 +178,18 @@ const (
 	OpGlobalSecretUpdate    Operation = "global_secret_update"
 	OpGlobalSecretDelete    Operation = "global_secret_delete"
 	OpGlobalSecretBulkApply Operation = "global_secret_bulk_apply"
+
+	OpModelCredentialList   Operation = "model_credential_list"
+	OpModelCredentialCreate Operation = "model_credential_create"
+	OpModelCredentialRotate Operation = "model_credential_rotate"
+	OpModelCredentialDelete Operation = "model_credential_delete"
+	OpModelProfileList      Operation = "model_profile_list"
+	OpModelProfileCreate    Operation = "model_profile_create"
+	OpModelProfileUpdate    Operation = "model_profile_update"
+	OpModelProfileActivate  Operation = "model_profile_activate"
+	OpModelProfileDisable   Operation = "model_profile_disable"
+	OpModelProfileDelete    Operation = "model_profile_delete"
+	OpModelConfigStatus     Operation = "model_config_status"
 )
 
 // AllOperations is the ordered public MCP tool catalog from RunnerOperationSchema.
@@ -273,7 +285,10 @@ func (op Operation) Dashboard() bool {
 		OpProjectList, OpProjectCreate, OpProjectUpdate, OpProjectDelete,
 		OpEnvironmentList, OpEnvironmentCreate, OpEnvironmentUpdate, OpEnvironmentDelete,
 		OpSecretList, OpSecretCreate, OpSecretRotate, OpSecretUpdate, OpSecretDelete, OpSecretBulkApply,
-		OpGlobalSecretList, OpGlobalSecretCreate, OpGlobalSecretRotate, OpGlobalSecretUpdate, OpGlobalSecretDelete, OpGlobalSecretBulkApply:
+		OpGlobalSecretList, OpGlobalSecretCreate, OpGlobalSecretRotate, OpGlobalSecretUpdate, OpGlobalSecretDelete, OpGlobalSecretBulkApply,
+		OpModelCredentialList, OpModelCredentialCreate, OpModelCredentialRotate, OpModelCredentialDelete,
+		OpModelProfileList, OpModelProfileCreate, OpModelProfileUpdate, OpModelProfileActivate, OpModelProfileDisable, OpModelProfileDelete,
+		OpModelConfigStatus:
 		return true
 	default:
 		return false

@@ -42,6 +42,10 @@ func (s *Service) dashboard(ctx context.Context, req protocol.RunnerRequest) pro
 		protocol.OpSecretList, protocol.OpSecretCreate, protocol.OpSecretRotate, protocol.OpSecretUpdate, protocol.OpSecretDelete, protocol.OpSecretBulkApply,
 		protocol.OpGlobalSecretList, protocol.OpGlobalSecretCreate, protocol.OpGlobalSecretRotate, protocol.OpGlobalSecretUpdate, protocol.OpGlobalSecretDelete, protocol.OpGlobalSecretBulkApply:
 		return s.projectsDashboard(req)
+	case protocol.OpModelCredentialList, protocol.OpModelCredentialCreate, protocol.OpModelCredentialRotate, protocol.OpModelCredentialDelete,
+		protocol.OpModelProfileList, protocol.OpModelProfileCreate, protocol.OpModelProfileUpdate, protocol.OpModelProfileActivate, protocol.OpModelProfileDisable, protocol.OpModelProfileDelete,
+		protocol.OpModelConfigStatus:
+		return s.modelsDashboard(req)
 	case protocol.OpPrivilegeGrantList:
 		if s.grants == nil {
 			return protocol.Fail(protocol.ErrorUnavailable, "privilege grant store is unavailable", true)

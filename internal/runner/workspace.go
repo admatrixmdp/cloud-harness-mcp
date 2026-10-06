@@ -27,6 +27,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcpgw"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/memories"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/metadata"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/models"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
@@ -96,6 +97,7 @@ type Service struct {
 	engine       Engine
 	cloner       *git.Cloner
 	secrets      *secrets.Store
+	models       *models.Store
 	metadata     *metadata.Store
 	artifacts    *artifacts.Store
 	audit        *audit.Store
@@ -138,6 +140,13 @@ func (s *Service) WithSecrets(sec *secrets.Store) *Service {
 	if s.audit != nil {
 		s.secrets.WithAudit(s.audit)
 	}
+	return s
+}
+
+// WithModels attaches encrypted provider credentials and immutable profile revisions.
+// Dashboard list/create/rotate never return apiKey plaintext.
+func (s *Service) WithModels(store *models.Store) *Service {
+	s.models = store
 	return s
 }
 

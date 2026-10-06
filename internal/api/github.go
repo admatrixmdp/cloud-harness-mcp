@@ -104,6 +104,15 @@ func dashboardMessageFor(op protocol.Operation, code protocol.ErrorCode) string 
 		if code == protocol.ErrorNotFound {
 			return "GitHub installation not found."
 		}
+	case protocol.OpModelCredentialList, protocol.OpModelCredentialCreate, protocol.OpModelCredentialRotate, protocol.OpModelCredentialDelete,
+		protocol.OpModelProfileList, protocol.OpModelProfileCreate, protocol.OpModelProfileUpdate, protocol.OpModelProfileActivate, protocol.OpModelProfileDisable, protocol.OpModelProfileDelete,
+		protocol.OpModelConfigStatus:
+		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
+			return "Model profile operations are temporarily unavailable."
+		}
+		if code == protocol.ErrorNotFound {
+			return "Model credential or profile not found."
+		}
 	}
 	return dashboardMessage(code)
 }

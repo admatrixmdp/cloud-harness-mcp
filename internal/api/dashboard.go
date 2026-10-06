@@ -244,6 +244,7 @@ func dashboardHandler(opts Options, sessions *Sessions) http.Handler {
 	})))
 	registerDashboardGitHub(mux, opts, sessions)
 	registerDashboardProjects(mux, opts, sessions)
+	registerDashboardModels(mux, opts, sessions)
 	mux.Handle("GET /api/v1/overview", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeOverview(w, r, opts.Runner)
 	})))
@@ -657,6 +658,18 @@ func projectDashboard(op protocol.Operation, data any) any {
 	case protocol.OpSecretCreate, protocol.OpSecretRotate, protocol.OpSecretUpdate, protocol.OpSecretDelete,
 		protocol.OpGlobalSecretCreate, protocol.OpGlobalSecretRotate, protocol.OpGlobalSecretUpdate, protocol.OpGlobalSecretDelete:
 		return pickKeys(obj, secretKeys...)
+	case protocol.OpModelCredentialList:
+		return map[string]any{"credentials": projectObjects(obj["credentials"], modelCredentialKeys...)}
+	case protocol.OpModelCredentialCreate, protocol.OpModelCredentialRotate:
+		return pickKeys(obj, modelCredentialKeys...)
+	case protocol.OpModelCredentialDelete, protocol.OpModelProfileDelete:
+		return pickKeys(obj, "deleted")
+	case protocol.OpModelProfileList:
+		return map[string]any{"profiles": projectModelProfiles(obj["profiles"])}
+	case protocol.OpModelProfileCreate, protocol.OpModelProfileUpdate, protocol.OpModelProfileActivate, protocol.OpModelProfileDisable:
+		return projectModelProfile(obj)
+	case protocol.OpModelConfigStatus:
+		return projectModelStatus(obj)
 	case protocol.OpArtifactList:
 		return map[string]any{"artifacts": projectObjects(obj["artifacts"], artifactKeys...)}
 	case protocol.OpArtifactSnapshot, protocol.OpArtifactDelete:

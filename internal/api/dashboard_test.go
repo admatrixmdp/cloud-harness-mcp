@@ -24,6 +24,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcp"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/mcpgw"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/metadata"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/models"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/runner"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
@@ -96,13 +97,17 @@ func dashboardGitHubStores(t *testing.T) (http.Handler, *grants.Store, *audit.St
 	if err != nil {
 		t.Fatal(err)
 	}
+	modelStore, err := models.Open(db, ring)
+	if err != nil {
+		t.Fatal(err)
+	}
 	svc := runner.NewService(runner.Config{
 		NetworkProfile: protocol.NetworkNone,
 		JobsRoot:       t.TempDir(),
 		GitHubApp:      git.AppConfig{AppID: "1", AppSlug: "test-app"},
 	}, nil, nil).
 		WithGrants(store).WithKnowledge(kn).WithMCPGateway(gw).WithArtifacts(art).WithAudit(aud).
-		WithGitHub(gh, stubGitHubVerifier{}).WithMetadata(meta).WithSecrets(sec)
+		WithGitHub(gh, stubGitHubVerifier{}).WithMetadata(meta).WithSecrets(sec).WithModels(modelStore)
 	inner := httptest.NewServer(runner.Handler(runner.Options{Service: svc}))
 	t.Cleanup(inner.Close)
 	h := Handler(Options{
@@ -1278,5 +1283,71 @@ func TestDashboardProjectsEnvironmentsSecrets(t *testing.T) {
 
 	if protocol.OpProjectList.Known() || protocol.OpSecretCreate.Known() || !protocol.OpProjectList.Dashboard() {
 		t.Fatal("project/secret dashboard ops must stay dashboard-only")
+	}
+}
+
+func TestDashboardModelCredentialsAndProfiles(t *testing.T) {
+	h, _, _, _ := dashboardGitHubStores(t)
+	auth := map[string]string{"Authorization": "Bearer owner-secret"}
+	csrf, cookie := dashboardCSRF(t, h)
+	mut := map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+	}
+
+	denied := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/provider-credentials", `{"label":"OpenAI Prod","provider":"openai","apiKey":"sk-prod-secret-12345"}`, map[string]string{
+		"Authorization": "Bearer owner-secret",
+	})
+	if denied.Code != http.StatusUnauthorized && denied.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf %d %s", denied.Code, denied.Body.String())
+	}
+
+	created := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/provider-credentials", `{"label":"OpenAI Prod","provider":"openai","apiKey":"sk-prod-secret-12345"}`, mut)
+	if created.Code != 200 {
+		t.Fatalf("create %d %s", created.Code, created.Body.String())
+	}
+	if strings.Contains(created.Body.String(), "sk-prod-secret-12345") || strings.Contains(created.Body.String(), `"apiKey"`) {
+		t.Fatalf("plaintext leaked %s", created.Body.String())
+	}
+	var createdBody struct {
+		Data struct {
+			ID       string `json:"id"`
+			Label    string `json:"label"`
+			Provider string `json:"provider"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &createdBody); err != nil || createdBody.Data.ID == "" {
+		t.Fatalf("create parse %s", created.Body.String())
+	}
+
+	listed := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/provider-credentials", "", auth)
+	if listed.Code != 200 || !strings.Contains(listed.Body.String(), `"label":"OpenAI Prod"`) {
+		t.Fatalf("list %d %s", listed.Code, listed.Body.String())
+	}
+	if strings.Contains(listed.Body.String(), "sk-prod-secret-12345") || strings.Contains(listed.Body.String(), `"apiKey"`) {
+		t.Fatalf("list leaked %s", listed.Body.String())
+	}
+
+	profile := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/agent-model-profiles", `{"profileId":"coding-fast","displayName":"Fast Coding","credentialId":"`+createdBody.Data.ID+`","model":"gpt-5.2-codex","apiMode":"chat-completions","pricing":{"inputMicrosPerMillionTokens":1000,"outputMicrosPerMillionTokens":2000},"limits":{"maxInputTokens":10000,"maxOutputTokens":2000,"maxCostMicros":50000},"maxProxyOperations":["files_read","grep_search"]}`, mut)
+	if profile.Code != 200 {
+		t.Fatalf("profile %d %s", profile.Code, profile.Body.String())
+	}
+	if strings.Contains(profile.Body.String(), "sk-prod-secret-12345") {
+		t.Fatalf("profile leaked %s", profile.Body.String())
+	}
+
+	profiles := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/agent-model-profiles", "", auth)
+	if profiles.Code != 200 || !strings.Contains(profiles.Body.String(), `"displayName":"Fast Coding"`) {
+		t.Fatalf("profiles %d %s", profiles.Code, profiles.Body.String())
+	}
+
+	status := dashboardDo(t, h, http.MethodGet, "/dashboard/api/v1/agent-model-config-status", "", auth)
+	if status.Code != 200 || !strings.Contains(status.Body.String(), `"activeCredentialCount":1`) {
+		t.Fatalf("status %d %s", status.Code, status.Body.String())
+	}
+
+	if protocol.OpModelCredentialList.Known() || protocol.OpModelProfileCreate.Known() || !protocol.OpModelConfigStatus.Dashboard() {
+		t.Fatal("model dashboard ops must stay dashboard-only")
 	}
 }
