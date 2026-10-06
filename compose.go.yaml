@@ -54,6 +54,15 @@ services:
       timeout: 3s
       retries: 6
 
+  provisioning-proxy:
+    image: cloud-harness-api-go:local
+    command: ["/provisioning-proxy"]
+    healthcheck:
+      test: ["CMD", "/provisioning-proxy", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
   executor-image:
     image: cloud-harness-executor:local
     build:

@@ -10,11 +10,13 @@ COPY apps/api/package.json apps/api/package.json
 COPY apps/api/embed.go apps/api/embed.go
 COPY apps/api/dashboard apps/api/dashboard
 RUN CGO_ENABLED=0 go build -o /out/cloud-harness-mcp ./cmd/cloud-harness-mcp \
- && CGO_ENABLED=0 go build -o /out/ingress-proxy ./cmd/ingress-proxy
+ && CGO_ENABLED=0 go build -o /out/ingress-proxy ./cmd/ingress-proxy \
+ && CGO_ENABLED=0 go build -o /out/provisioning-proxy ./cmd/provisioning-proxy
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/cloud-harness-mcp /cloud-harness-mcp
 COPY --from=build /out/ingress-proxy /ingress-proxy
+COPY --from=build /out/provisioning-proxy /provisioning-proxy
 USER nonroot:nonroot
 EXPOSE 3000
 ENTRYPOINT ["/cloud-harness-mcp"]
