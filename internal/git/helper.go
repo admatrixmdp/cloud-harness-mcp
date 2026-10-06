@@ -154,6 +154,20 @@ func ValidateHistorySpec(spec string) error {
 	}
 }
 
+// CloneHistorySpec maps workspace_open history onto the clone-helper positional spec.
+func CloneHistorySpec(fetchDepth *int, shallowSince string) string {
+	if shallowSince != "" {
+		return "since:" + shallowSince
+	}
+	if fetchDepth == nil {
+		return ""
+	}
+	if *fetchDepth == 0 {
+		return "full"
+	}
+	return fmt.Sprintf("depth:%d", *fetchDepth)
+}
+
 // FetchHistorySpec maps git_fetch options onto the helper positional spec.
 func FetchHistorySpec(depth *int, unshallow bool, shallowSince string) (string, error) {
 	selected := 0

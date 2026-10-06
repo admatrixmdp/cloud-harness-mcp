@@ -102,6 +102,9 @@ func migrateWorkspaceColumns(db *sql.DB) error {
 // Close releases the database.
 func (s *SQLite) Close() error { return s.db.Close() }
 
+// DB is the shared WAL connection for runner-local stores (secrets, grants, MCP gateway).
+func (s *SQLite) DB() *sql.DB { return s.db }
+
 // Put inserts or replaces a workspace row.
 func (s *SQLite) Put(rec Record) error {
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO workspaces

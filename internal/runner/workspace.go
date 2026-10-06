@@ -345,6 +345,12 @@ func (s *Service) open(ctx context.Context, req protocol.RunnerRequest) protocol
 		ExpiresAt:      now.Add(s.cfg.IdleTTL),
 		HardExpiresAt:  now.Add(s.cfg.WallTTL),
 	}
+	_ = s.store.Put(rec)
+	if err := s.cloneIntoJob(ctx, rec, parsed, git.CloneHistorySpec(input.FetchDepth, input.ShallowSince)); err != nil {
+		rec.Status = store.StatusFailed
+		_ = s.store.Put(rec)
+		return failFrom(err)
+	}
 	name, err := s.engine.Create(ctx, rec)
 	if err != nil {
 		rec.Status = store.StatusFailed
@@ -352,23 +358,21 @@ func (s *Service) open(ctx context.Context, req protocol.RunnerRequest) protocol
 		return protocol.Fail(protocol.ErrorUnavailable, "executor creation failed", true)
 	}
 	rec.ContainerName = name
-	if err := s.cloneIntoJob(ctx, rec, parsed); err != nil {
-		_ = s.engine.Remove(ctx, name)
-		rec.Status = store.StatusFailed
-		_ = s.store.Put(rec)
-		return failFrom(err)
-	}
 	rec.Status = store.StatusActive
 	_ = s.store.Put(rec)
 	return protocol.Success("workspace opened", publicRecord(rec))
 }
 
-func (s *Service) cloneIntoJob(ctx context.Context, rec store.Record, parsed *url.URL) error {
+func (s *Service) cloneIntoJob(ctx context.Context, rec store.Record, parsed *url.URL, history string) error {
 	if s.cloner == nil {
 		return nil
 	}
 	if s.cfg.JobsRoot == "" {
 		return nil
+	}
+	jobPath := filepath.Join(s.cfg.JobsRoot, rec.ID)
+	if err := os.MkdirAll(jobPath, 0o700); err != nil {
+		return fmt.Errorf("%s: job path is unavailable", protocol.ErrorUnavailable)
 	}
 	minted, err := git.MintRepositoryToken(s.cfg.GitHubApp, parsed, s.cfg.HTTP, time.Now())
 	if err != nil {
@@ -379,9 +383,10 @@ func (s *Service) cloneIntoJob(ctx context.Context, rec store.Record, parsed *ur
 		Image:         s.cfg.ExecutorImage,
 		InstanceID:    s.cfg.InstanceID,
 		WorkspaceID:   rec.ID,
-		JobPath:       filepath.Join(s.cfg.JobsRoot, rec.ID),
+		JobPath:       jobPath,
 		RepositoryURL: rec.RepositoryURL,
 		Ref:           rec.Ref,
+		HistorySpec:   history,
 	}
 	_, err = s.cloner.Run(ctx, git.CloneRequest{Spec: spec, Token: minted.Stdin()})
 	return err

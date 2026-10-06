@@ -12,7 +12,7 @@ import (
 
 func TestDockerEngineCreateUsesPolicy(t *testing.T) {
 	var got []string
-	inner := sandbox.Engine{
+	inner := &sandbox.Engine{
 		Image:      "cloud-harness-executor:local",
 		InstanceID: "inst",
 		Run: func(_ context.Context, args []string, stdin string) (sandbox.Result, error) {
@@ -20,7 +20,7 @@ func TestDockerEngineCreateUsesPolicy(t *testing.T) {
 			return sandbox.Result{ExitCode: 0}, nil
 		},
 	}
-	eng := DockerEngine{Inner: inner}
+	eng := DockerEngine{Inner: inner, JobsRoot: "/jobs"}
 	name, err := eng.Create(context.Background(), store.Record{
 		ID:             "ws_abcdefghijklmnopqrstuvwx",
 		NetworkProfile: protocol.NetworkNone,
@@ -37,5 +37,8 @@ func TestDockerEngineCreateUsesPolicy(t *testing.T) {
 	joined := strings.Join(got, " ")
 	if strings.Contains(joined, "docker.sock") || strings.Contains(joined, "--network bridge") {
 		t.Fatalf("unsafe: %s", joined)
+	}
+	if !strings.Contains(joined, "/jobs/ws_abcdefghijklmnopqrstuvwx/repo:/workspace:rw") {
+		t.Fatalf("missing repo mount: %s", joined)
 	}
 }

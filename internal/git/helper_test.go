@@ -141,6 +141,23 @@ func TestParseGitHubRepositoryRejectsExtraPath(t *testing.T) {
 	}
 }
 
+func TestCloneHistorySpec(t *testing.T) {
+	if CloneHistorySpec(nil, "") != "" {
+		t.Fatal("default")
+	}
+	zero := 0
+	if CloneHistorySpec(&zero, "") != "full" {
+		t.Fatal("full")
+	}
+	n := 200
+	if CloneHistorySpec(&n, "") != "depth:200" {
+		t.Fatal("depth")
+	}
+	if CloneHistorySpec(nil, "2026-08-24") != "since:2026-08-24" {
+		t.Fatal("since")
+	}
+}
+
 func TestFetchHistorySpecAndPushRefspec(t *testing.T) {
 	got, err := FetchHistorySpec(nil, true, "")
 	if err != nil || got != "full" {
