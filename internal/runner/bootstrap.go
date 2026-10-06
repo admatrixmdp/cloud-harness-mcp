@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -147,6 +148,10 @@ func ProductionService(getenv Env) (*Service, error) {
 		instanceID = "local"
 	}
 	docker := &sandbox.Engine{Image: image, InstanceID: instanceID}
+	guardImage := strings.TrimSpace(getenv("NETWORK_GUARD_IMAGE"))
+	if guardImage == "" {
+		guardImage = sandbox.DefaultGuardImage
+	}
 	cfg := Config{
 		AllowedGitHosts:          csvEnv(getenv, "ALLOWED_GIT_HOSTS", "github.com"),
 		NetworkProfile:           profile,
@@ -159,6 +164,16 @@ func ProductionService(getenv Env) (*Service, error) {
 		AgentKitKeyID:            strings.TrimSpace(getenv("AGENTKIT_REGISTRY_KEY_ID")),
 		AgentKitPublicKey:        strings.TrimSpace(getenv("AGENTKIT_REGISTRY_PUBLIC_KEY")),
 		AgentKitCredentialSecret: strings.TrimSpace(getenv("AGENTKIT_REGISTRY_CREDENTIAL_SECRET")),
+		Attestor: sandbox.FirewallAttestor{
+			NetworkName:     strings.TrimSpace(getenv("DEPENDENCY_NETWORK_NAME")),
+			BridgeInterface: strings.TrimSpace(getenv("DEPENDENCY_BRIDGE_INTERFACE")),
+			BridgeSubnet:    strings.TrimSpace(getenv("DEPENDENCY_BRIDGE_SUBNET")),
+			DNSResolvers:    csvEnv(getenv, "DEPENDENCY_DNS_RESOLVERS", "8.8.8.8,1.1.1.1"),
+			GuardImage:      guardImage,
+			Run: func(ctx context.Context, args []string, stdin string) (sandbox.Result, error) {
+				return docker.Invoke(ctx, args, stdin)
+			},
+		},
 	}
 	var st store.Store
 	var sqlite *store.SQLite

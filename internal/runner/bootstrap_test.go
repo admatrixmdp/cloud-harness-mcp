@@ -67,6 +67,9 @@ func TestProductionServiceWiresClonerSQLiteAndGitHubApp(t *testing.T) {
 	if token := ServiceTokenFromEnv(func(name string) string { return env[name] }); token != env["RUNNER_TOKEN"] {
 		t.Fatalf("token %q", token)
 	}
+	if _, ok := svc.cfg.Attestor.(sandbox.FirewallAttestor); !ok {
+		t.Fatalf("attestor type %T", svc.cfg.Attestor)
+	}
 }
 
 func TestProductionServiceLoadsAgentProfilesFromFile(t *testing.T) {
