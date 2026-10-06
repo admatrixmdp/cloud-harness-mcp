@@ -140,3 +140,28 @@ func TestWorkerExecArgsAreUnprivilegedStdinOnly(t *testing.T) {
 		t.Fatal("privileged exec must be rejected")
 	}
 }
+
+func TestInteractiveAndTaskExecArgsStayUnprivileged(t *testing.T) {
+	shell := InteractiveExecArgs("cloud-harness-ws-test", "src", "sess_abcdefghijklmnopqrstuvwx")
+	if err := ValidateInteractiveExecArgs(shell); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(shell, " ")
+	if !strings.Contains(joined, "-w") || !strings.Contains(joined, "/workspace/src") {
+		t.Fatalf("workdir: %s", joined)
+	}
+	if !strings.Contains(joined, "shell-runner.sh") || strings.Contains(joined, "worker-runner.sh") {
+		t.Fatalf("session must not use one-shot worker: %s", joined)
+	}
+	task := TaskExecArgs("cloud-harness-ws-test", ".", "task_abcdefghijklmnopqrstuvwx", 30)
+	if err := ValidateTaskExecArgs(task); err != nil {
+		t.Fatal(err)
+	}
+	joined = strings.Join(task, " ")
+	if strings.Contains(joined, "CH_COMMAND=") {
+		t.Fatal("task command must not appear in argv")
+	}
+	if strings.Contains(joined, "docker.sock") || strings.Contains(joined, "--privileged") {
+		t.Fatalf("leaky task exec: %s", joined)
+	}
+}

@@ -30,7 +30,9 @@ type Request struct {
 
 // Workspace is a confined executor root.
 type Workspace struct {
-	Root string
+	Root      string
+	Container string
+	Spawn     func(args []string, extraEnv []string) (*exec.Cmd, error)
 }
 
 func (w Workspace) root() string {

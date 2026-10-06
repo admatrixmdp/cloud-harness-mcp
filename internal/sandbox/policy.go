@@ -279,6 +279,65 @@ func ValidateWorkerExecArgs(args []string) error {
 	return nil
 }
 
+func workspaceExecCwd(rel string) string {
+	rel = strings.ReplaceAll(strings.TrimSpace(rel), "\\", "/")
+	if rel == "" || rel == "." {
+		return ExecutorWorkdir
+	}
+	return ExecutorWorkdir + "/" + strings.TrimPrefix(rel, "/")
+}
+
+// InteractiveExecArgs is persistent docker exec argv for sessions and shells.
+func InteractiveExecArgs(containerName, relCwd, recordID string) []string {
+	return []string{
+		"exec", "-i", "-w", workspaceExecCwd(relCwd),
+		containerName, "/usr/bin/setsid", "--wait",
+		"/opt/harness/shell-runner.sh", recordID,
+	}
+}
+
+// TaskExecArgs is persistent docker exec argv for background tasks.
+func TaskExecArgs(containerName, relCwd, taskID string, timeoutSeconds int) []string {
+	if timeoutSeconds < 1 {
+		timeoutSeconds = 1
+	}
+	return []string{
+		"exec", "-i", "-w", workspaceExecCwd(relCwd),
+		"-e", "CH_COMMAND",
+		containerName, "/opt/harness/task-runner.sh", taskID, fmt.Sprintf("%d", timeoutSeconds),
+	}
+}
+
+func validatePersistentExec(args []string, runner string) error {
+	if len(args) < 6 || args[0] != "exec" || args[1] != "-i" {
+		return fmt.Errorf("interactive dispatch must use docker exec -i")
+	}
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "--privileged") {
+		return fmt.Errorf("interactive exec must not be privileged")
+	}
+	if strings.Contains(strings.ToLower(joined), "docker.sock") {
+		return fmt.Errorf("docker socket must not appear in interactive exec argv")
+	}
+	if strings.Contains(joined, "GH_TOKEN=") || strings.Contains(joined, "GITHUB_TOKEN=") {
+		return fmt.Errorf("interactive exec argv must not contain tokens")
+	}
+	if !strings.Contains(joined, runner) {
+		return fmt.Errorf("interactive exec must invoke %s", runner)
+	}
+	return nil
+}
+
+// ValidateInteractiveExecArgs rejects privileged exec, sockets, and tokens.
+func ValidateInteractiveExecArgs(args []string) error {
+	return validatePersistentExec(args, "/opt/harness/shell-runner.sh")
+}
+
+// ValidateTaskExecArgs rejects privileged exec, sockets, and tokens.
+func ValidateTaskExecArgs(args []string) error {
+	return validatePersistentExec(args, "/opt/harness/task-runner.sh")
+}
+
 func contains(args []string, flag string) bool {
 	for _, a := range args {
 		if a == flag {

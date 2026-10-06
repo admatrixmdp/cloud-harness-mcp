@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -22,11 +23,15 @@ type Result struct {
 // Runner invokes docker. Tests inject a fake.
 type Runner func(ctx context.Context, args []string, stdin string) (Result, error)
 
+// Starter starts a long-lived docker exec. Tests inject a fake.
+type Starter func(args []string, extraEnv []string) (*exec.Cmd, error)
+
 // Engine talks to the host Docker CLI. Only the runner process should use this.
 type Engine struct {
 	Image      string
 	InstanceID string
 	Run        Runner
+	Start      Starter
 	Timeout    time.Duration
 	MaxBytes   int
 }
@@ -127,6 +132,19 @@ func (e Engine) RemoveExecutor(ctx context.Context, name string) error {
 // Invoke runs docker with the given argv. Tests inject Engine.Run; production uses the CLI.
 func (e Engine) Invoke(ctx context.Context, args []string, stdin string) (Result, error) {
 	return e.runner()(ctx, args, stdin)
+}
+
+// Spawn starts a long-lived docker exec. Extra env is applied to the docker CLI
+// child only so values such as CH_COMMAND never appear in argv.
+func (e Engine) Spawn(args []string, extraEnv []string) (*exec.Cmd, error) {
+	if e.Start != nil {
+		return e.Start(args, extraEnv)
+	}
+	cmd := exec.Command("docker", args...)
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
+	return cmd, nil
 }
 
 // HelperStdin is the documented token transport: one line on docker run stdin.

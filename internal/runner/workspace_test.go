@@ -667,6 +667,81 @@ func TestRunWorkerDispatchesDockerExecWhenAttached(t *testing.T) {
 	}
 }
 
+func TestSessionsAndTasksUsePersistentDockerExec(t *testing.T) {
+	jobs := t.TempDir()
+	var spawned [][]string
+	var extra [][]string
+	docker := &sandbox.Engine{
+		Run: func(context.Context, []string, string) (sandbox.Result, error) {
+			t.Fatal("sessions must not use one-shot worker invoke")
+			return sandbox.Result{}, nil
+		},
+		Start: func(args []string, env []string) (*exec.Cmd, error) {
+			spawned = append(spawned, append([]string{}, args...))
+			extra = append(extra, append([]string{}, env...))
+			cmd := exec.Command("sleep", "30")
+			return cmd, nil
+		},
+	}
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone, JobsRoot: jobs}, nil, nil).WithDocker(docker)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"open-interactive-1","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	id := open.Data.(map[string]any)["workspaceId"].(string)
+	if err := os.MkdirAll(filepath.Join(jobs, id, "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sess := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSessionsOpen,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","name":"review","cwd":".","idempotencyKey":"sess-key-01"}`),
+	})
+	if !sess.OK {
+		t.Fatalf("session: %+v", sess)
+	}
+	if len(spawned) != 1 {
+		t.Fatalf("spawn count %d", len(spawned))
+	}
+	if err := sandbox.ValidateInteractiveExecArgs(spawned[0]); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(spawned[0], " ")
+	if strings.Contains(joined, "worker-runner.sh") || strings.Contains(joined, "docker.sock") {
+		t.Fatalf("leaky session exec: %s", joined)
+	}
+	task := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpTasksRun,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","command":"echo secret-token","cwd":".","idempotencyKey":"task-key-01","timeoutMs":5000}`),
+	})
+	if !task.OK {
+		t.Fatalf("task: %+v", task)
+	}
+	if len(spawned) != 2 {
+		t.Fatalf("task spawn count %d", len(spawned))
+	}
+	if err := sandbox.ValidateTaskExecArgs(spawned[1]); err != nil {
+		t.Fatal(err)
+	}
+	joined = strings.Join(spawned[1], " ")
+	if strings.Contains(joined, "secret-token") || strings.Contains(joined, "CH_COMMAND=") {
+		t.Fatalf("command leaked into argv: %s", joined)
+	}
+	if len(extra[1]) != 1 || extra[1][0] != "CH_COMMAND=echo secret-token" {
+		t.Fatalf("command env: %v", extra[1])
+	}
+	sessID, _ := sess.Data.(map[string]any)["id"].(string)
+	closed := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSessionsClose,
+		Input: json.RawMessage(`{"workspaceId":"` + id + `","sessionId":"` + sessID + `"}`),
+	})
+	if !closed.OK {
+		t.Fatalf("close: %+v", closed)
+	}
+}
+
 func TestSecretsListReturnsMetadataNeverPlaintext(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

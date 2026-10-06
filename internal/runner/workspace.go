@@ -214,7 +214,9 @@ func (s *Service) Execute(ctx context.Context, req protocol.RunnerRequest) proto
 		return s.skillSuggest(req)
 	case protocol.OpAgentSpawn, protocol.OpAgentStatus, protocol.OpAgentLogs, protocol.OpAgentMessage, protocol.OpAgentCancel, protocol.OpAgentList:
 		return s.agentDispatch(req)
-	case protocol.OpFilesList, protocol.OpFilesRead, protocol.OpFilesWrite, protocol.OpFilesWriteBatch, protocol.OpFilesApplyPatch, protocol.OpFilesDelete, protocol.OpFilesMove, protocol.OpFilesMkdir, protocol.OpGrepSearch, protocol.OpSymbolsSearch, protocol.OpSymbolsReferences, protocol.OpExecRun, protocol.OpGitStatus, protocol.OpGitDiff, protocol.OpGitLog, protocol.OpGitBranch, protocol.OpGitCheckout, protocol.OpGitAdd, protocol.OpGitCommit, protocol.OpGitMerge, protocol.OpGitRebase, protocol.OpWorktreesList, protocol.OpWorktreesCreate, protocol.OpWorktreesRemove, protocol.OpSkillsList, protocol.OpSkillsRead, protocol.OpHooksList, protocol.OpHooksRun, protocol.OpDeploymentsList, protocol.OpDeploymentsRun, protocol.OpSessionsList, protocol.OpSessionsOpen, protocol.OpSessionsIO, protocol.OpSessionsClose, protocol.OpShellOpen, protocol.OpShellIO, protocol.OpShellClose, protocol.OpTasksList, protocol.OpTasksRun, protocol.OpTasksStatus, protocol.OpTasksCancel, protocol.OpTasksGraph, protocol.OpOperationStatus, protocol.OpOperationCancel, protocol.OpOperationWait:
+	case protocol.OpSessionsList, protocol.OpSessionsOpen, protocol.OpSessionsIO, protocol.OpSessionsClose, protocol.OpShellOpen, protocol.OpShellIO, protocol.OpShellClose, protocol.OpTasksList, protocol.OpTasksRun, protocol.OpTasksStatus, protocol.OpTasksCancel, protocol.OpTasksGraph, protocol.OpOperationStatus, protocol.OpOperationCancel, protocol.OpOperationWait:
+		return s.runInteractive(ctx, req)
+	case protocol.OpFilesList, protocol.OpFilesRead, protocol.OpFilesWrite, protocol.OpFilesWriteBatch, protocol.OpFilesApplyPatch, protocol.OpFilesDelete, protocol.OpFilesMove, protocol.OpFilesMkdir, protocol.OpGrepSearch, protocol.OpSymbolsSearch, protocol.OpSymbolsReferences, protocol.OpExecRun, protocol.OpGitStatus, protocol.OpGitDiff, protocol.OpGitLog, protocol.OpGitBranch, protocol.OpGitCheckout, protocol.OpGitAdd, protocol.OpGitCommit, protocol.OpGitMerge, protocol.OpGitRebase, protocol.OpWorktreesList, protocol.OpWorktreesCreate, protocol.OpWorktreesRemove, protocol.OpSkillsList, protocol.OpSkillsRead, protocol.OpHooksList, protocol.OpHooksRun, protocol.OpDeploymentsList, protocol.OpDeploymentsRun:
 		return s.runWorker(ctx, req)
 	case protocol.OpSecretsList:
 		return s.secretsList(req)
@@ -698,6 +700,32 @@ func (s *Service) runWorker(ctx context.Context, req protocol.RunnerRequest) pro
 		input = s.withGitIdentity(rec.OwnerID, input)
 	}
 	return s.executeInJob(ctx, rec, req.Operation, input)
+}
+
+func (s *Service) runInteractive(ctx context.Context, req protocol.RunnerRequest) protocol.ToolResult {
+	var loc struct {
+		WorkspaceID string `json:"workspaceId"`
+	}
+	if len(req.Input) > 0 {
+		_ = json.Unmarshal(req.Input, &loc)
+	}
+	rec, errRes := s.resolveWorkspace(req.OwnerID, loc.WorkspaceID)
+	if errRes != nil {
+		return *errRes
+	}
+	if fail := s.requireActiveExecutor(rec); fail != nil {
+		return *fail
+	}
+	root := filepath.Join(s.cfg.JobsRoot, rec.ID, "repo")
+	ws := executor.Workspace{Root: root}
+	if s.docker != nil {
+		if rec.ContainerName == "" {
+			return protocol.Fail(protocol.ErrorUnavailable, "workspace executor is unavailable", true)
+		}
+		ws.Container = rec.ContainerName
+		ws.Spawn = s.docker.Spawn
+	}
+	return ws.Execute(ctx, req.Operation, req.Input)
 }
 
 func (s *Service) requireActiveExecutor(rec store.Record) *protocol.ToolResult {

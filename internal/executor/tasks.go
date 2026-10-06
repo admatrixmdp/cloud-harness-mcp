@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
 
@@ -28,6 +29,9 @@ type taskRecord struct {
 	status      string
 	exitCode    any
 	createdAt   int64
+	relCwd      string
+	container   string
+	spawn       func(args []string, extraEnv []string) (*exec.Cmd, error)
 	cmd         *exec.Cmd
 	mu          sync.Mutex
 	buf         bytes.Buffer
@@ -60,7 +64,7 @@ func taskFingerprint(command, cwd string, timeoutMs int, dependsOn []string) str
 	return hex.EncodeToString(sum[:])
 }
 
-func (h *taskHub) run(root, command, cwd, key string, timeoutMs int, dependsOn []string) protocol.ToolResult {
+func (h *taskHub) run(root, command, cwd, key string, timeoutMs int, dependsOn []string, container string, spawn func(args []string, extraEnv []string) (*exec.Cmd, error)) protocol.ToolResult {
 	if strings.TrimSpace(command) == "" || len(command) > 32_768 {
 		return protocol.Fail(protocol.ErrorInvalidInput, "command is required", false)
 	}
@@ -84,7 +88,11 @@ func (h *taskHub) run(root, command, cwd, key string, timeoutMs int, dependsOn [
 		}
 		seen[dep] = struct{}{}
 	}
-	fp := taskFingerprint(command, emptyDot(cwd), timeoutMs, dependsOn)
+	relCwd, err := normalizeRel(emptyDot(cwd))
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	fp := taskFingerprint(command, relCwd, timeoutMs, dependsOn)
 	mapKey := root + ":" + key
 	h.mu.Lock()
 	if priorID, ok := h.byKey[mapKey]; ok {
@@ -118,6 +126,9 @@ func (h *taskHub) run(root, command, cwd, key string, timeoutMs int, dependsOn [
 		root:        root,
 		command:     command,
 		cwd:         absCwd,
+		relCwd:      relCwd,
+		container:   container,
+		spawn:       spawn,
 		timeoutMs:   timeoutMs,
 		dependsOn:   append([]string{}, dependsOn...),
 		fingerprint: fp,
@@ -178,9 +189,13 @@ func (h *taskHub) startLocked(rec *taskRecord) {
 	}
 	rec.status = "running"
 	timeout := time.Duration(rec.timeoutMs) * time.Millisecond
-	cmd := exec.Command("/bin/bash", "-lc", rec.command)
-	cmd.Dir = rec.cwd
-	cmd.Env = confinedEnv()
+	cmd, err := startTaskCmd(rec)
+	if err != nil {
+		rec.status = "failed"
+		rec.exitCode = 1
+		rec.mu.Unlock()
+		return
+	}
 	cmd.Stdout = rec
 	cmd.Stderr = rec
 	rec.cmd = cmd
@@ -432,8 +447,26 @@ func (r *taskRecord) viewSince(cursor string) (sessionPage, error) {
 	return sessionPage{data: data, cursor: strconv.Itoa(next), truncated: missed || next < end || r.truncated}, nil
 }
 
+func startTaskCmd(rec *taskRecord) (*exec.Cmd, error) {
+	if rec.spawn != nil && rec.container != "" {
+		seconds := rec.timeoutMs / 1000
+		if seconds < 1 {
+			seconds = 1
+		}
+		args := sandbox.TaskExecArgs(rec.container, rec.relCwd, rec.id, seconds)
+		if err := sandbox.ValidateTaskExecArgs(args); err != nil {
+			return nil, err
+		}
+		return rec.spawn(args, []string{"CH_COMMAND=" + rec.command})
+	}
+	cmd := exec.Command("/bin/bash", "-lc", rec.command)
+	cmd.Dir = rec.cwd
+	cmd.Env = confinedEnv()
+	return cmd, nil
+}
+
 func (w Workspace) tasksRun(in pathInput) protocol.ToolResult {
-	return tasks.run(w.root(), in.Command, in.Cwd, in.IdempotencyKey, in.TimeoutMs, in.DependsOn)
+	return tasks.run(w.root(), in.Command, in.Cwd, in.IdempotencyKey, in.TimeoutMs, in.DependsOn, w.Container, w.Spawn)
 }
 
 func (w Workspace) tasksStatus(in pathInput) protocol.ToolResult {

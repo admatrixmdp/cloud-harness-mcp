@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/sandbox"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
 
@@ -29,6 +30,8 @@ type sessionRecord struct {
 	exitCode       any
 	createdAt      int64
 	idempotencyKey string
+	relCwd         string
+	container      string
 	cmd            *exec.Cmd
 	stdin          io.WriteCloser
 	mu             sync.Mutex
@@ -82,14 +85,18 @@ func validSessionName(name string) bool {
 	return true
 }
 
-func (h *sessionHub) open(kind interactiveKind, root, name, cwd, key string) protocol.ToolResult {
+func (h *sessionHub) open(kind interactiveKind, root, name, cwd, key, container string, spawn func(args []string, extraEnv []string) (*exec.Cmd, error)) protocol.ToolResult {
 	if kind.needName && !validSessionName(name) {
 		return protocol.Fail(protocol.ErrorInvalidInput, "invalid session name", false)
 	}
 	if !protocol.ValidIdempotencyKey(key) {
 		return protocol.Fail(protocol.ErrorInvalidInput, "idempotencyKey is required", false)
 	}
-	absCwd, err := SafePath(root, emptyDot(cwd), false)
+	relCwd, err := normalizeRel(emptyDot(cwd))
+	if err != nil {
+		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
+	}
+	absCwd, err := SafePath(root, relCwd, false)
 	if err != nil {
 		return protocol.Fail(protocol.ErrorInvalidInput, err.Error(), false)
 	}
@@ -118,26 +125,30 @@ func (h *sessionHub) open(kind interactiveKind, root, name, cwd, key string) pro
 			}
 		}
 	}
-	cmd := exec.Command("/bin/bash", "--noprofile", "--norc", "-i")
-	cmd.Dir = absCwd
-	cmd.Env = confinedEnv()
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		h.mu.Unlock()
-		return protocol.Fail(protocol.ErrorInternal, err.Error(), true)
-	}
 	rec := &sessionRecord{
 		id:             protocol.NewOpaqueID(kind.prefix),
 		root:           root,
 		name:           name,
 		cwd:            absCwd,
+		relCwd:         relCwd,
+		container:      container,
 		status:         "running",
 		exitCode:       nil,
 		createdAt:      time.Now().UnixMilli(),
 		idempotencyKey: key,
-		cmd:            cmd,
-		stdin:          stdin,
 	}
+	cmd, err := startInteractiveCmd(rec.id, absCwd, container, relCwd, spawn)
+	if err != nil {
+		h.mu.Unlock()
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), true)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		h.mu.Unlock()
+		return protocol.Fail(protocol.ErrorInternal, err.Error(), true)
+	}
+	rec.cmd = cmd
+	rec.stdin = stdin
 	cmd.Stdout = rec
 	cmd.Stderr = rec
 	if err := cmd.Start(); err != nil {
@@ -379,8 +390,22 @@ func (r *sessionRecord) viewSince(cursor string) (sessionPage, error) {
 	return sessionPage{data: data, cursor: strconv.Itoa(next), truncated: missed || next < end || r.truncated}, nil
 }
 
+func startInteractiveCmd(id, absCwd, container, relCwd string, spawn func(args []string, extraEnv []string) (*exec.Cmd, error)) (*exec.Cmd, error) {
+	if spawn != nil && container != "" {
+		args := sandbox.InteractiveExecArgs(container, relCwd, id)
+		if err := sandbox.ValidateInteractiveExecArgs(args); err != nil {
+			return nil, err
+		}
+		return spawn(args, nil)
+	}
+	cmd := exec.Command("/bin/bash", "--noprofile", "--norc", "-i")
+	cmd.Dir = absCwd
+	cmd.Env = confinedEnv()
+	return cmd, nil
+}
+
 func (w Workspace) sessionsOpen(in pathInput) protocol.ToolResult {
-	return sessions.open(sessionKind, w.root(), in.Name, in.Cwd, in.IdempotencyKey)
+	return sessions.open(sessionKind, w.root(), in.Name, in.Cwd, in.IdempotencyKey, w.Container, w.Spawn)
 }
 
 func (w Workspace) sessionsIO(in pathInput) protocol.ToolResult {
@@ -396,7 +421,7 @@ func (w Workspace) sessionsClose(in pathInput) protocol.ToolResult {
 }
 
 func (w Workspace) shellOpen(in pathInput) protocol.ToolResult {
-	return shells.open(shellKind, w.root(), "", in.Cwd, in.IdempotencyKey)
+	return shells.open(shellKind, w.root(), "", in.Cwd, in.IdempotencyKey, w.Container, w.Spawn)
 }
 
 func (w Workspace) shellIO(in pathInput) protocol.ToolResult {
