@@ -49,3 +49,21 @@ func MaybeExit(flag, listen, path string) {
 	}
 	os.Exit(Probe(flag))
 }
+
+// TCPProbe dials host:port and returns a process exit code. Distroless agent
+// images have no node/nc; isolation tests exec the same binary with --probe.
+func TCPProbe(addr string, timeout time.Duration) int {
+	if addr == "" {
+		fmt.Fprintln(os.Stderr, "probe address is required")
+		return 1
+	}
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return 1
+	}
+	_ = conn.Close()
+	return 0
+}

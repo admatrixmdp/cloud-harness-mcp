@@ -174,9 +174,9 @@ async function inspectNetwork(name: string): Promise<NetworkInspection> {
 }
 
 async function expectTcp(container: string, host: string, port: number, reachable: boolean): Promise<void> {
-  // This probes the real Docker network; a bounded real socket timeout is the negative reachability signal.
-  const script = "const net=require('node:net');const s=net.connect(Number(process.argv[2]),process.argv[1]);const done=c=>{s.destroy();process.exit(c)};s.once('connect',()=>done(0));s.once('error',()=>done(1));s.setTimeout(1000,()=>done(1));";
-  const result = await runDocker(['exec', container, 'node', '-e', script, host, String(port)], {
+  // Distroless Go agents have no node; --probe dials TCP on the same binary.
+  // A bounded real socket timeout is the negative reachability signal.
+  const result = await runDocker(['exec', container, '/agent-runtime', '--probe', `${host}:${port}`], {
     timeoutMs: 3_000,
     maxBytes: 4_096
   }).catch((error: unknown) => {
