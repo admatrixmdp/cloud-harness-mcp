@@ -31,6 +31,7 @@ type Record struct {
 	IdempotencyKey string
 	Fingerprint    string
 	ContainerName  string
+	WorkspacePath  string
 	EnvironmentID  string
 	Generation     int
 	CreatedAt      time.Time

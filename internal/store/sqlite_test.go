@@ -46,7 +46,7 @@ func TestSQLiteRoundTripAndRejectsBridge(t *testing.T) {
 	if !ok || again.ID != rec.ID {
 		t.Fatal("idempotency lookup")
 	}
-	if _, err := db.db.Exec(`INSERT INTO workspaces (id, owner_id, idempotency_key, repository_url, status, network_profile, generation, created_at, last_activity_at, expires_at, hard_expires_at) VALUES ('ws_bbbbbbbbbbbbbbbbbbbbbb','o','k','https://github.com/x/y','ACTIVE','bridge',1,1,1,1,1)`); err == nil {
+	if _, err := db.db.Exec(`INSERT INTO workspaces (id, owner_id, idempotency_key, repository_url, workspace_path, status, network_profile, generation, created_at, last_activity_at, expires_at, hard_expires_at) VALUES ('ws_bbbbbbbbbbbbbbbbbbbbbb','o','k','https://github.com/x/y','/job','ACTIVE','bridge',1,1,1,1,1)`); err == nil {
 		t.Fatal("raw bridge profile must fail the CHECK constraint")
 	}
 	closed, ok := db.UpdateStatus(rec.ID, StatusClosed)
@@ -134,6 +134,75 @@ func TestSQLiteOwnerStateAndActivate(t *testing.T) {
 	}
 }
 
+func TestSQLitePutsOntoTypeScriptV12Schema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ts-v12.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`
+CREATE TABLE workspaces (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  repository_url TEXT NOT NULL,
+  repository_ref TEXT,
+  container_name TEXT,
+  workspace_path TEXT NOT NULL,
+  environment_id TEXT,
+  status TEXT NOT NULL,
+  network_profile TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_activity_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  hard_expires_at INTEGER,
+  git_author_name TEXT,
+  git_author_email TEXT,
+  mutation_locked_until INTEGER,
+  mutation_lock_count INTEGER NOT NULL DEFAULT 0,
+  generation INTEGER NOT NULL DEFAULT 1,
+  error TEXT,
+  request_fingerprint TEXT
+);
+CREATE UNIQUE INDEX workspaces_owner_idempotency ON workspaces(owner_id, idempotency_key);
+`); err != nil {
+		t.Fatal(err)
+	}
+	_ = raw.Close()
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	now := time.Now()
+	rec := Record{
+		ID:             "ws_ffffffffffffffffffffffff",
+		OwnerID:        "prn_owner",
+		IdempotencyKey: "open-ts-v12-1",
+		RepositoryURL:  "https://github.com/admatrixorg/goso",
+		Status:         StatusCreating,
+		NetworkProfile: protocol.NetworkNone,
+		Fingerprint:    "fp-v12",
+		WorkspacePath:  "/var/lib/cloud-harness/jobs/ws_ffffffffffffffffffffffff",
+		Generation:     1,
+		CreatedAt:      now,
+		LastActivityAt: now,
+		ExpiresAt:      now.Add(time.Minute),
+		HardExpiresAt:  now.Add(2 * time.Minute),
+	}
+	if err := db.Put(rec); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := db.Get(rec.ID)
+	if !ok || got.Fingerprint != "fp-v12" || got.WorkspacePath != rec.WorkspacePath {
+		t.Fatalf("%+v", got)
+	}
+	listed := db.List("prn_owner")
+	if len(listed) != 1 || listed[0].ID != rec.ID {
+		t.Fatalf("list %+v", listed)
+	}
+}
+
 func TestSQLitePersistsEnvironmentIDAndMigratesLegacySchema(t *testing.T) {
 	now := time.Now()
 	path := filepath.Join(t.TempDir(), "state.db")
@@ -180,7 +249,7 @@ CREATE TABLE workspaces (
   container_name TEXT,
   status TEXT NOT NULL,
   network_profile TEXT NOT NULL CHECK(network_profile IN ('network-none','dependency-access')),
-  fingerprint TEXT,
+  request_fingerprint TEXT,
   generation INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
   last_activity_at INTEGER NOT NULL,

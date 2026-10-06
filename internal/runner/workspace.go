@@ -437,8 +437,9 @@ func (s *Service) open(ctx context.Context, req protocol.RunnerRequest) protocol
 		return protocol.Success("workspace already open", publicRecord(existing))
 	}
 	now := time.Now()
+	workspaceID := protocol.NewOpaqueID(protocol.PrefixWorkspace)
 	rec := store.Record{
-		ID:             protocol.NewOpaqueID(protocol.PrefixWorkspace),
+		ID:             workspaceID,
 		OwnerID:        ownerID,
 		RepositoryURL:  input.RepositoryURL,
 		Ref:            input.Ref,
@@ -446,6 +447,7 @@ func (s *Service) open(ctx context.Context, req protocol.RunnerRequest) protocol
 		NetworkProfile: profile,
 		IdempotencyKey: input.IdempotencyKey,
 		Fingerprint:    fingerprint(input, profile),
+		WorkspacePath:  filepath.Join(s.cfg.JobsRoot, workspaceID),
 		EnvironmentID:  input.EnvironmentID,
 		Generation:     1,
 		CreatedAt:      now,

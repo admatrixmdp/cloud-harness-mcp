@@ -38,9 +38,10 @@ CREATE TABLE IF NOT EXISTS workspaces (
   repository_url TEXT NOT NULL,
   repository_ref TEXT,
   container_name TEXT,
+  workspace_path TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL,
   network_profile TEXT NOT NULL CHECK(network_profile IN ('network-none','dependency-access')),
-  fingerprint TEXT,
+  request_fingerprint TEXT,
   environment_id TEXT,
   generation INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL,
@@ -101,6 +102,20 @@ func migrateWorkspaceColumns(db *sql.DB) error {
 			return err
 		}
 	}
+	if _, ok := cols["workspace_path"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE workspaces ADD COLUMN workspace_path TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, ok := cols["request_fingerprint"]; !ok {
+		if _, ok := cols["fingerprint"]; ok {
+			if _, err := db.Exec(`ALTER TABLE workspaces RENAME COLUMN fingerprint TO request_fingerprint`); err != nil {
+				return err
+			}
+		} else if _, err := db.Exec(`ALTER TABLE workspaces ADD COLUMN request_fingerprint TEXT`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -112,11 +127,15 @@ func (s *SQLite) DB() *sql.DB { return s.db }
 
 // Put inserts or replaces a workspace row.
 func (s *SQLite) Put(rec Record) error {
+	workspacePath := rec.WorkspacePath
+	if workspacePath == "" {
+		workspacePath = rec.ID
+	}
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO workspaces
-		(id, owner_id, idempotency_key, repository_url, repository_ref, container_name, status, network_profile, fingerprint, environment_id, generation, created_at, last_activity_at, expires_at, hard_expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, status, network_profile, request_fingerprint, environment_id, generation, created_at, last_activity_at, expires_at, hard_expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.ID, rec.OwnerID, rec.IdempotencyKey, rec.RepositoryURL, nullString(rec.Ref), nullString(rec.ContainerName),
-		string(rec.Status), string(rec.NetworkProfile), rec.Fingerprint, nullString(rec.EnvironmentID), rec.Generation,
+		workspacePath, string(rec.Status), string(rec.NetworkProfile), rec.Fingerprint, nullString(rec.EnvironmentID), rec.Generation,
 		rec.CreatedAt.UnixMilli(), rec.LastActivityAt.UnixMilli(), rec.ExpiresAt.UnixMilli(), rec.HardExpiresAt.UnixMilli(),
 	)
 	return err
@@ -124,17 +143,17 @@ func (s *SQLite) Put(rec Record) error {
 
 // Get loads one workspace.
 func (s *SQLite) Get(id string) (Record, bool) {
-	return s.scanOne(`SELECT id, owner_id, idempotency_key, repository_url, repository_ref, container_name, status, network_profile, fingerprint, environment_id, generation, created_at, last_activity_at, expires_at, hard_expires_at FROM workspaces WHERE id = ?`, id)
+	return s.scanOne(workspaceSelect+" WHERE id = ?", id)
 }
 
 // ByIdempotency loads by owner+key.
 func (s *SQLite) ByIdempotency(ownerID, key string) (Record, bool) {
-	return s.scanOne(`SELECT id, owner_id, idempotency_key, repository_url, repository_ref, container_name, status, network_profile, fingerprint, environment_id, generation, created_at, last_activity_at, expires_at, hard_expires_at FROM workspaces WHERE owner_id = ? AND idempotency_key = ?`, ownerID, key)
+	return s.scanOne(workspaceSelect+" WHERE owner_id = ? AND idempotency_key = ?", ownerID, key)
 }
 
 // List returns owner workspaces.
 func (s *SQLite) List(ownerID string) []Record {
-	rows, err := s.db.Query(`SELECT id, owner_id, idempotency_key, repository_url, repository_ref, container_name, status, network_profile, fingerprint, environment_id, generation, created_at, last_activity_at, expires_at, hard_expires_at FROM workspaces WHERE owner_id = ? ORDER BY created_at DESC`, ownerID)
+	rows, err := s.db.Query(workspaceSelect+" WHERE owner_id = ? ORDER BY created_at DESC", ownerID)
 	if err != nil {
 		return nil
 	}
@@ -296,16 +315,19 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
+const workspaceSelect = `SELECT id, owner_id, idempotency_key, repository_url, repository_ref, container_name, workspace_path, status, network_profile, request_fingerprint, environment_id, generation, created_at, last_activity_at, expires_at, hard_expires_at FROM workspaces`
+
 func scanRecord(row scanner) (Record, error) {
 	var rec Record
-	var ref, container, fingerprint, environment sql.NullString
+	var ref, container, workspacePath, fingerprint, environment sql.NullString
 	var created, activity, expires, hard int64
 	var status, profile string
-	if err := row.Scan(&rec.ID, &rec.OwnerID, &rec.IdempotencyKey, &rec.RepositoryURL, &ref, &container, &status, &profile, &fingerprint, &environment, &rec.Generation, &created, &activity, &expires, &hard); err != nil {
+	if err := row.Scan(&rec.ID, &rec.OwnerID, &rec.IdempotencyKey, &rec.RepositoryURL, &ref, &container, &workspacePath, &status, &profile, &fingerprint, &environment, &rec.Generation, &created, &activity, &expires, &hard); err != nil {
 		return Record{}, err
 	}
 	rec.Ref = ref.String
 	rec.ContainerName = container.String
+	rec.WorkspacePath = workspacePath.String
 	rec.Fingerprint = fingerprint.String
 	rec.EnvironmentID = environment.String
 	rec.Status = Status(status)
