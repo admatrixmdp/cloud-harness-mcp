@@ -70,7 +70,7 @@ func TestAllOperationsMatchCatalogCount(t *testing.T) {
 	if !OpModelCredentialList.Dashboard() || OpModelCredentialCreate.Known() || OpModelProfileList.Internal() || OpModelConfigStatus.Known() {
 		t.Fatal("model credential/profile dashboard ops must be dashboard-only, not public /mcp tools")
 	}
-	if !OpSkillList.Dashboard() || OpSkillCreateCustom.Known() || OpSkillSetList.Internal() || OpSkillImportStart.Known() {
+	if !OpSkillList.Dashboard() || OpSkillCreateCustom.Known() || OpSkillSetList.Internal() || OpSkillImportStart.Known() || OpSkillArchiveImport.Known() {
 		t.Fatal("skill dashboard ops must be dashboard-only, not public /mcp tools")
 	}
 	if !OpSettingsGet.Dashboard() || OpSettingsUpdate.Known() || OpToolkitsList.Internal() || OpSettingsNetworkCheck.Known() {

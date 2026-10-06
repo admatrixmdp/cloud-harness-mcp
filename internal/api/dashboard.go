@@ -715,6 +715,8 @@ func projectDashboard(op protocol.Operation, data any) any {
 		return pickKeys(obj, skillSetKeys...)
 	case protocol.OpSkillSetPreview:
 		return projectSkillPreview(obj)
+	case protocol.OpSkillArchiveImport:
+		return projectSkillArchiveImport(obj)
 	case protocol.OpToolkitsList:
 		return projectToolkitsList(obj)
 	case protocol.OpToolkitsPreview:

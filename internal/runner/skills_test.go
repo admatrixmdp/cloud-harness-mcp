@@ -2,11 +2,13 @@ package runner
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/skillarchive"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/skillsreg"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 
@@ -73,6 +75,39 @@ func TestDashboardSkillsCreateListSearchSets(t *testing.T) {
 		t.Fatal("skill dashboard ops must stay dashboard-only")
 	}
 	_ = skillID
+}
+
+func TestDashboardSkillArchiveImport(t *testing.T) {
+	svc := skillsService(t)
+	archive := skillarchive.MakeZip([]skillarchive.ZipEntry{
+		{Name: "tdd/SKILL.md", Data: skillarchive.SkillDocument("tdd", "Write the test first.")},
+		{Name: "review/SKILL.md", Data: skillarchive.SkillDocument("review", "Review the diff.")},
+	})
+	imported := svc.Execute(t.Context(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSkillArchiveImport,
+		Input: json.RawMessage(`{"archiveBase64":"` + base64.StdEncoding.EncodeToString(archive) + `","expectedGeneration":0}`),
+	})
+	if !imported.OK {
+		t.Fatalf("%+v", imported)
+	}
+	raw, _ := json.Marshal(imported.Data)
+	if strings.Contains(string(raw), "Write the test first") || strings.Contains(string(raw), `"instructions"`) {
+		t.Fatalf("instructions leaked %s", raw)
+	}
+	if !strings.Contains(string(raw), `"slug":"tdd"`) || !strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("%s", raw)
+	}
+	again := svc.Execute(t.Context(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpSkillArchiveImport,
+		Input: json.RawMessage(`{"archiveBase64":"` + base64.StdEncoding.EncodeToString(archive) + `","expectedGeneration":0}`),
+	})
+	againRaw, _ := json.Marshal(again.Data)
+	if !again.OK || !strings.Contains(string(againRaw), `"error":"CONFLICT"`) {
+		t.Fatalf("duplicate %#v", again)
+	}
+	if protocol.OpSkillArchiveImport.Known() || !protocol.OpSkillArchiveImport.Dashboard() {
+		t.Fatal("skill_archive_import must stay dashboard-only")
+	}
 }
 
 func TestSkillOpsUnavailableWithoutStore(t *testing.T) {

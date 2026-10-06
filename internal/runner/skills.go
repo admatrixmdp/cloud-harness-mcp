@@ -1,11 +1,13 @@
 package runner
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
 	"time"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/skillarchive"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/skillsreg"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
@@ -371,6 +373,44 @@ func (s *Service) skillsDashboard(req protocol.RunnerRequest) protocol.ToolResul
 			return skillFail(err)
 		}
 		return protocol.Success("Skill set preview", data)
+	case protocol.OpSkillArchiveImport:
+		var input struct {
+			ArchiveBase64      string `json:"archiveBase64"`
+			ExpectedGeneration int    `json:"expectedGeneration"`
+		}
+		if err := json.Unmarshal(req.Input, &input); err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "invalid skill_archive_import input", false)
+		}
+		if input.ExpectedGeneration != 0 {
+			return protocol.Fail(protocol.ErrorInvalidInput, "expectedGeneration must be 0", false)
+		}
+		if input.ArchiveBase64 == "" || len(input.ArchiveBase64) > skillarchive.MaxBase64 {
+			return protocol.Fail(protocol.ErrorInvalidInput, "the archive is larger than the limit", false)
+		}
+		raw, err := base64.StdEncoding.DecodeString(input.ArchiveBase64)
+		if err != nil {
+			return protocol.Fail(protocol.ErrorInvalidInput, "the archive could not be decoded", false)
+		}
+		entries, err := skillarchive.Read(raw)
+		if err != nil {
+			return skillFail(err)
+		}
+		results := make([]map[string]any, 0, len(entries))
+		for _, entry := range entries {
+			row, err := s.skills.CreateCustom(req.OwnerID, entry.Slug, entry.DisplayName, "", entry.Instructions, nil, false, skillarchive.TrustedVersion(entry.Instructions), now)
+			if err != nil {
+				code := "INTERNAL_ERROR"
+				if errors.Is(err, skillsreg.ErrConflict) {
+					code = "CONFLICT"
+				} else if errors.Is(err, skillsreg.ErrInvalid) {
+					code = "INVALID_INPUT"
+				}
+				results = append(results, map[string]any{"slug": entry.Slug, "ok": false, "error": code})
+				continue
+			}
+			results = append(results, map[string]any{"slug": entry.Slug, "ok": true, "skillId": row.ID})
+		}
+		return protocol.Success("Skills imported from the archive", map[string]any{"results": results})
 	default:
 		return protocol.Fail(protocol.ErrorInvalidInput, "unknown dashboard operation", false)
 	}

@@ -28,6 +28,7 @@ import (
 	"github.com/bestagentkits/cloud-harness-mcp/internal/models"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/runner"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/secrets"
+	"github.com/bestagentkits/cloud-harness-mcp/internal/skillarchive"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/skillsreg"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 
@@ -1576,5 +1577,41 @@ func TestDashboardIntegrationCredentials(t *testing.T) {
 
 	if protocol.OpIntegrationCredentialList.Known() || protocol.OpTypesafeStatus.Known() || !protocol.OpIntegrationCredentialCreate.Dashboard() {
 		t.Fatal("integration credential ops must stay dashboard-only")
+	}
+}
+
+func TestDashboardSkillArchiveUpload(t *testing.T) {
+	h, _, _, _ := dashboardGitHubStores(t)
+	csrf, cookie := dashboardCSRF(t, h)
+	archive := skillarchive.MakeZip([]skillarchive.ZipEntry{
+		{Name: "tdd/SKILL.md", Data: skillarchive.SkillDocument("tdd", "Write the test first.")},
+	})
+	denied := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/skill-archives", string(archive), map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Content-Type":  "application/zip",
+	})
+	if denied.Code != http.StatusUnauthorized && denied.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf %d %s", denied.Code, denied.Body.String())
+	}
+	jsonDenied := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/skill-archives", `{}`, map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+		"Content-Type":  "application/json",
+	})
+	if jsonDenied.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("json media %d %s", jsonDenied.Code, jsonDenied.Body.String())
+	}
+	uploaded := dashboardDo(t, h, http.MethodPost, "/dashboard/api/v1/skill-archives", string(archive), map[string]string{
+		"Authorization": "Bearer owner-secret",
+		"Cookie":        cookie,
+		"x-csrf-token":  csrf,
+		"Content-Type":  "application/zip",
+	})
+	if uploaded.Code != 200 || !strings.Contains(uploaded.Body.String(), `"slug":"tdd"`) || strings.Contains(uploaded.Body.String(), "Write the test first") {
+		t.Fatalf("upload %d %s", uploaded.Code, uploaded.Body.String())
+	}
+	if protocol.OpSkillArchiveImport.Known() || !protocol.OpSkillArchiveImport.Dashboard() {
+		t.Fatal("skill_archive_import must stay dashboard-only")
 	}
 }

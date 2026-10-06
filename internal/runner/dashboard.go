@@ -49,7 +49,7 @@ func (s *Service) dashboard(ctx context.Context, req protocol.RunnerRequest) pro
 	case protocol.OpSkillList, protocol.OpSkillGet, protocol.OpSkillCreateCustom, protocol.OpSkillUpdate, protocol.OpSkillArchive, protocol.OpSkillRestore, protocol.OpSkillBulk,
 		protocol.OpSkillUsage, protocol.OpSkillSearch,
 		protocol.OpSkillRevisionList, protocol.OpSkillRevisionGet, protocol.OpSkillRevisionDiff, protocol.OpSkillRevisionCreate, protocol.OpSkillRevisionFork,
-		protocol.OpSkillImportStart, protocol.OpSkillImportStatus, protocol.OpSkillImportCancel,
+		protocol.OpSkillImportStart, protocol.OpSkillImportStatus, protocol.OpSkillImportCancel, protocol.OpSkillArchiveImport,
 		protocol.OpSkillSetList, protocol.OpSkillSetGet, protocol.OpSkillSetCreate, protocol.OpSkillSetUpdate, protocol.OpSkillSetDelete, protocol.OpSkillSetPreview:
 		return s.skillsDashboard(req)
 	case protocol.OpToolkitsList, protocol.OpToolkitsPreview, protocol.OpSettingsGet, protocol.OpSettingsUpdate, protocol.OpSettingsNetworkCheck:

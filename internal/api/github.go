@@ -132,6 +132,13 @@ func dashboardMessageFor(op protocol.Operation, code protocol.ErrorCode) string 
 		if code == protocol.ErrorConflict {
 			return "A skill with this name already exists."
 		}
+	case protocol.OpSkillArchiveImport:
+		if code == protocol.ErrorUnavailable || code == protocol.ErrorDependencyEgressUnavailable {
+			return "The skill registry is temporarily unavailable."
+		}
+		if code == protocol.ErrorInvalidInput {
+			return "The skill archive could not be imported."
+		}
 	case protocol.OpSkillImportStart:
 		if code == protocol.ErrorConflict {
 			return "This import already started."

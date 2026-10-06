@@ -208,6 +208,7 @@ const (
 	OpSkillImportStart    Operation = "skill_import_start"
 	OpSkillImportStatus   Operation = "skill_import_status"
 	OpSkillImportCancel   Operation = "skill_import_cancel"
+	OpSkillArchiveImport  Operation = "skill_archive_import"
 	OpSkillSetList        Operation = "skill_set_list"
 	OpSkillSetGet         Operation = "skill_set_get"
 	OpSkillSetCreate      Operation = "skill_set_create"
@@ -332,7 +333,7 @@ func (op Operation) Dashboard() bool {
 		OpSkillList, OpSkillGet, OpSkillCreateCustom, OpSkillUpdate, OpSkillArchive, OpSkillRestore, OpSkillBulk,
 		OpSkillUsage, OpSkillSearch,
 		OpSkillRevisionList, OpSkillRevisionGet, OpSkillRevisionDiff, OpSkillRevisionCreate, OpSkillRevisionFork,
-		OpSkillImportStart, OpSkillImportStatus, OpSkillImportCancel,
+		OpSkillImportStart, OpSkillImportStatus, OpSkillImportCancel, OpSkillArchiveImport,
 		OpSkillSetList, OpSkillSetGet, OpSkillSetCreate, OpSkillSetUpdate, OpSkillSetDelete, OpSkillSetPreview,
 		OpToolkitsList, OpToolkitsPreview, OpSettingsGet, OpSettingsUpdate, OpSettingsNetworkCheck,
 		OpToolkitRegistryList, OpToolkitRegistryUpdate, OpToolkitRegistryRefresh,

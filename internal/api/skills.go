@@ -1,9 +1,12 @@
 package api
 
 import (
+	"encoding/base64"
+	"io"
 	"net/http"
 	"strings"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/skillarchive"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
 
@@ -42,6 +45,25 @@ func registerDashboardSkills(mux *http.ServeMux, opts Options, sessions *Session
 		}
 		proxyDashboard(w, r, opts.Runner, protocol.OpSkillBulk, body)
 	})))))
+	mux.Handle("POST /api/v1/skill-archives", sessions.verify(requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ct := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]))
+		switch ct {
+		case "application/zip", "application/x-zip-compressed", "application/octet-stream":
+		default:
+			writeJSON(w, http.StatusUnsupportedMediaType, map[string]any{"error": "unsupported_media_type"})
+			return
+		}
+		limited := http.MaxBytesReader(w, r.Body, skillarchive.MaxBytes)
+		raw, err := io.ReadAll(limited)
+		if err != nil {
+			writeDashboardFail(w, protocol.Fail(protocol.ErrorInvalidInput, "the archive is larger than the limit", false))
+			return
+		}
+		proxyDashboard(w, r, opts.Runner, protocol.OpSkillArchiveImport, map[string]any{
+			"archiveBase64":      base64.StdEncoding.EncodeToString(raw),
+			"expectedGeneration": 0,
+		})
+	}))))
 	mux.Handle("GET /api/v1/skills/{skillId}", requirePrincipal(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, ok := requirePrefixedID(w, r.PathValue("skillId"), protocol.PrefixSkillSource)
 		if !ok {
@@ -236,6 +258,17 @@ func projectSkillRevision(obj map[string]any) map[string]any {
 		out["diff"] = diff
 	}
 	return out
+}
+
+func projectSkillArchiveImport(obj map[string]any) map[string]any {
+	raw := asObjectList(obj["results"])
+	results := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		row := pickKeys(item, "slug", "skillId", "error")
+		row["ok"] = item["ok"] == true
+		results = append(results, row)
+	}
+	return map[string]any{"results": results}
 }
 
 func projectSkillBulk(obj map[string]any) map[string]any {
