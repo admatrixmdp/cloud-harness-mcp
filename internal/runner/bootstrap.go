@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/agent"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
@@ -200,6 +201,24 @@ func ProductionService(getenv Env) (*Service, error) {
 	}
 	if key := secretFileThenEnv(getenv, "TYPESAFE_API_KEY"); key != "" {
 		svc = svc.WithTypeSafe(typesafe.New(typesafe.Config{APIKey: func() string { return key }}))
+	}
+	if image := strings.TrimSpace(getenv("AGENT_IMAGE")); image != "" {
+		gatewayURL := strings.TrimSpace(getenv("AGENT_GATEWAY_URL"))
+		if gatewayURL == "" {
+			gatewayURL = "http://model-gateway:3210"
+		}
+		launcher := &agent.Launcher{
+			Docker:     docker,
+			InstanceID: instanceID,
+			Image:      image,
+			GatewayURL: gatewayURL,
+			GatewayCtr: strings.TrimSpace(getenv("AGENT_GATEWAY_CONTAINER")),
+		}
+		var gateway *agent.ControlClient
+		if sock := strings.TrimSpace(getenv("MODEL_GATEWAY_CONTROL_SOCKET")); sock != "" {
+			gateway = &agent.ControlClient{Path: sock}
+		}
+		svc = svc.WithAgents(launcher, gateway, nil)
 	}
 	return svc, nil
 }

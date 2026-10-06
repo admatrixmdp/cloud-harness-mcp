@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/agent"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/executor"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
@@ -102,6 +103,12 @@ type Service struct {
 	mcpGW     *mcpGatewayHub
 	mcpStore  *mcpgw.Store
 	typesafe  *typesafe.Suggester
+}
+
+// WithAgents attaches the Docker subagent launcher and optional gateway control client.
+func (s *Service) WithAgents(launcher *agent.Launcher, gateway *agent.ControlClient, profiles map[string]agent.Profile) *Service {
+	s.agents.withRuntime(launcher, gateway, profiles)
+	return s
 }
 
 // WithCloner clones through a helper container after executor create.

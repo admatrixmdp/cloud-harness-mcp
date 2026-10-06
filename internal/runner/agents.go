@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/agent"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/store"
 	"github.com/bestagentkits/cloud-harness-mcp/pkg/protocol"
 )
@@ -74,6 +76,9 @@ type agentRecord struct {
 	promptHash      string
 	logs            []byte
 	messages        map[string]agentMessage
+	containerName   string
+	networkName     string
+	leaseID         string
 }
 
 type agentMessage struct {
@@ -84,13 +89,23 @@ type agentMessage struct {
 }
 
 type agentHub struct {
-	mu    sync.Mutex
-	byID  map[string]*agentRecord
-	byKey map[string]string
+	mu       sync.Mutex
+	byID     map[string]*agentRecord
+	byKey    map[string]string
+	launcher *agent.Launcher
+	gateway  *agent.ControlClient
+	profiles map[string]agent.Profile
 }
 
 func newAgentHub() *agentHub {
 	return &agentHub{byID: map[string]*agentRecord{}, byKey: map[string]string{}}
+}
+
+func (h *agentHub) withRuntime(launcher *agent.Launcher, gateway *agent.ControlClient, profiles map[string]agent.Profile) *agentHub {
+	h.launcher = launcher
+	h.gateway = gateway
+	h.profiles = profiles
+	return h
 }
 
 type agentInput struct {
@@ -128,7 +143,7 @@ func (s *Service) agentDispatch(req protocol.RunnerRequest) protocol.ToolResult 
 	}
 	switch req.Operation {
 	case protocol.OpAgentSpawn:
-		return s.agents.spawn(rec, in)
+		return s.agents.spawn(context.Background(), rec, in)
 	case protocol.OpAgentStatus:
 		return s.agents.status(rec, in)
 	case protocol.OpAgentLogs:
@@ -136,7 +151,7 @@ func (s *Service) agentDispatch(req protocol.RunnerRequest) protocol.ToolResult 
 	case protocol.OpAgentMessage:
 		return s.agents.message(rec, in)
 	case protocol.OpAgentCancel:
-		return s.agents.cancel(rec, in)
+		return s.agents.cancel(context.Background(), rec, in)
 	case protocol.OpAgentList:
 		return s.agents.list(rec, in)
 	default:
@@ -144,7 +159,7 @@ func (s *Service) agentDispatch(req protocol.RunnerRequest) protocol.ToolResult 
 	}
 }
 
-func (h *agentHub) spawn(ws store.Record, in agentInput) protocol.ToolResult {
+func (h *agentHub) spawn(ctx context.Context, ws store.Record, in agentInput) protocol.ToolResult {
 	if ws.Status != store.StatusActive {
 		return protocol.Fail(protocol.ErrorNotFound, "workspace was not found", false)
 	}
@@ -207,21 +222,60 @@ func (h *agentHub) spawn(ws store.Record, in agentInput) protocol.ToolResult {
 		parentAgentID:   in.ParentAgentID,
 		profileID:       in.ProfileID,
 		proxyOperations: ops,
-		status:          "FAILED",
+		status:          "SPAWNING",
 		generation:      1,
 		createdAt:       now,
-		terminalAt:      now,
 		expiresAt:       now.Add(time.Duration(budget.TTLSeconds) * time.Second),
 		budget:          budget,
-		terminalReason:  "agent runtime is not wired in this Go-port slice",
 		idempotencyKey:  in.IdempotencyKey,
 		fingerprint:     fp,
 		promptHash:      promptHash,
 		messages:        map[string]agentMessage{},
+		leaseID:         protocol.NewOpaqueID(protocol.PrefixAgentLease),
 	}
 	h.byID[rec.id] = rec
 	h.byKey[mapKey] = rec.id
+	h.launchOrFail(ctx, rec, ws)
 	return protocol.Success("Agent spawn accepted", spawnView(rec, false))
+}
+
+func (h *agentHub) launchOrFail(ctx context.Context, rec *agentRecord, ws store.Record) {
+	if h.launcher == nil {
+		rec.status = "FAILED"
+		rec.terminalAt = time.Now().UTC()
+		rec.terminalReason = "agent runtime is not wired in this Go-port slice"
+		return
+	}
+	if h.gateway != nil {
+		ttl := time.Until(rec.expiresAt)
+		if ttl < time.Second {
+			ttl = time.Second
+		}
+		if _, err := h.gateway.Issue(ctx, agent.IssueInput{
+			LeaseID: rec.leaseID, AgentID: rec.id, ProfileID: rec.profileID,
+			TTL: ttl, MaxInputTokens: rec.budget.MaxInputTokens, MaxOutputTokens: rec.budget.MaxOutputTokens, MaxCostMicros: rec.budget.MaxCostMicros,
+		}); err != nil {
+			rec.status = "FAILED"
+			rec.terminalAt = time.Now().UTC()
+			rec.terminalReason = "model gateway lease issue failed"
+			return
+		}
+	}
+	got, err := h.launcher.Launch(ctx, rec.id, ws.ID, rec.generation)
+	rec.containerName = got.ContainerName
+	rec.networkName = got.NetworkName
+	if err != nil {
+		rec.status = "FAILED"
+		rec.terminalAt = time.Now().UTC()
+		rec.terminalReason = "agent container launch failed"
+		_ = h.launcher.Cleanup(ctx, got)
+		if h.gateway != nil {
+			_ = h.gateway.Revoke(ctx, rec.leaseID)
+		}
+		return
+	}
+	rec.status = "RUNNING"
+	rec.startedAt = time.Now().UTC()
 }
 
 func (h *agentHub) status(ws store.Record, in agentInput) protocol.ToolResult {
@@ -343,7 +397,7 @@ func (h *agentHub) message(ws store.Record, in agentInput) protocol.ToolResult {
 	})
 }
 
-func (h *agentHub) cancel(ws store.Record, in agentInput) protocol.ToolResult {
+func (h *agentHub) cancel(ctx context.Context, ws store.Record, in agentInput) protocol.ToolResult {
 	if !protocol.ValidOpaqueID(protocol.PrefixAgent, in.AgentID) {
 		return protocol.Fail(protocol.ErrorInvalidInput, "agentId is required", false)
 	}
@@ -368,6 +422,12 @@ func (h *agentHub) cancel(ws store.Record, in agentInput) protocol.ToolResult {
 					rec.terminalReason = "cancelled by owner"
 				}
 				rec.generation++
+				if h.launcher != nil && rec.containerName != "" {
+					_ = h.launcher.Cleanup(ctx, agent.LaunchResult{ContainerName: rec.containerName, NetworkName: rec.networkName})
+				}
+				if h.gateway != nil && rec.leaseID != "" {
+					_ = h.gateway.Revoke(ctx, rec.leaseID)
+				}
 			}
 			affected = append(affected, rec.id)
 		}

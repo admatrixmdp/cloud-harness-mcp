@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bestagentkits/cloud-harness-mcp/internal/agent"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/artifacts"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/git"
 	"github.com/bestagentkits/cloud-harness-mcp/internal/grants"
@@ -1617,6 +1618,72 @@ func TestAgentSpawnStatusListCancelFailClosed(t *testing.T) {
 	})
 	if denied.OK || denied.Error.Code != protocol.ErrorConflict {
 		t.Fatalf("network-none required: %+v", denied)
+	}
+}
+
+type recordingDocker struct {
+	calls [][]string
+}
+
+func (r *recordingDocker) Invoke(_ context.Context, args []string, _ string) (sandbox.Result, error) {
+	r.calls = append(r.calls, append([]string{}, args...))
+	return sandbox.Result{ExitCode: 0}, nil
+}
+
+func TestAgentSpawnRunsWhenLauncherWired(t *testing.T) {
+	docker := &recordingDocker{}
+	svc := NewService(Config{NetworkProfile: protocol.NetworkNone}, nil, nil).WithAgents(&agent.Launcher{
+		Docker: docker, InstanceID: "local", Image: "cloud-harness-agent:local", GatewayURL: "http://model-gateway:3210",
+	}, nil, nil)
+	open := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpWorkspaceOpen,
+		Input: json.RawMessage(`{"repositoryUrl":"https://github.com/bestagentkits/cloud-harness-mcp","idempotencyKey":"agent-open-run","networkProfile":"network-none"}`),
+	})
+	if !open.OK {
+		t.Fatalf("open: %+v", open)
+	}
+	wsID := open.Data.(map[string]any)["workspaceId"].(string)
+	spawn := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentSpawn,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","prompt":"Please refactor auth.","idempotencyKey":"agent-spawn-run","profileId":"coding-fast","proxyOperations":["files_list","files_read"]}`),
+	})
+	if !spawn.OK {
+		t.Fatalf("spawn: %+v", spawn)
+	}
+	data := spawn.Data.(map[string]any)
+	if data["status"] != "RUNNING" || data["replayed"] != false {
+		t.Fatalf("spawn data %+v", data)
+	}
+	raw, _ := json.Marshal(spawn)
+	if strings.Contains(string(raw), "Please refactor auth") {
+		t.Fatalf("prompt leaked: %s", raw)
+	}
+	joined := ""
+	for _, call := range docker.calls {
+		joined += strings.Join(call, " ") + "\n"
+	}
+	if !strings.Contains(joined, "network create") || !strings.Contains(joined, "--internal") {
+		t.Fatalf("missing internal network: %s", joined)
+	}
+	if strings.Contains(joined, "docker.sock") || strings.Contains(joined, "--volume") {
+		t.Fatalf("isolation leak: %s", joined)
+	}
+	id := data["agentId"].(string)
+	cancelled := svc.Execute(context.Background(), protocol.RunnerRequest{
+		Version: 2, OwnerID: "owner", Operation: protocol.OpAgentCancel,
+		Input: json.RawMessage(`{"workspaceId":"` + wsID + `","agentId":"` + id + `"}`),
+	})
+	if !cancelled.OK {
+		t.Fatalf("cancel: %+v", cancelled)
+	}
+	sawRm := false
+	for _, call := range docker.calls {
+		if call[0] == "rm" {
+			sawRm = true
+		}
+	}
+	if !sawRm {
+		t.Fatal("cancel must remove the agent container")
 	}
 }
 

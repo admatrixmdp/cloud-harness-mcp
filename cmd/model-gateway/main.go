@@ -3,10 +3,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -25,7 +28,8 @@ func main() {
 		Short: "Cloud Harness model gateway (Go port)",
 		Long: `Routes subagent model calls through opaque short-lived capability leases.
 Provider credentials stay on this process. Subagent containers get only the
-lease token and a per-agent internal network.`,
+lease token and a per-agent internal network. The Unix control socket (mode
+0600) mints leases for the runner; the raw token never appears in logs.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			healthcheck.MaybeExit(healthcheckURL, listen, "/healthz")
 			profiles := map[string]agent.Profile{}
@@ -40,9 +44,29 @@ lease token and a per-agent internal network.`,
 					},
 				}
 			}
-			h := agent.Handler(agent.NewRegistry(), profiles)
+			reg := agent.NewRegistry()
+			h := agent.Handler(reg, profiles)
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			if sock := os.Getenv("MODEL_GATEWAY_CONTROL_SOCKET"); sock != "" {
+				ctrl := &agent.ControlServer{Path: sock, Registry: reg, Profiles: profiles}
+				go func() {
+					if err := ctrl.ListenAndServe(ctx); err != nil {
+						slog.Error("model-gateway control socket failed", "err", err)
+					}
+				}()
+			}
+			srv := &http.Server{Addr: listen, Handler: h}
+			go func() {
+				<-ctx.Done()
+				_ = srv.Close()
+			}()
 			slog.Info("model-gateway listening", "addr", listen, "profiles", len(profiles))
-			return http.ListenAndServe(listen, h)
+			err := srv.ListenAndServe()
+			if err == http.ErrServerClosed {
+				return nil
+			}
+			return err
 		},
 	}
 	cmd.Flags().StringVar(&listen, "listen", "127.0.0.1:3210", "HTTP listen address (loopback by default)")
