@@ -84,6 +84,12 @@ verify_running_images
 set +x
 source "$env_file"
 auth_mode=${AUTH_MODE:-owner-bearer}
+# Distroless api and ingress images have no Node and no /app/scripts.
+# Callers pass only the canary environment; this does not print it.
+run_host_canary() {
+  command -v node >/dev/null || { echo "deploy canary requires node on the deployment host" >&2; return 1; }
+  node scripts/deploy-canary.mjs
+}
 if [[ $auth_mode == owner-bearer ]]; then
   smoke_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"deploy-smoke","version":"1.0.0"}}}'
   curl --fail --silent --show-error --max-time 10 --data-binary "$smoke_payload" --config - >/dev/null <<EOF
@@ -94,7 +100,9 @@ header = "Authorization: Bearer $MCP_BEARER_TOKEN"
 header = "Content-Type: application/json"
 header = "Accept: application/json, text/event-stream"
 EOF
-  compose exec -T api node /app/scripts/deploy-canary.mjs
+  MCP_CANARY_URL="http://127.0.0.1:3100/mcp" \
+    MCP_BEARER_TOKEN="$MCP_BEARER_TOKEN" \
+    run_host_canary
 elif [[ $auth_mode == cloudflare-access ]]; then
   deploy/scripts/upgrade-nginx-dashboard.sh
   [[ -f $canary_credentials_file ]] || { echo "$canary_credentials_file is required for Access canary" >&2; false; }
@@ -104,9 +112,8 @@ elif [[ $auth_mode == cloudflare-access ]]; then
   [[ ${MCP_CANARY_URL:-} == https://* ]] || { echo "MCP_CANARY_URL must be the public HTTPS Access endpoint" >&2; false; }
   [[ -n ${MCP_CANARY_ACCESS_CLIENT_ID:-} ]] || { echo "MCP_CANARY_ACCESS_CLIENT_ID is required for Access canary" >&2; false; }
   [[ -n ${MCP_CANARY_ACCESS_CLIENT_SECRET:-} ]] || { echo "MCP_CANARY_ACCESS_CLIENT_SECRET is required for Access canary" >&2; false; }
-  compose run --rm --no-deps \
-      -e MCP_CANARY_URL -e MCP_CANARY_ACCESS_CLIENT_ID -e MCP_CANARY_ACCESS_CLIENT_SECRET \
-      ingress node /app/scripts/deploy-canary.mjs
+  run_host_canary
+  unset MCP_CANARY_URL MCP_CANARY_ACCESS_CLIENT_ID MCP_CANARY_ACCESS_CLIENT_SECRET
 else
   echo "unsupported AUTH_MODE: $auth_mode" >&2
   false

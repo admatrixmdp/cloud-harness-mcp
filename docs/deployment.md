@@ -13,7 +13,7 @@ API/runner boundary or grant Cloudflare any Docker authority.
 ## Prerequisites and safe preflight
 
 The host needs Docker Engine/Compose, nginx, Certbot with the nginx plugin,
-Git, curl, OpenSSL, systemd, and an owner-controlled checkout of this public
+Git, curl, OpenSSL, systemd, Node, and an owner-controlled checkout of this public
 repository. The hostname must resolve to the VPS and ports 80/443 must reach
 nginx.
 
@@ -352,16 +352,21 @@ drop, and the constraint are owned by
 [`apps/runner/src/principal-store.ts`](../apps/runner/src/principal-store.ts), and
 [configuration](configuration.md).
 
-Owner-bearer canary uses the private bearer path. Access canary requires an
-owner-provisioned Access service-token client ID/secret and the public HTTPS
-endpoint, so the request traverses the Access edge; there is no local bearer
-bypass. This proves the public deployment path, not a GitHub/Google Managed
-OAuth user flow or release-gating client compatibility. Rotate or revoke the
-canary credential separately. Store these three canary-only settings in the
-root-owned `/etc/cloud-harness-mcp/canary-credentials` file, not the shared
-runtime configuration; the deploy script exports them only to the transient
-canary container. The exact environment names and invocation are owned by the deploy script and
-[`scripts/deploy-canary.mjs`](../scripts/deploy-canary.mjs).
+Owner-bearer canary uses the private bearer path through the loopback ingress.
+Access canary requires an owner-provisioned Access service-token client
+ID/secret and the public HTTPS endpoint, so the request traverses the Access
+edge; there is no local bearer bypass. This proves the public deployment path,
+not a GitHub/Google Managed OAuth user flow or release-gating client
+compatibility. Rotate or revoke the canary credential separately. Store these
+three canary-only settings in the root-owned
+`/etc/cloud-harness-mcp/canary-credentials` file, not the shared runtime
+configuration. The Go api and ingress images are distroless and contain neither
+Node nor `/app/scripts`, so
+[`deploy/scripts/deploy-release.sh`](../deploy/scripts/deploy-release.sh) runs
+[`scripts/deploy-canary.mjs`](../scripts/deploy-canary.mjs) in the host checkout.
+Access settings are passed only into that host process. The script does not
+print them and does not inject them into the api or ingress containers. The
+exact environment names are owned by the deploy script and that canary program.
 
 Verify locally and externally:
 

@@ -78,6 +78,30 @@ cat "$state/release-config-current/mode"
 }
 
 describe.skipIf(process.platform === 'win32')('release rollback orchestration', () => {
+  it('runs the deploy canary on the host checkout instead of inside api or ingress', () => {
+    const source = readFileSync(deployScript, 'utf8');
+    expect(source).not.toContain('node /app/scripts/deploy-canary.mjs');
+    expect(source).not.toContain('compose exec');
+    expect(source).not.toContain('compose run');
+    expect(source).toContain('node scripts/deploy-canary.mjs');
+    expect(source).toContain('MCP_CANARY_URL="http://127.0.0.1:3100/mcp"');
+    expect(source).toContain('MCP_BEARER_TOKEN="$MCP_BEARER_TOKEN"');
+    expect(source).toContain('auth_mode=${AUTH_MODE:-owner-bearer}');
+    expect(source).toContain('[[ $auth_mode == cloudflare-access ]]');
+    expect(source).toContain('canary_credentials_file=/etc/cloud-harness-mcp/canary-credentials');
+    expect(source).toContain("grep -Eq '^(MCP_CANARY_URL|MCP_CANARY_ACCESS_CLIENT_ID|MCP_CANARY_ACCESS_CLIENT_SECRET)='");
+    expect(source).toContain('source "$canary_credentials_file"');
+    expect(source).toContain('unset MCP_CANARY_URL MCP_CANARY_ACCESS_CLIENT_ID MCP_CANARY_ACCESS_CLIENT_SECRET');
+    expect(source).not.toContain('echo "$MCP_BEARER_TOKEN"');
+    expect(source).not.toContain('echo "$MCP_CANARY_ACCESS_CLIENT_ID"');
+    expect(source).not.toContain('echo "$MCP_CANARY_ACCESS_CLIENT_SECRET"');
+    expect(source).not.toContain('echo "$MCP_CANARY_URL"');
+    const traceOff = source.indexOf('set +x');
+    const canary = source.indexOf('node scripts/deploy-canary.mjs');
+    expect(traceOff).toBeGreaterThan(-1);
+    expect(canary).toBeGreaterThan(traceOff);
+  });
+
   it('takes a nonblocking host lock before touching the shared deployment checkout', () => {
     const source = readFileSync(deployScript, 'utf8');
     const lock = source.indexOf('flock -n 9');
