@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Compatibility shim for TypeScript runner helpers that still exec
-// `node /opt/harness/harness-worker.mjs`. The Go executor image has no
-// Node worker; stdin JSON is forwarded to the static harness-worker.
+// Unused by the Go executor image. That image must not ship
+// harness-worker.mjs: worker-runner.go.sh execs /opt/harness/harness-worker,
+// and the TypeScript worker stays in docker/executor.Dockerfile.
+// This file only forwards stdin to the static binary if a caller still
+// invokes `node` against a copy of it.
 import { spawn } from 'node:child_process';
 
 const child = spawn('/opt/harness/harness-worker', [], {

@@ -254,6 +254,18 @@ func (w Workspace) skillsRun(ctx context.Context, in pathInput) protocol.ToolRes
 	if len(in.Args) > 50 {
 		return protocol.Fail(protocol.ErrorInvalidInput, "too many skill arguments", false)
 	}
+	// Digest is part of the request shape. Reject a missing or short pin
+	// before lookup so an absent skill cannot hide INVALID_INPUT as NOT_FOUND.
+	expected := in.ExpectedContentSHA256
+	if expected == "" {
+		expected = in.ExpectedSHA256
+	}
+	if expected == "" {
+		return protocol.Fail(protocol.ErrorInvalidInput, "expectedContentSha256 or expectedSha256 is required to run a skill", false)
+	}
+	if len(expected) != 64 {
+		return protocol.Fail(protocol.ErrorInvalidInput, "expectedSha256 must be a 64-character hex digest", false)
+	}
 	entries, err := w.skillEntries()
 	if err != nil {
 		return protocol.Fail(protocol.ErrorInternal, err.Error(), false)
@@ -308,16 +320,6 @@ func (w Workspace) skillsRun(ctx context.Context, in pathInput) protocol.ToolRes
 			return protocol.Fail(protocol.ErrorNotFound, "skill script "+in.Script+" not found in snapshot", false)
 		}
 		scriptPath = alt
-	}
-	expected := in.ExpectedContentSHA256
-	if expected == "" {
-		expected = in.ExpectedSHA256
-	}
-	if expected == "" {
-		return protocol.Fail(protocol.ErrorInvalidInput, "expectedContentSha256 or expectedSha256 is required to run a skill", false)
-	}
-	if len(expected) != 64 {
-		return protocol.Fail(protocol.ErrorInvalidInput, "expectedSha256 must be a 64-character hex digest", false)
 	}
 	sum := sha256.Sum256(scriptBytes)
 	scriptSHA := hex.EncodeToString(sum[:])
