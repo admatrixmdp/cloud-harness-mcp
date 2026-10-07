@@ -23,6 +23,10 @@ jobs:
         with:
           node-version: 24.11.0
           cache: npm
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
       - run: npm ci
       - run: bash -n worker/clone-helper.sh worker/task-runner.sh worker/shell-runner.sh worker/worker-runner.sh worker/gh-helper.sh deploy/scripts/bootstrap-vps.sh deploy/scripts/deploy-release.sh deploy/scripts/release-runtime.sh deploy/scripts/rollback-release.sh deploy/scripts/deploy-ssh-wrapper.sh deploy/scripts/upgrade-nginx-dashboard.sh
       - run: npm run verify:compose

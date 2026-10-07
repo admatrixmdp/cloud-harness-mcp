@@ -3,6 +3,7 @@
 ## Prerequisites
 
 - Node.js 24 or newer and npm
+- Go 1.26, matching the `go` line in [`go.mod`](../go.mod)
 - Docker Engine with Docker Compose v2 for image and sandbox tests
 - Git
 
@@ -19,8 +20,13 @@ normal local quality gate is:
 npm run verify
 ```
 
-It runs lint, type checking, non-Docker tests, and a production build. Use the
-narrowest relevant command while iterating:
+It runs the plugin check, lint, type checking, non-Docker Vitest tests, the
+production build, and the Go package tests. The Go suite is in this gate so a
+failure in the parallel Go tree blocks the branch together with the TypeScript
+checks. CI installs the toolchain from the `go` line in `go.mod`. Go tests
+built with the `docker` tag stay on the Docker job in
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml). Use the narrowest
+relevant command while iterating:
 
 ```bash
 npm run lint
@@ -28,6 +34,7 @@ npm run typecheck
 npm run test:unit
 npm run test:integration
 npm test
+npm run test:go
 npm run build
 ```
 

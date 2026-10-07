@@ -31,6 +31,7 @@
     "test:docker": "vitest run test/integration/docker-sandbox.docker.test.ts test/integration/dependency-egress.docker.test.ts test/integration/git-transfer-helper.docker.test.ts test/integration/gh-helper.docker.test.ts test/integration/agent-isolation.docker.test.ts apps/runner/test/cli-compatibility-airgap.docker.test.ts test/integration/skills-compatibility.docker.test.ts --testTimeout=180000",
     "pretest:e2e": "npm run build -w @cloud-harness/contracts",
     "test:e2e": "vitest run test/e2e --testTimeout=120000",
+    "test:go": "go test ./...",
     "pages:check": "node scripts/verify-pages-artifact.mjs",
     "pages:preflight": "npm run pages:check && node scripts/verify-pages-project.mjs && npm run pages:links",
     "pages:deploy": "npm run pages:preflight && wrangler pages deploy site --project-name cloud-harness-mcp --branch main && npm run pages:smoke",
@@ -52,7 +53,7 @@
     "release:dry-run": "semantic-release --dry-run --no-ci",
     "verify:production": "node scripts/verify-production.mjs",
     "verify:compose": "node scripts/verify-compose-boundaries.mjs && node scripts/verify-go-compose-overlay.mjs",
-    "verify": "npm run plugin:check && npm run lint && npm run typecheck && npm test && npm run build",
+    "verify": "npm run plugin:check && npm run lint && npm run typecheck && npm test && npm run build && npm run test:go",
     "verify:typesafe": "node scripts/verify-typesafe.mjs"
   },
   "devDependencies": {
