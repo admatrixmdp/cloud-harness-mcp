@@ -1416,9 +1416,11 @@ export class WorkspaceService {
 
     // The helper container reuses the worker's one-shot entry point, so the snapshot, the digest check,
     // and the read-only hardening that the tests cover stay exactly where they were; only the process
-    // that finally runs the script moves into a container of its own.
+    // that finally runs the script moves into a container of its own. compose.yaml ships
+    // docker/go-executor.Dockerfile, which installs the static binary and does not copy
+    // harness-worker.mjs.
     const payload = JSON.stringify({ operation: 'skills_run', input: { ...input, approvalGrantToken: undefined } });
-    const command = `printf '%s' ${shellQuote(payload)} | node /opt/harness/harness-worker.mjs`;
+    const command = `printf '%s' ${shellQuote(payload)} | /opt/harness/harness-worker`;
     const result = await this.runPrivilegedEphemeralExec(record, { command, cwd: '.', timeoutMs, maxOutputBytes, runAs: 'unprivileged' }, signal);
 
     const raw = (result.data as { stdout?: string } | undefined)?.stdout ?? '';
