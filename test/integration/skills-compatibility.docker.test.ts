@@ -98,12 +98,17 @@ describe('air-gap skill lifecycle', () => {
   }, 120_000);
 
   it('reports an instruction-only revision as having no executable assets', async () => {
-    const run = await sh(workerRequest('skills_run', { name: 'tdd', script: 'missing.sh' }));
+    const run = await sh(workerRequest('skills_run', {
+      name: 'tdd',
+      script: 'missing.sh',
+      expectedContentSha256: SCRIPT_SHA
+    }));
 
     const parsed = JSON.parse(run.stdout) as { ok: boolean; error?: { code: string; message: string } };
     expect(parsed.ok).toBe(false);
-    // The skill has a scripts directory, so this is a named script that is absent rather than a
-    // revision with nothing to run.
+    // Digest is part of the request shape. After it is present, a named script that is
+    // absent from a revision that still has a scripts directory is NOT_FOUND rather than
+    // a revision with nothing to run.
     expect(parsed.error?.code).toBe('NOT_FOUND');
   }, 120_000);
 });

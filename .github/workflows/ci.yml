@@ -50,6 +50,7 @@ jobs:
       - run: npm ci
       - run: node scripts/generate-model-gateway-test-fixtures.mjs
       - run: docker compose --profile images build executor-image agent-image api runner model-gateway network-guard-image
+      - run: docker compose --profile gateway-test build model-gateway-test fake-provider
       - name: Verify non-root Go API binaries
         run: |
           user=$(docker inspect cloud-harness-api:local --format '{{.Config.User}}')
