@@ -34,7 +34,7 @@ func Dump(w io.Writer, opts Options) error {
 	if run == nil {
 		run = exec.Command
 	}
-	bin, err := resolveBinary(look)
+	bin, err := resolveBinary(look, opts.LookPath == nil)
 	if err != nil {
 		return err
 	}
@@ -53,7 +53,7 @@ func Dump(w io.Writer, opts Options) error {
 	return nil
 }
 
-func resolveBinary(look func(string) (string, error)) (string, error) {
+func resolveBinary(look func(string) (string, error), allowHostFallback bool) (string, error) {
 	if path, err := look(defaultBinary); err == nil && strings.TrimSpace(path) != "" {
 		return path, nil
 	}
@@ -61,8 +61,15 @@ func resolveBinary(look func(string) (string, error)) (string, error) {
 		if path, err := look(candidate); err == nil && strings.TrimSpace(path) != "" {
 			return path, nil
 		}
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
+	}
+	// Host sbin fallback is production-only. Injected LookPath must be
+	// able to prove "iptables-save is not available" on Ubuntu runners
+	// that still ship /sbin/iptables-save.
+	if allowHostFallback {
+		for _, candidate := range searchPaths {
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, nil
+			}
 		}
 	}
 	return "", fmt.Errorf("iptables-save is not available")

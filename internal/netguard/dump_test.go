@@ -40,6 +40,19 @@ func TestDumpFailsClosedWhenBinaryMissing(t *testing.T) {
 	}
 }
 
+func TestDumpUsesHostSbinOnlyWithoutInjectedLookPath(t *testing.T) {
+	if _, err := os.Stat("/sbin/iptables-save"); err != nil {
+		t.Skip("no host iptables-save")
+	}
+	err := Dump(&bytes.Buffer{}, Options{})
+	if err == nil {
+		return
+	}
+	if !strings.Contains(err.Error(), "iptables-save failed") {
+		t.Fatalf("production fallback should invoke host binary: %v", err)
+	}
+}
+
 func TestDumpFailsClosedOnNonzeroExit(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "iptables-save")

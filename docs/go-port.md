@@ -77,10 +77,10 @@ Do not `require` `github.com/nextlevelbuilder/goclaw`.
 
 ## Test parity
 
-Unit tests live next to the Go packages (`go test ./...`). The root
-`package.json` `test:go` script is what `npm run verify` and the CI quality
-job run, so the local suite and the gate stay on one command. TypeScript tests
-remain as contract owners. Docker-dependent checks use the `docker` build
+Unit tests live next to the Go packages. The root `package.json` `test:go`
+script runs `go test ./cmd/... ./internal/... ./pkg/...` so `npm ci` cannot
+pull `node_modules` Go stubs into the gate. That is what `npm run verify`
+and the CI quality job run. TypeScript tests remain as contract owners. Docker-dependent checks use the `docker` build
 tag (`go test -tags docker ./internal/sandbox`) and must not weaken host-side
 policy assertions when the daemon is unavailable.
 
