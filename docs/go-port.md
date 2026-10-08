@@ -1,8 +1,10 @@
 # Go port map
 
 Parallel Go sources live next to the TypeScript tree. This document maps
-executable owners. Behavior, defaults, and schemas remain owned by the TS
-files and `packages/contracts` until a package is marked runtime-of-record.
+executable owners. Production Compose services are the Go images in
+[`compose.yaml`](../compose.yaml) (`docker/go-*.Dockerfile`). Behavior,
+defaults, and schemas remain owned by the TS files and `packages/contracts`
+until a package is marked runtime-of-record.
 
 ## Composition roots
 

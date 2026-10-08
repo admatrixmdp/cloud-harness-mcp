@@ -28,4 +28,4 @@ For custom infrastructure with existing NGINX setups:
 
 1. **Bootstrap VPS:** Run `deploy/scripts/bootstrap-vps.sh` to install Docker, systemd unit, and permissions.
 2. **Deploy Release:** Run `deploy/scripts/deploy-release.sh <git-sha>` to build and start production containers.
-3. **Canary Verification:** Run `scripts/deploy-canary.mjs` to execute an automated end-to-end workspace test against the newly deployed instance.
+3. **Canary Verification:** `deploy/scripts/deploy-release.sh <git-sha>` already runs the end-to-end canary from the host checkout (`scripts/deploy-canary.mjs`) after the containers are up.

@@ -195,20 +195,24 @@ recorded traces with it.
 
 ## Dependencies
 
-The gateway adds `@modelcontextprotocol/client` and `undici` as runtime
-dependencies of the API. Because [`docker/api.Dockerfile`](../docker/api.Dockerfile)
-prunes dev dependencies from the production image, the client also pulls
-`eventsource`, `eventsource-parser`, `cross-spawn`, `jose`, and
-`pkce-challenge` into that image.
+The gateway client that production Compose runs lives in the API binary
+([`internal/gateway`](../internal/gateway)). [`compose.yaml`](../compose.yaml)
+builds that API from [`docker/go-api.Dockerfile`](../docker/go-api.Dockerfile),
+a distroless image with no Node MCP client.
 
-This is accepted because the client is the maintained implementation of the
-protocol the gateway speaks, and the transitive packages are small and
-widely deployed. The `eventsource` stack parses untrusted downstream SSE
-streams, so it is treated as an input boundary: the URL policy, the
-connect-time socket pinning, the endpoint-scoped header attachment, and the
-response byte caps exist partly to bound what a hostile downstream server can
-cause to be parsed or returned. They are defense in depth, not a claim that the
-parser is safe against a hostile stream.
+[`docker/api.Dockerfile`](../docker/api.Dockerfile) remains the reference
+historical Node image. In that image, `@modelcontextprotocol/client` and
+`undici` are runtime dependencies of the API. Because that Dockerfile prunes
+dev dependencies, the client also pulls `eventsource`, `eventsource-parser`,
+`cross-spawn`, `jose`, and `pkce-challenge` into the Node image. That client
+is the maintained TypeScript implementation of the protocol the gateway
+speaks, and those transitive packages are small and widely deployed. The
+`eventsource` stack parses untrusted downstream SSE streams, so it is treated
+as an input boundary: the URL policy, the connect-time socket pinning, the
+endpoint-scoped header attachment, and the response byte caps exist partly to
+bound what a hostile downstream server can cause to be parsed or returned.
+They are defense in depth, not a claim that the parser is safe against a
+hostile stream.
 
 ## Known limitations
 

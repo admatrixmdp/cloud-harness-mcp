@@ -109,8 +109,15 @@ gateway root owns its own constant five-tool contract.
 
 Executable owners:
 
+Production Compose ships the Go binaries in [`compose.yaml`](../compose.yaml).
+The map of those owners and the in-tree TypeScript references is
+[`go-port.md`](go-port.md).
+
 - Loopback-to-frontend byte proxy:
-  [`deploy/ingress-proxy.mjs`](../deploy/ingress-proxy.mjs)
+  [`cmd/ingress-proxy`](../cmd/ingress-proxy), shipped by
+  [`compose.yaml`](../compose.yaml) as `/ingress-proxy`.
+  [`deploy/ingress-proxy.mjs`](../deploy/ingress-proxy.mjs) remains the in-tree
+  TypeScript reference.
 - Public HTTP and MCP assembly:
   [`apps/api/src/app.ts`](../apps/api/src/app.ts) and
   [`apps/api/src/mcp-server.ts`](../apps/api/src/mcp-server.ts)
@@ -139,7 +146,10 @@ Executable owners:
 - Toolkit acquisition, CAS cache manager, and provisioning proxy:
   [`apps/runner/src/toolkit-service.ts`](../apps/runner/src/toolkit-service.ts),
   [`apps/runner/src/toolkit-cache-manager.ts`](../apps/runner/src/toolkit-cache-manager.ts), and
-  [`deploy/provisioning-proxy.mjs`](../deploy/provisioning-proxy.mjs)
+  [`cmd/provisioning-proxy`](../cmd/provisioning-proxy), shipped by
+  [`compose.yaml`](../compose.yaml) as `/provisioning-proxy`.
+  [`deploy/provisioning-proxy.mjs`](../deploy/provisioning-proxy.mjs) remains the
+  in-tree TypeScript reference.
 - Durable tasks, in-memory shells, named sessions, and restart reconciliation:
   [`apps/runner/src/operation-manager.ts`](../apps/runner/src/operation-manager.ts) and
   [`apps/runner/src/state-store.ts`](../apps/runner/src/state-store.ts)

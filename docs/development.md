@@ -66,7 +66,9 @@ runtime package versions.
 
 ## Docker-backed verification
 
-Build the fixed executor and service images before Docker tests:
+Production Compose services in [`compose.yaml`](../compose.yaml) are the Go
+images (`docker/go-*.Dockerfile`). Build the fixed executor and service images
+before Docker tests:
 
 ```bash
 docker compose --profile images build executor-image api runner

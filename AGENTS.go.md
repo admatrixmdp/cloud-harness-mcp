@@ -1,8 +1,10 @@
 # Cloud Harness MCP — Go port coding rules
 
 This tree is a **parallel Go implementation** of the existing TypeScript
-harness. TypeScript remains the runtime of record until the Go binaries are
-wired through Compose and verified.
+harness. Production Compose services are Go (`compose.yaml` builds
+`docker/go-*.Dockerfile`). TypeScript remains in-tree for dashboard JS,
+docs-site, the Wrangler api-key-gateway, the gateway-test Node topology, and
+contract tests.
 
 Style target: GoClaw v3.14 (`/Users/mqglobal/Documents/goclaw/goclaw-source-v3.14.0`),
 patterns only — **do not copy GoClaw source into this repository**.
